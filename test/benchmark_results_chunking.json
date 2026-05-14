@@ -1,0 +1,563 @@
+{
+  "benchmark": "chunking",
+  "timestamp": "2026-05-09T22:59:37.863353",
+  "strategies": {
+    "按标题分块 (项目方案)": {
+      "summary": {
+        "total_docs": 7,
+        "total_chunks": 386,
+        "avg_chunks_per_doc": 55.142857142857146,
+        "avg_chunk_size": 463.9947540133617,
+        "total_oversized": 2,
+        "avg_header_aligned": 0.7790393966178202
+      },
+      "per_doc": {
+        "Agent应用开发实践踩坑与经验分享.md": {
+          "doc_name": "Agent应用开发实践踩坑与经验分享.md",
+          "doc_size": 29036,
+          "stats": {
+            "chunk_count": 106,
+            "avg_size": 274.5566037735849,
+            "min_size": 7,
+            "max_size": 988,
+            "median_size": 209,
+            "std_size": 248.20202818674312,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 13,
+            "size_distribution": {
+              "300-500": 14,
+              "500-800": 7,
+              "800-1000": 9,
+              "100-300": 53,
+              "0-100": 23
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.9716981132075472,
+            "contains_header_ratio": 0.9716981132075472,
+            "clean_start_ratio": 0.9905660377358491
+          }
+        },
+        "Agent面试核心知识点汇总.md": {
+          "doc_name": "Agent面试核心知识点汇总.md",
+          "doc_size": 20783,
+          "stats": {
+            "chunk_count": 26,
+            "avg_size": 803.3461538461538,
+            "min_size": 332,
+            "max_size": 1466,
+            "median_size": 851,
+            "std_size": 227.80169215075108,
+            "oversized_count": 1,
+            "oversized_ratio": 0.038461538461538464,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 14,
+              "300-500": 3,
+              "500-800": 8,
+              ">1000": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.5,
+            "contains_header_ratio": 0.5,
+            "clean_start_ratio": 0.9615384615384616
+          }
+        },
+        "RAG检索全流程思维导图.md": {
+          "doc_name": "RAG检索全流程思维导图.md",
+          "doc_size": 3058,
+          "stats": {
+            "chunk_count": 11,
+            "avg_size": 273.3636363636364,
+            "min_size": 39,
+            "max_size": 724,
+            "median_size": 193,
+            "std_size": 201.6104582096478,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 1,
+            "size_distribution": {
+              "0-100": 2,
+              "500-800": 2,
+              "100-300": 6,
+              "300-500": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 1.0,
+            "contains_header_ratio": 1.0,
+            "clean_start_ratio": 1.0
+          }
+        },
+        "RAG面试问题汇总.md": {
+          "doc_name": "RAG面试问题汇总.md",
+          "doc_size": 30799,
+          "stats": {
+            "chunk_count": 84,
+            "avg_size": 370.9047619047619,
+            "min_size": 12,
+            "max_size": 992,
+            "median_size": 325,
+            "std_size": 320.85260742529414,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 17,
+            "size_distribution": {
+              "0-100": 21,
+              "500-800": 11,
+              "800-1000": 14,
+              "300-500": 19,
+              "100-300": 19
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.8214285714285714,
+            "contains_header_ratio": 0.8214285714285714,
+            "clean_start_ratio": 0.9880952380952381
+          }
+        },
+        "基于《all-in-rag》的RAG核心知识点.md": {
+          "doc_name": "基于《all-in-rag》的RAG核心知识点.md",
+          "doc_size": 31595,
+          "stats": {
+            "chunk_count": 59,
+            "avg_size": 569.7966101694915,
+            "min_size": 11,
+            "max_size": 998,
+            "median_size": 701,
+            "std_size": 375.91478387298343,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 11,
+            "size_distribution": {
+              "0-100": 12,
+              "300-500": 5,
+              "800-1000": 27,
+              "100-300": 8,
+              "500-800": 7
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.6101694915254238,
+            "contains_header_ratio": 0.6101694915254238,
+            "clean_start_ratio": 0.9661016949152542
+          }
+        },
+        "基于《hello-agent》的核心知识点.md": {
+          "doc_name": "基于《hello-agent》的核心知识点.md",
+          "doc_size": 34049,
+          "stats": {
+            "chunk_count": 57,
+            "avg_size": 637.2280701754386,
+            "min_size": 11,
+            "max_size": 995,
+            "median_size": 764,
+            "std_size": 304.16437254855265,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 2,
+            "size_distribution": {
+              "0-100": 3,
+              "100-300": 10,
+              "800-1000": 24,
+              "500-800": 17,
+              "300-500": 3
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.5964912280701754,
+            "contains_header_ratio": 0.5964912280701754,
+            "clean_start_ratio": 0.9298245614035088
+          }
+        },
+        "智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档.md": {
+          "doc_name": "智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档.md",
+          "doc_size": 13812,
+          "stats": {
+            "chunk_count": 43,
+            "avg_size": 318.7674418604651,
+            "min_size": 11,
+            "max_size": 2094,
+            "median_size": 244,
+            "std_size": 355.01829872323435,
+            "oversized_count": 1,
+            "oversized_ratio": 0.023255813953488372,
+            "tiny_count": 6,
+            "size_distribution": {
+              "100-300": 15,
+              "300-500": 10,
+              ">1000": 1,
+              "500-800": 5,
+              "0-100": 11,
+              "800-1000": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.9534883720930233,
+            "contains_header_ratio": 0.9534883720930233,
+            "clean_start_ratio": 1.0
+          }
+        }
+      }
+    },
+    "固定长度分块 (1000字符)": {
+      "summary": {
+        "total_docs": 7,
+        "total_chunks": 186,
+        "avg_chunks_per_doc": 26.571428571428573,
+        "avg_chunk_size": 952.6270870628952,
+        "total_oversized": 0,
+        "avg_header_aligned": 0.07890356302010439
+      },
+      "per_doc": {
+        "Agent应用开发实践踩坑与经验分享.md": {
+          "doc_name": "Agent应用开发实践踩坑与经验分享.md",
+          "doc_size": 29036,
+          "stats": {
+            "chunk_count": 33,
+            "avg_size": 976.0,
+            "min_size": 236,
+            "max_size": 1000,
+            "median_size": 1000,
+            "std_size": 130.86865958129954,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 32,
+              "100-300": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.06060606060606061,
+            "contains_header_ratio": 0.9393939393939394,
+            "clean_start_ratio": 0.5757575757575758
+          }
+        },
+        "Agent面试核心知识点汇总.md": {
+          "doc_name": "Agent面试核心知识点汇总.md",
+          "doc_size": 20783,
+          "stats": {
+            "chunk_count": 24,
+            "avg_size": 960.0,
+            "min_size": 83,
+            "max_size": 1000,
+            "median_size": 1000,
+            "std_size": 182.91733105422242,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 23,
+              "0-100": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.041666666666666664,
+            "contains_header_ratio": 0.625,
+            "clean_start_ratio": 0.75
+          }
+        },
+        "RAG检索全流程思维导图.md": {
+          "doc_name": "RAG检索全流程思维导图.md",
+          "doc_size": 3058,
+          "stats": {
+            "chunk_count": 4,
+            "avg_size": 839.0,
+            "min_size": 358,
+            "max_size": 1000,
+            "median_size": 999,
+            "std_size": 277.70577955815037,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 3,
+              "300-500": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.25,
+            "contains_header_ratio": 0.75,
+            "clean_start_ratio": 0.75
+          }
+        },
+        "RAG面试问题汇总.md": {
+          "doc_name": "RAG面试问题汇总.md",
+          "doc_size": 30799,
+          "stats": {
+            "chunk_count": 35,
+            "avg_size": 975.8285714285714,
+            "min_size": 198,
+            "max_size": 1000,
+            "median_size": 1000,
+            "std_size": 133.43152031002606,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 34,
+              "100-300": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.05714285714285714,
+            "contains_header_ratio": 0.7142857142857143,
+            "clean_start_ratio": 0.6571428571428571
+          }
+        },
+        "基于《all-in-rag》的RAG核心知识点.md": {
+          "doc_name": "基于《all-in-rag》的RAG核心知识点.md",
+          "doc_size": 31595,
+          "stats": {
+            "chunk_count": 36,
+            "avg_size": 974.4722222222222,
+            "min_size": 95,
+            "max_size": 1000,
+            "median_size": 1000,
+            "std_size": 148.66470217519526,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 35,
+              "0-100": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.027777777777777776,
+            "contains_header_ratio": 0.5555555555555556,
+            "clean_start_ratio": 0.9166666666666666
+          }
+        },
+        "基于《hello-agent》的核心知识点.md": {
+          "doc_name": "基于《hello-agent》的核心知识点.md",
+          "doc_size": 34049,
+          "stats": {
+            "chunk_count": 38,
+            "avg_size": 993.0263157894736,
+            "min_size": 749,
+            "max_size": 1000,
+            "median_size": 1000,
+            "std_size": 40.13889493280293,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 37,
+              "500-800": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.05263157894736842,
+            "contains_header_ratio": 0.7894736842105263,
+            "clean_start_ratio": 0.8157894736842105
+          }
+        },
+        "智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档.md": {
+          "doc_name": "智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档.md",
+          "doc_size": 13812,
+          "stats": {
+            "chunk_count": 16,
+            "avg_size": 950.0625,
+            "min_size": 312,
+            "max_size": 1000,
+            "median_size": 1000,
+            "std_size": 165.36190188114674,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 15,
+              "300-500": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.0625,
+            "contains_header_ratio": 0.875,
+            "clean_start_ratio": 0.6875
+          }
+        }
+      }
+    },
+    "固定长度+句子边界 (1000字符)": {
+      "summary": {
+        "total_docs": 7,
+        "total_chunks": 192,
+        "avg_chunks_per_doc": 27.428571428571427,
+        "avg_chunk_size": 931.592320892321,
+        "total_oversized": 0,
+        "avg_header_aligned": 0.05318073175216032
+      },
+      "per_doc": {
+        "Agent应用开发实践踩坑与经验分享.md": {
+          "doc_name": "Agent应用开发实践踩坑与经验分享.md",
+          "doc_size": 29036,
+          "stats": {
+            "chunk_count": 35,
+            "avg_size": 925.8,
+            "min_size": 122,
+            "max_size": 999,
+            "median_size": 968,
+            "std_size": 145.56977708301952,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 34,
+              "100-300": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.02857142857142857,
+            "contains_header_ratio": 0.8857142857142857,
+            "clean_start_ratio": 0.6
+          }
+        },
+        "Agent面试核心知识点汇总.md": {
+          "doc_name": "Agent面试核心知识点汇总.md",
+          "doc_size": 20783,
+          "stats": {
+            "chunk_count": 24,
+            "avg_size": 954.4166666666666,
+            "min_size": 887,
+            "max_size": 999,
+            "median_size": 966,
+            "std_size": 34.09413031919457,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 24
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.041666666666666664,
+            "contains_header_ratio": 0.5833333333333334,
+            "clean_start_ratio": 0.875
+          }
+        },
+        "RAG检索全流程思维导图.md": {
+          "doc_name": "RAG检索全流程思维导图.md",
+          "doc_size": 3058,
+          "stats": {
+            "chunk_count": 4,
+            "avg_size": 837.5,
+            "min_size": 545,
+            "max_size": 969,
+            "median_size": 955,
+            "std_size": 172.15327472923656,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 3,
+              "500-800": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.25,
+            "contains_header_ratio": 0.75,
+            "clean_start_ratio": 0.5
+          }
+        },
+        "RAG面试问题汇总.md": {
+          "doc_name": "RAG面试问题汇总.md",
+          "doc_size": 30799,
+          "stats": {
+            "chunk_count": 36,
+            "avg_size": 949.4444444444445,
+            "min_size": 597,
+            "max_size": 1000,
+            "median_size": 970,
+            "std_size": 72.88744917277309,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 35,
+              "500-800": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.0,
+            "contains_header_ratio": 0.6944444444444444,
+            "clean_start_ratio": 0.6944444444444444
+          }
+        },
+        "基于《all-in-rag》的RAG核心知识点.md": {
+          "doc_name": "基于《all-in-rag》的RAG核心知识点.md",
+          "doc_size": 31595,
+          "stats": {
+            "chunk_count": 37,
+            "avg_size": 950.1351351351351,
+            "min_size": 485,
+            "max_size": 1000,
+            "median_size": 973,
+            "std_size": 85.52166223518007,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 36,
+              "300-500": 1
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.02702702702702703,
+            "contains_header_ratio": 0.5135135135135135,
+            "clean_start_ratio": 0.8108108108108109
+          }
+        },
+        "基于《hello-agent》的核心知识点.md": {
+          "doc_name": "基于《hello-agent》的核心知识点.md",
+          "doc_size": 34049,
+          "stats": {
+            "chunk_count": 40,
+            "avg_size": 947.6,
+            "min_size": 812,
+            "max_size": 1000,
+            "median_size": 959,
+            "std_size": 41.13745252200238,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 40
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.025,
+            "contains_header_ratio": 0.675,
+            "clean_start_ratio": 0.8
+          }
+        },
+        "智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档.md": {
+          "doc_name": "智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档.md",
+          "doc_size": 13812,
+          "stats": {
+            "chunk_count": 16,
+            "avg_size": 956.25,
+            "min_size": 810,
+            "max_size": 1000,
+            "median_size": 984,
+            "std_size": 63.495570711664605,
+            "oversized_count": 0,
+            "oversized_ratio": 0.0,
+            "tiny_count": 0,
+            "size_distribution": {
+              "800-1000": 16
+            }
+          },
+          "quality": {
+            "header_aligned_ratio": 0.0,
+            "contains_header_ratio": 0.9375,
+            "clean_start_ratio": 0.3125
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "config": {
+    "model": "paraformer-realtime-v2",
+    "api_key": "sk-4c074...36fc"
+  },
+  "summary": {
+    "total": 6,
+    "success": 6,
+    "fail": 0
+  },
+  "results": [
+    {
+      "status": "success",
+      "text": "上快认真听听讲，课后及时复习，才能真正掌握知识点。",
+      "elapsed": 1.593815565109253,
+      "audio_duration": 7.96,
+      "rtf": 0.20022808606900164,
+      "segments": [
+        {
+          "start": 0.56,
+          "end": 7.94,
+          "text": "上快认真听听讲，课后及时复习，才能真正掌握知识点。"
+        }
+      ]
+    },
+    {
+      "status": "success",
+      "text": "第一块跑了800米，阮都快累瘫了。",
+      "elapsed": 1.2844409942626953,
+      "audio_duration": 5.12,
+      "rtf": 0.2508673816919327,
+      "segments": [
+        {
+          "start": 0.18,
+          "end": 5.1,
+          "text": "第一块跑了800米，阮都快累瘫了。"
+        }
+      ]
+    },
+    {
+      "status": "success",
+      "text": "开张照在的势著是一部分，真正的学习需要更大的实践和思考。",
+      "elapsed": 1.9135551452636719,
+      "audio_duration": 8.16,
+      "rtf": 0.23450430701760686,
+      "segments": [
+        {
+          "start": 0.56,
+          "end": 8.14,
+          "text": "开张照在的势著是一部分，真正的学习需要更大的实践和思考。"
+        }
+      ]
+    },
+    {
+      "status": "success",
+      "text": "如果汝想快速进步，怎样度毋一惊，小事情做到最好。",
+      "elapsed": 1.9012651443481445,
+      "audio_duration": 8.48,
+      "rtf": 0.22420579532407364,
+      "segments": [
+        {
+          "start": 1.12,
+          "end": 8.46,
+          "text": "如果汝想快速进步，怎样度毋一惊，小事情做到最好。"
+        }
+      ]
+    },
+    {
+      "status": "success",
+      "text": "资本主的知识著是开始，真正的智慧来自于生活中的经历。",
+      "elapsed": 1.4249107837677002,
+      "audio_duration": 8.08,
+      "rtf": 0.17635034452570547,
+      "segments": [
+        {
+          "start": 1.08,
+          "end": 8.06,
+          "text": "资本主的知识著是开始，真正的智慧来自于生活中的经历。"
+        }
+      ]
+    },
+    {
+      "status": "success",
+      "text": "帮我总结ig知识点，并且生成md文档。",
+      "elapsed": 1.9405229091644287,
+      "audio_duration": 8.16,
+      "rtf": 0.23780918004466037,
+      "segments": [
+        {
+          "start": 0.42,
+          "end": 8.14,
+          "text": "帮我总结ig知识点，并且生成md文档。"
+        }
+      ]
+    }
+  ]
+}

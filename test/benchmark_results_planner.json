@@ -1,0 +1,883 @@
+{
+  "benchmark": "planner_intent",
+  "timestamp": "2026-05-09T23:56:49.865288",
+  "mode": "both",
+  "test_cases": 28,
+  "results": {
+    "llm": {
+      "intent_accuracy": 1.0,
+      "keyword_accuracy": 1.0,
+      "avg_latency_ms": 1885.9426123755318,
+      "success_rate": 1.0,
+      "intent_correct": 28,
+      "keyword_correct": 28,
+      "success_count": 28,
+      "total": 28,
+      "category_stats": {
+        "检索": {
+          "total": 4,
+          "intent_correct": 4,
+          "keyword_correct": 4
+        },
+        "ASR纠错": {
+          "total": 4,
+          "intent_correct": 4,
+          "keyword_correct": 4
+        },
+        "创建笔记": {
+          "total": 4,
+          "intent_correct": 4,
+          "keyword_correct": 4
+        },
+        "更新笔记": {
+          "total": 2,
+          "intent_correct": 2,
+          "keyword_correct": 2
+        },
+        "删除笔记": {
+          "total": 2,
+          "intent_correct": 2,
+          "keyword_correct": 2
+        },
+        "列出笔记": {
+          "total": 3,
+          "intent_correct": 3,
+          "keyword_correct": 3
+        },
+        "时间查询": {
+          "total": 3,
+          "intent_correct": 3,
+          "keyword_correct": 3
+        },
+        "摘要": {
+          "total": 2,
+          "intent_correct": 2,
+          "keyword_correct": 2
+        },
+        "创建MD": {
+          "total": 2,
+          "intent_correct": 2,
+          "keyword_correct": 2
+        },
+        "写入MD": {
+          "total": 2,
+          "intent_correct": 2,
+          "keyword_correct": 2
+        }
+      },
+      "details": [
+        {
+          "query": "查找关于AI的笔记",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "AI"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 1842.5960540771484,
+          "reasoning": "用户明确表达检索意图，关键词为'AI'，无语音错误需修正。",
+          "success": true
+        },
+        {
+          "query": "搜索会议记录",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "会议"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 1573.061227798462,
+          "reasoning": "用户明确表达搜索意图，关键词为'会议记录'，无需语音纠错。",
+          "success": true
+        },
+        {
+          "query": "RAG是什么",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "RAG"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 2002.2742748260498,
+          "reasoning": "用户询问RAG的定义，意图为检索知识库中关于RAG的笔记。",
+          "success": true
+        },
+        {
+          "query": "向量数据库有哪些",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "向量数据库"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 1904.8914909362793,
+          "reasoning": "用户查询关于向量数据库的信息，意图为检索知识库。",
+          "success": true
+        },
+        {
+          "query": "帮我查走RAG的词类方式分快",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "RAG",
+            "分块"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 2544.861078262329,
+          "reasoning": "用户输入'查走RAG的词类方式分快'，识别为语音错误：'查走'→'查找'，'词类'→'词语'（但结合上下文应为'分块'），'分快'→'分块'。去除口语化'帮我'，提取核心检索关键词'RAG分块方式'。",
+          "success": true
+        },
+        {
+          "query": "找一下有关向量数据库的笔",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "向量数据库"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 2298.8646030426025,
+          "reasoning": "用户说'找一下有关向量数据库的笔'，其中'笔'是'笔记'的语音识别错误，修正后为'笔记'，意图为搜索知识库。",
+          "success": true
+        },
+        {
+          "query": "看看那个agent开发的坑",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "Agent",
+            "开发"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 2153.8639068603516,
+          "reasoning": "用户查询'看看那个agent开发的坑'，其中'坑'指代问题或陷阱，修正为'踩坑'以符合常见表达，意图为搜索相关笔记。",
+          "success": true
+        },
+        {
+          "query": "帮我查一下深度学习的资聊",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "深度学习"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 2164.5689010620117,
+          "reasoning": "用户说'资聊'，是'资料'的语音错误，修正为'资料'，去除口语化'帮我查一下'，核心检索词为'深度学习'。",
+          "success": true
+        },
+        {
+          "query": "创建笔记标题是测试内容是Hello World",
+          "expected_intent": "create_note",
+          "actual_intent": "create_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "测试",
+            "Hello World"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 1484.7314357757568,
+          "reasoning": "用户明确要求创建笔记，并提供了标题和内容，无需语音纠错。",
+          "success": true
+        },
+        {
+          "query": "新建笔记",
+          "expected_intent": "create_note",
+          "actual_intent": "create_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 1429.837703704834,
+          "reasoning": "用户明确表示'新建笔记'，意图为创建笔记，但未提供标题或内容等参数。",
+          "success": true
+        },
+        {
+          "query": "记录一下今天的会议要点",
+          "expected_intent": "create_note",
+          "actual_intent": "create_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "会议"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 2770.968437194824,
+          "reasoning": "用户说'记录一下今天的会议要点'，意图是创建笔记，提取标题为'会议要点'，内容为'今天的会议要点'，日期为当前日期2026-05-09。",
+          "success": true
+        },
+        {
+          "query": "记一下明天要做的事情",
+          "expected_intent": "create_note",
+          "actual_intent": "create_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 2755.8436393737793,
+          "reasoning": "用户说'记一下'表示创建笔记，'明天要做的事情'是标题和内容，明天是2026-05-10。",
+          "success": true
+        },
+        {
+          "query": "更新笔记ID为5的内容改为新内容",
+          "expected_intent": "update_note",
+          "actual_intent": "update_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "5"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 1959.6824645996094,
+          "reasoning": "用户明确要求更新笔记ID为5的内容，内容为'新内容'，无语音错误需修正。",
+          "success": true
+        },
+        {
+          "query": "修改笔记标题",
+          "expected_intent": "update_note",
+          "actual_intent": "update_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 1961.890459060669,
+          "reasoning": "用户意图是修改笔记，但未提供具体标题或ID，仅提取到'修改笔记标题'这一操作，参数留空。",
+          "success": true
+        },
+        {
+          "query": "删除笔记ID为3",
+          "expected_intent": "delete_note",
+          "actual_intent": "delete_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "3"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 1639.9683952331543,
+          "reasoning": "用户明确要求删除笔记ID为3，无语音错误需要修正。",
+          "success": true
+        },
+        {
+          "query": "删掉这条笔记",
+          "expected_intent": "delete_note",
+          "actual_intent": "delete_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 1434.082269668579,
+          "reasoning": "用户说'删掉这条笔记'，意图是删除笔记，但未指定笔记ID，因此不填充参数。",
+          "success": true
+        },
+        {
+          "query": "列出所有笔记",
+          "expected_intent": "list_notes",
+          "actual_intent": "list_notes",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 1279.3192863464355,
+          "reasoning": "用户明确要求列出所有笔记，无其他参数。",
+          "success": true
+        },
+        {
+          "query": "显示本周的笔记",
+          "expected_intent": "list_notes",
+          "actual_intent": "list_notes",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 2201.871395111084,
+          "reasoning": "用户要求显示本周的笔记，当前日期为2026-05-09（星期六），本周从周一2026-05-04开始，到周六2026-05-09结束。",
+          "success": true
+        },
+        {
+          "query": "笔记列表",
+          "expected_intent": "list_notes",
+          "actual_intent": "list_notes",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 1167.935848236084,
+          "reasoning": "用户明确要求列出笔记，无额外参数。",
+          "success": true
+        },
+        {
+          "query": "现在几点",
+          "expected_intent": "time_query",
+          "actual_intent": "time_query",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 1263.6146545410156,
+          "reasoning": "用户意图是查询当前时间或日期。",
+          "success": true
+        },
+        {
+          "query": "今天星期几",
+          "expected_intent": "time_query",
+          "actual_intent": "time_query",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 1520.8542346954346,
+          "reasoning": "用户意图是查询当前时间或日期。",
+          "success": true
+        },
+        {
+          "query": "今天日期是多少",
+          "expected_intent": "time_query",
+          "actual_intent": "time_query",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 1239.0358448028564,
+          "reasoning": "用户意图是查询当前时间或日期。",
+          "success": true
+        },
+        {
+          "query": "总结关于项目的讨论",
+          "expected_intent": "summarize",
+          "actual_intent": "summarize",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "项目"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 1927.3505210876465,
+          "reasoning": "用户明确要求总结，关键词为'项目讨论'，无语音错误需修正。",
+          "success": true
+        },
+        {
+          "query": "概括一下AI相关内容",
+          "expected_intent": "summarize",
+          "actual_intent": "summarize",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "AI"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 1739.748477935791,
+          "reasoning": "用户明确要求概括AI相关内容，意图为摘要总结。",
+          "success": true
+        },
+        {
+          "query": "创建一个md文件名叫会议记录",
+          "expected_intent": "create_md",
+          "actual_intent": "create_md",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "会议记录"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 1743.3230876922607,
+          "reasoning": "用户明确要求创建md文件，文件名'会议记录'，无语音错误需修正。",
+          "success": true
+        },
+        {
+          "query": "新建笔记文件",
+          "expected_intent": "create_md",
+          "actual_intent": "create_md",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 1779.3011665344238,
+          "reasoning": "用户说'新建笔记文件'，意图是创建MD文件，但未指定文件名，使用默认名称'新建笔记'。",
+          "success": true
+        },
+        {
+          "query": "把这段话写进会议记录文件",
+          "expected_intent": "write_md",
+          "actual_intent": "write_md",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "会议记录"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 2600.8872985839844,
+          "reasoning": "用户要求将内容写入文件，意图为write_md。'会议记录文件'被解析为文件名'会议记录.md'，未指定模式，默认追加。",
+          "success": true
+        },
+        {
+          "query": "写入笔记文件内容是今天的会议要点",
+          "expected_intent": "write_md",
+          "actual_intent": "write_md",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "会议要点"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 2421.1649894714355,
+          "reasoning": "用户意图是写入MD文件，内容为'今天的会议要点'，但未指定文件名，根据常见用法推测为'笔记文件'。",
+          "success": true
+        }
+      ]
+    },
+    "rules": {
+      "intent_accuracy": 1.0,
+      "keyword_accuracy": 0.9642857142857143,
+      "avg_latency_ms": 0.2261229923793248,
+      "success_rate": 1.0,
+      "intent_correct": 28,
+      "keyword_correct": 27,
+      "success_count": 28,
+      "total": 28,
+      "category_stats": {
+        "检索": {
+          "total": 4,
+          "intent_correct": 4,
+          "keyword_correct": 4
+        },
+        "ASR纠错": {
+          "total": 4,
+          "intent_correct": 4,
+          "keyword_correct": 3
+        },
+        "创建笔记": {
+          "total": 4,
+          "intent_correct": 4,
+          "keyword_correct": 4
+        },
+        "更新笔记": {
+          "total": 2,
+          "intent_correct": 2,
+          "keyword_correct": 2
+        },
+        "删除笔记": {
+          "total": 2,
+          "intent_correct": 2,
+          "keyword_correct": 2
+        },
+        "列出笔记": {
+          "total": 3,
+          "intent_correct": 3,
+          "keyword_correct": 3
+        },
+        "时间查询": {
+          "total": 3,
+          "intent_correct": 3,
+          "keyword_correct": 3
+        },
+        "摘要": {
+          "total": 2,
+          "intent_correct": 2,
+          "keyword_correct": 2
+        },
+        "创建MD": {
+          "total": 2,
+          "intent_correct": 2,
+          "keyword_correct": 2
+        },
+        "写入MD": {
+          "total": 2,
+          "intent_correct": 2,
+          "keyword_correct": 2
+        }
+      },
+      "details": [
+        {
+          "query": "查找关于AI的笔记",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "AI"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 1.9979476928710938,
+          "reasoning": "用户查询'查找关于AI的笔记'被识别为检索意图。",
+          "success": true
+        },
+        {
+          "query": "搜索会议记录",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "会议"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户查询'搜索会议记录'被识别为检索意图。",
+          "success": true
+        },
+        {
+          "query": "RAG是什么",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "RAG"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户查询'RAG是什么'被识别为检索意图。",
+          "success": true
+        },
+        {
+          "query": "向量数据库有哪些",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "向量数据库"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户查询'向量数据库有哪些'被识别为检索意图。",
+          "success": true
+        },
+        {
+          "query": "帮我查走RAG的词类方式分快",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": false,
+          "matched_keywords": [
+            "RAG"
+          ],
+          "missing_keywords": [
+            "分块"
+          ],
+          "latency_ms": 1.3277530670166016,
+          "reasoning": "用户查询'帮我查走RAG的词类方式分快'被识别为检索意图。",
+          "success": true
+        },
+        {
+          "query": "找一下有关向量数据库的笔",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "向量数据库"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户查询'找一下有关向量数据库的笔'被识别为检索意图。",
+          "success": true
+        },
+        {
+          "query": "看看那个agent开发的坑",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "Agent",
+            "开发"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户查询'看看那个agent开发的坑'被识别为检索意图。",
+          "success": true
+        },
+        {
+          "query": "帮我查一下深度学习的资聊",
+          "expected_intent": "search",
+          "actual_intent": "search",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "深度学习"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户查询'帮我查一下深度学习的资聊'被识别为检索意图。",
+          "success": true
+        },
+        {
+          "query": "创建笔记标题是测试内容是Hello World",
+          "expected_intent": "create_note",
+          "actual_intent": "create_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "测试",
+            "Hello World"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 1.009225845336914,
+          "reasoning": "用户意图是创建新笔记，标题为'测试内容是Hello World'。",
+          "success": true
+        },
+        {
+          "query": "新建笔记",
+          "expected_intent": "create_note",
+          "actual_intent": "create_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是创建新笔记，标题为'新建笔记'。",
+          "success": true
+        },
+        {
+          "query": "记录一下今天的会议要点",
+          "expected_intent": "create_note",
+          "actual_intent": "create_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "会议"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是创建新笔记，标题为'记录一下今天的会议要点'。",
+          "success": true
+        },
+        {
+          "query": "记一下明天要做的事情",
+          "expected_intent": "create_note",
+          "actual_intent": "create_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是创建新笔记，标题为'记一下明天要做的事情'。",
+          "success": true
+        },
+        {
+          "query": "更新笔记ID为5的内容改为新内容",
+          "expected_intent": "update_note",
+          "actual_intent": "update_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "5"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.9982585906982422,
+          "reasoning": "用户意图是更新笔记 ID=5。",
+          "success": true
+        },
+        {
+          "query": "修改笔记标题",
+          "expected_intent": "update_note",
+          "actual_intent": "update_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是更新笔记 ID=0。",
+          "success": true
+        },
+        {
+          "query": "删除笔记ID为3",
+          "expected_intent": "delete_note",
+          "actual_intent": "delete_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "3"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是删除笔记。",
+          "success": true
+        },
+        {
+          "query": "删掉这条笔记",
+          "expected_intent": "delete_note",
+          "actual_intent": "delete_note",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是删除笔记。",
+          "success": true
+        },
+        {
+          "query": "列出所有笔记",
+          "expected_intent": "list_notes",
+          "actual_intent": "list_notes",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是列出笔记。",
+          "success": true
+        },
+        {
+          "query": "显示本周的笔记",
+          "expected_intent": "list_notes",
+          "actual_intent": "list_notes",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是列出笔记。",
+          "success": true
+        },
+        {
+          "query": "笔记列表",
+          "expected_intent": "list_notes",
+          "actual_intent": "list_notes",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是列出笔记。",
+          "success": true
+        },
+        {
+          "query": "现在几点",
+          "expected_intent": "time_query",
+          "actual_intent": "time_query",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是查询当前时间或日期。",
+          "success": true
+        },
+        {
+          "query": "今天星期几",
+          "expected_intent": "time_query",
+          "actual_intent": "time_query",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是查询当前时间或日期。",
+          "success": true
+        },
+        {
+          "query": "今天日期是多少",
+          "expected_intent": "time_query",
+          "actual_intent": "time_query",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是查询当前时间或日期。",
+          "success": true
+        },
+        {
+          "query": "总结关于项目的讨论",
+          "expected_intent": "summarize",
+          "actual_intent": "summarize",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "项目"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是总结'关于项目的讨论'相关内容。",
+          "success": true
+        },
+        {
+          "query": "概括一下AI相关内容",
+          "expected_intent": "summarize",
+          "actual_intent": "summarize",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "AI"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是总结'一下AI相关内容'相关内容。",
+          "success": true
+        },
+        {
+          "query": "创建一个md文件名叫会议记录",
+          "expected_intent": "create_md",
+          "actual_intent": "create_md",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "会议记录"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.9982585906982422,
+          "reasoning": "用户意图是创建MD文件。",
+          "success": true
+        },
+        {
+          "query": "新建笔记文件",
+          "expected_intent": "create_md",
+          "actual_intent": "create_md",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是创建MD文件。",
+          "success": true
+        },
+        {
+          "query": "把这段话写进会议记录文件",
+          "expected_intent": "write_md",
+          "actual_intent": "write_md",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "会议记录"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是写入MD文件。",
+          "success": true
+        },
+        {
+          "query": "写入笔记文件内容是今天的会议要点",
+          "expected_intent": "write_md",
+          "actual_intent": "write_md",
+          "intent_match": true,
+          "keyword_match": true,
+          "matched_keywords": [
+            "会议要点"
+          ],
+          "missing_keywords": [],
+          "latency_ms": 0.0,
+          "reasoning": "用户意图是写入MD文件。",
+          "success": true
+        }
+      ]
+    }
+  }
+}

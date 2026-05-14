@@ -1,0 +1,433 @@
+{
+  "benchmark": "cleaning",
+  "timestamp": "2026-05-09T23:00:41.788720",
+  "summary": {
+    "total_samples": 5,
+    "total_noise_before": 31,
+    "total_noise_after": 0,
+    "noise_reduction_rate": 1.0,
+    "avg_header_aligned_improvement": 0.0
+  },
+  "per_sample": {
+    "PDF页码噪声": {
+      "original_size": 253,
+      "cleaned_size": 207,
+      "cleaning_effect": {
+        "before_stats": {
+          "page_numbers": 6,
+          "control_chars": 0,
+          "skipped_headers": 0,
+          "excessive_blank_lines": 0,
+          "trailing_spaces": 0,
+          "repeated_short_lines": 0,
+          "total_lines": 37,
+          "total_chars": 253
+        },
+        "after_stats": {
+          "page_numbers": 0,
+          "control_chars": 0,
+          "skipped_headers": 0,
+          "excessive_blank_lines": 0,
+          "trailing_spaces": 0,
+          "repeated_short_lines": 0,
+          "total_lines": 23,
+          "total_chars": 207
+        },
+        "char_reduction": 46,
+        "line_reduction": 14,
+        "improvements": {
+          "page_numbers": {
+            "before": 6,
+            "after": 0,
+            "removed": 6,
+            "removal_rate": 1.0
+          },
+          "control_chars": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "skipped_headers": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "excessive_blank_lines": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "trailing_spaces": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "repeated_short_lines": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          }
+        }
+      },
+      "chunk_impact": {
+        "before": {
+          "count": 6,
+          "avg_size": 40.166666666666664,
+          "max_size": 76,
+          "header_aligned": 6,
+          "header_aligned_ratio": 1.0
+        },
+        "after": {
+          "count": 6,
+          "avg_size": 32.833333333333336,
+          "max_size": 62,
+          "header_aligned": 6,
+          "header_aligned_ratio": 1.0
+        },
+        "chunk_count_change": 0,
+        "header_aligned_improvement": 0.0
+      }
+    },
+    "控制字符+标题跳级": {
+      "original_size": 160,
+      "cleaned_size": 148,
+      "cleaning_effect": {
+        "before_stats": {
+          "page_numbers": 0,
+          "control_chars": 6,
+          "skipped_headers": 2,
+          "excessive_blank_lines": 0,
+          "trailing_spaces": 1,
+          "repeated_short_lines": 0,
+          "total_lines": 20,
+          "total_chars": 160
+        },
+        "after_stats": {
+          "page_numbers": 0,
+          "control_chars": 0,
+          "skipped_headers": 0,
+          "excessive_blank_lines": 0,
+          "trailing_spaces": 0,
+          "repeated_short_lines": 0,
+          "total_lines": 18,
+          "total_chars": 148
+        },
+        "char_reduction": 12,
+        "line_reduction": 2,
+        "improvements": {
+          "page_numbers": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "control_chars": {
+            "before": 6,
+            "after": 0,
+            "removed": 6,
+            "removal_rate": 1.0
+          },
+          "skipped_headers": {
+            "before": 2,
+            "after": 0,
+            "removed": 2,
+            "removal_rate": 1.0
+          },
+          "excessive_blank_lines": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "trailing_spaces": {
+            "before": 1,
+            "after": 0,
+            "removed": 1,
+            "removal_rate": 1.0
+          },
+          "repeated_short_lines": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          }
+        }
+      },
+      "chunk_impact": {
+        "before": {
+          "count": 5,
+          "avg_size": 29.6,
+          "max_size": 38,
+          "header_aligned": 5,
+          "header_aligned_ratio": 1.0
+        },
+        "after": {
+          "count": 5,
+          "avg_size": 28.0,
+          "max_size": 35,
+          "header_aligned": 5,
+          "header_aligned_ratio": 1.0
+        },
+        "chunk_count_change": 0,
+        "header_aligned_improvement": 0.0
+      }
+    },
+    "重复页眉+多余空行": {
+      "original_size": 145,
+      "cleaned_size": 105,
+      "cleaning_effect": {
+        "before_stats": {
+          "page_numbers": 0,
+          "control_chars": 0,
+          "skipped_headers": 0,
+          "excessive_blank_lines": 2,
+          "trailing_spaces": 0,
+          "repeated_short_lines": 4,
+          "total_lines": 35,
+          "total_chars": 145
+        },
+        "after_stats": {
+          "page_numbers": 0,
+          "control_chars": 0,
+          "skipped_headers": 0,
+          "excessive_blank_lines": 0,
+          "trailing_spaces": 0,
+          "repeated_short_lines": 0,
+          "total_lines": 15,
+          "total_chars": 105
+        },
+        "char_reduction": 40,
+        "line_reduction": 20,
+        "improvements": {
+          "page_numbers": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "control_chars": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "skipped_headers": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "excessive_blank_lines": {
+            "before": 2,
+            "after": 0,
+            "removed": 2,
+            "removal_rate": 1.0
+          },
+          "trailing_spaces": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "repeated_short_lines": {
+            "before": 4,
+            "after": 0,
+            "removed": 4,
+            "removal_rate": 1.0
+          }
+        }
+      },
+      "chunk_impact": {
+        "before": {
+          "count": 4,
+          "avg_size": 34.25,
+          "max_size": 37,
+          "header_aligned": 4,
+          "header_aligned_ratio": 1.0
+        },
+        "after": {
+          "count": 4,
+          "avg_size": 24.75,
+          "max_size": 27,
+          "header_aligned": 4,
+          "header_aligned_ratio": 1.0
+        },
+        "chunk_count_change": 0,
+        "header_aligned_improvement": 0.0
+      }
+    },
+    "混合噪声": {
+      "original_size": 365,
+      "cleaned_size": 325,
+      "cleaning_effect": {
+        "before_stats": {
+          "page_numbers": 5,
+          "control_chars": 1,
+          "skipped_headers": 1,
+          "excessive_blank_lines": 0,
+          "trailing_spaces": 0,
+          "repeated_short_lines": 0,
+          "total_lines": 51,
+          "total_chars": 365
+        },
+        "after_stats": {
+          "page_numbers": 0,
+          "control_chars": 0,
+          "skipped_headers": 0,
+          "excessive_blank_lines": 0,
+          "trailing_spaces": 0,
+          "repeated_short_lines": 0,
+          "total_lines": 39,
+          "total_chars": 325
+        },
+        "char_reduction": 40,
+        "line_reduction": 12,
+        "improvements": {
+          "page_numbers": {
+            "before": 5,
+            "after": 0,
+            "removed": 5,
+            "removal_rate": 1.0
+          },
+          "control_chars": {
+            "before": 1,
+            "after": 0,
+            "removed": 1,
+            "removal_rate": 1.0
+          },
+          "skipped_headers": {
+            "before": 1,
+            "after": 0,
+            "removed": 1,
+            "removal_rate": 1.0
+          },
+          "excessive_blank_lines": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "trailing_spaces": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "repeated_short_lines": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          }
+        }
+      },
+      "chunk_impact": {
+        "before": {
+          "count": 10,
+          "avg_size": 34.5,
+          "max_size": 53,
+          "header_aligned": 10,
+          "header_aligned_ratio": 1.0
+        },
+        "after": {
+          "count": 10,
+          "avg_size": 30.7,
+          "max_size": 46,
+          "header_aligned": 10,
+          "header_aligned_ratio": 1.0
+        },
+        "chunk_count_change": 0,
+        "header_aligned_improvement": 0.0
+      }
+    },
+    "行尾空格+控制字符": {
+      "original_size": 170,
+      "cleaned_size": 157,
+      "cleaning_effect": {
+        "before_stats": {
+          "page_numbers": 0,
+          "control_chars": 5,
+          "skipped_headers": 0,
+          "excessive_blank_lines": 0,
+          "trailing_spaces": 2,
+          "repeated_short_lines": 0,
+          "total_lines": 20,
+          "total_chars": 170
+        },
+        "after_stats": {
+          "page_numbers": 0,
+          "control_chars": 0,
+          "skipped_headers": 0,
+          "excessive_blank_lines": 0,
+          "trailing_spaces": 0,
+          "repeated_short_lines": 0,
+          "total_lines": 18,
+          "total_chars": 157
+        },
+        "char_reduction": 13,
+        "line_reduction": 2,
+        "improvements": {
+          "page_numbers": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "control_chars": {
+            "before": 5,
+            "after": 0,
+            "removed": 5,
+            "removal_rate": 1.0
+          },
+          "skipped_headers": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "excessive_blank_lines": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          },
+          "trailing_spaces": {
+            "before": 2,
+            "after": 0,
+            "removed": 2,
+            "removal_rate": 1.0
+          },
+          "repeated_short_lines": {
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removal_rate": 0
+          }
+        }
+      },
+      "chunk_impact": {
+        "before": {
+          "count": 4,
+          "avg_size": 40.5,
+          "max_size": 57,
+          "header_aligned": 4,
+          "header_aligned_ratio": 1.0
+        },
+        "after": {
+          "count": 4,
+          "avg_size": 37.75,
+          "max_size": 57,
+          "header_aligned": 4,
+          "header_aligned_ratio": 1.0
+        },
+        "chunk_count_change": 0,
+        "header_aligned_improvement": 0.0
+      }
+    }
+  }
+}

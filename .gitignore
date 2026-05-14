@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 环境变量（含密钥）
+.env
+.env.local
+.env.*.local
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 数据目录（数据库、上传文件、向量库、日志）
+data/database/
+data/uploads/
+data/chroma_db/
+data/logs/
+data/docs/
+data/notes/
+
+# 模型文件
+*.bin
+*.onnx
+*.pt
+*.pth
+*.safetensors
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 测试
+.pytest_cache/
+htmlcov/
+.coverage

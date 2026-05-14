@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智语 - 语音交互</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- 顶部导航 -->
+    <nav class="navbar">
+        <h1>智语 - 语音交互</h1>
+        <a href="docs.html">文档管理 →</a>
+    </nav>
+
+    <div class="container">
+        <!-- 语音输入区 -->
+        <div class="card">
+            <div class="card-title">语音输入</div>
+            <div class="btn-group">
+                <button id="btnRecord" class="btn btn-primary" onclick="toggleRecord()">
+                    开始录音
+                </button>
+                <button id="btnStop" class="btn btn-outline" onclick="stopRecord()" disabled>
+                    停止录音
+                </button>
+                <label class="btn btn-outline">
+                    上传音频
+                    <input type="file" id="audioFile" accept=".wav,.mp3,.flac,.ogg" onchange="handleFileUpload(this)" hidden>
+                </label>
+                <button id="btnTranscribe" class="btn btn-success" onclick="transcribe()" disabled>
+                    转录
+                </button>
+                <select id="asrProvider" class="btn btn-outline" style="min-width: 180px; cursor: pointer;">
+                    <option value="">加载中...</option>
+                </select>
+            </div>
+            <div class="status">
+                <span id="statusDot" class="status-dot"></span>
+                <span id="statusText">就绪</span>
+            </div>
+        </div>
+
+        <!-- 转录区 -->
+        <div class="card">
+            <div class="card-title">转录文本（可编辑）</div>
+            <textarea id="transcriptText" placeholder="转录结果将显示在这里，您可以手动编辑..."></textarea>
+            <div style="margin-top: 12px;">
+                <button class="btn btn-primary" onclick="sendToAI()">发送给 AI</button>
+            </div>
+        </div>
+
+        <!-- 结果回应区 -->
+        <div class="card">
+            <div class="card-title">AI 处理结果</div>
+            <div id="resultArea" class="result-area">
+                等待发送...
+            </div>
+        </div>
+    </div>
+
+    <!-- 提示消息 -->
+    <div id="toast" class="toast" style="display: none;"></div>
+
+    <script>
+        const API_BASE = 'http://localhost:8337';
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let currentAudioId = null;
+        let sessionId = 'session_' + Date.now();
+
+        // 录音功能
+        async function toggleRecord() {
+            const btn = document.getElementById('btnRecord');
+            const btnStop = document.getElementById('btnStop');
+
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                stopRecord();
+                return;
+            }
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (e) => {
+                    audioChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    uploadAudio(audioBlob, 'recording.webm');
+                    stream.getTracks().forEach(track => track.stop());
+                };
+
+                mediaRecorder.start();
+                btn.textContent = '录音中...';
+                btn.disabled = true;
+                btnStop.disabled = false;
+                updateStatus('recording', '录音中...');
+
+            } catch (err) {
+                showToast('无法访问麦克风: ' + err.message, 'error');
+            }
+        }
+
+        function stopRecord() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                document.getElementById('btnRecord').textContent = '开始录音';
+                document.getElementById('btnRecord').disabled = false;
+                document.getElementById('btnStop').disabled = true;
+            }
+        }
+
+        // 文件上传
+        function handleFileUpload(input) {
+            const file = input.files[0];
+            if (file) {
+                uploadAudio(file, file.name);
+            }
+        }
+
+        // 上传音频到服务器
+        async function uploadAudio(blob, filename) {
+            updateStatus('active', '上传中...');
+            const formData = new FormData();
+            formData.append('file', blob, filename);
+
+            try {
+                const res = await fetch(`${API_BASE}/audio/upload/`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const text = await res.text();
+                let data;
+                try {
+                    data = JSON.parse(text);
+                } catch {
+                    data = null;
+                }
+
+                if (res.ok && data) {
+                    currentAudioId = data.audio_id;
+                    document.getElementById('btnTranscribe').disabled = false;
+                    updateStatus('active', `已上传: ${filename}`);
+                    showToast('音频上传成功', 'success');
+                } else {
+                    // 显示完整错误信息
+                    const errMsg = data?.detail || text || `HTTP ${res.status}`;
+                    document.getElementById('transcriptText').value = `[上传错误] ${errMsg}`;
+                    updateStatus('', '上传失败');
+                    showToast('上传失败，详见转录区错误信息', 'error');
+                }
+            } catch (err) {
+                document.getElementById('transcriptText').value = `[上传异常] ${err.message}\n\n可能原因:\n1. 服务器未启动\n2. 网络连接问题\n3. 文件格式不支持`;
+                updateStatus('', '上传失败');
+                showToast('上传失败，详见转录区错误信息', 'error');
+            }
+        }
+
+        // 加载可用的 ASR 引擎列表
+        async function loadASRProviders() {
+            try {
+                const res = await fetch(`${API_BASE}/audio/asr-providers`);
+                const data = await res.json();
+                const select = document.getElementById('asrProvider');
+                select.innerHTML = '';
+
+                data.providers.forEach(p => {
+                    const opt = document.createElement('option');
+                    opt.value = p.id;
+                    opt.textContent = p.name + (p.available ? '' : ' (未配置)');
+                    opt.disabled = !p.available;
+                    if (p.id === data.default) opt.selected = true;
+                    select.appendChild(opt);
+                });
+            } catch (err) {
+                console.warn('加载 ASR 引擎列表失败:', err);
+                const select = document.getElementById('asrProvider');
+                select.innerHTML = '<option value="whisper">本地 Whisper</option>';
+            }
+        }
+
+        // 页面加载时获取 ASR 引擎列表
+        loadASRProviders();
+
+        // 转录音频
+        async function transcribe() {
+            if (!currentAudioId) return;
+
+            const provider = document.getElementById('asrProvider').value;
+            updateStatus('active', '转录中...');
+            document.getElementById('btnTranscribe').disabled = true;
+            document.getElementById('transcriptText').value = '正在转录中，请稍候...';
+
+            try {
+                const url = new URL(`${API_BASE}/audio/transcribe/${currentAudioId}`);
+                if (provider) url.searchParams.set('provider', provider);
+                const res = await fetch(url.toString(), {
+                    method: 'POST'
+                });
+                const text = await res.text();
+                let data;
+                try {
+                    data = JSON.parse(text);
+                } catch {
+                    data = null;
+                }
+
+                if (res.ok && data) {
+                    document.getElementById('transcriptText').value = data.transcription;
+                    updateStatus('active', `转录完成 (${data.transcribe_time?.toFixed(2) || '-'}秒)`);
+                    showToast('转录完成', 'success');
+                } else {
+                    // 显示完整错误信息
+                    const errMsg = data?.detail || text || `HTTP ${res.status}`;
+                    document.getElementById('transcriptText').value = `[转录错误] ${errMsg}`;
+                    updateStatus('', '转录失败');
+                    showToast('转录失败，详见转录区错误信息', 'error');
+                }
+            } catch (err) {
+                document.getElementById('transcriptText').value = `[转录异常] ${err.message}\n\n可能原因:\n1. 本地 Whisper 模型加载失败\n2. 百炼 API Key 未配置或无效\n3. 音频文件损坏\n4. 服务器内部错误\n\n请查看服务器终端获取详细日志`;
+                updateStatus('', '转录失败');
+                showToast('转录失败，详见转录区错误信息', 'error');
+            } finally {
+                document.getElementById('btnTranscribe').disabled = false;
+            }
+        }
+
+        // 发送给 AI 处理
+        async function sendToAI() {
+            const text = document.getElementById('transcriptText').value.trim();
+            if (!text) {
+                showToast('请先输入或转录文本', 'error');
+                return;
+            }
+
+            const resultArea = document.getElementById('resultArea');
+            resultArea.innerHTML = '<span class="loading"></span> AI 处理中...';
+
+            try {
+                const res = await fetch(`${API_BASE}/agent/chat/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query: text,
+                        session_id: sessionId
+                    })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    resultArea.textContent = data.response;
+                    showToast('处理完成', 'success');
+                } else {
+                    throw new Error(data.detail || '处理失败');
+                }
+            } catch (err) {
+                resultArea.textContent = '处理失败: ' + err.message;
+                showToast('AI 处理失败', 'error');
+            }
+        }
+
+        // 更新状态
+        updateStatus('', '就绪');
+        function updateStatus(type, text) {
+            const dot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            dot.className = 'status-dot' + (type ? ` ${type}` : '');
+            statusText.textContent = text;
+        }
+
+        // 显示提示
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = `toast toast-${type}`;
+            toast.style.display = 'block';
+            setTimeout(() => {
+                toast.style.display = 'none';
+            }, 3000);
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智语 - 文档管理</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- 顶部导航 -->
+    <nav class="navbar">
+        <h1>智语 - 文档管理</h1>
+        <a href="index.html">← 语音交互</a>
+    </nav>
+
+    <div class="container">
+        <!-- MD文档上传区 -->
+        <div class="card">
+            <div class="card-title">上传文档</div>
+            <div class="upload-area" onclick="document.getElementById('mdFile').click()">
+                <input type="file" id="mdFile" accept=".md,.txt,.pdf,.docx" onchange="handleUpload(this)">
+                <p style="color: var(--text-secondary);">点击选择文件（支持 .md、.txt、.pdf、.docx，PDF/Word 会自动转为 Markdown）</p>
+            </div>
+        </div>
+
+        <div class="grid-2">
+            <!-- 文档存储区 -->
+            <div class="card">
+                <div class="card-title">文档列表</div>
+                <ul id="docList" class="doc-list">
+                    <li class="doc-item">
+                        <span style="color: var(--text-secondary);">加载中...</span>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- 文档预览区 -->
+            <div class="card">
+                <div class="card-title">文档预览</div>
+                <div id="docPreview" class="result-area" style="min-height: 300px;">
+                    点击文档查看内容...
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 提示消息 -->
+    <div id="toast" class="toast" style="display: none;"></div>
+
+    <script>
+        const API_BASE = 'http://localhost:8337';
+
+        // 页面加载时获取文档列表
+        window.onload = function() {
+            loadDocList();
+        };
+
+        // 加载文档列表
+        async function loadDocList() {
+            try {
+                const res = await fetch(`${API_BASE}/api/documents/list`);
+                const data = await res.json();
+
+                const docList = document.getElementById('docList');
+                if (data.files && data.files.length > 0) {
+                    docList.innerHTML = data.files.map(file => `
+                        <li class="doc-item">
+                            <div>
+                                <div class="doc-name">📄 ${file.name}</div>
+                                <div class="doc-date">${file.date || ''}</div>
+                            </div>
+                            <div class="doc-actions">
+                                <button class="btn btn-outline" onclick="viewDoc('${file.name}')">查看</button>
+                                <button class="btn btn-danger" onclick="deleteDoc('${file.name}')">删除</button>
+                            </div>
+                        </li>
+                    `).join('');
+                } else {
+                    docList.innerHTML = '<li class="doc-item"><span style="color: var(--text-secondary);">暂无文档</span></li>';
+                }
+            } catch (err) {
+                console.error('加载文档列表失败:', err);
+            }
+        }
+
+        // 上传文档
+        async function handleUpload(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const res = await fetch(`${API_BASE}/api/documents/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    showToast(data.message || '上传成功', 'success');
+                    loadDocList();
+                    input.value = '';
+                } else {
+                    throw new Error(data.detail || '上传失败');
+                }
+            } catch (err) {
+                showToast('上传失败: ' + err.message, 'error');
+            }
+        }
+
+        // 查看文档
+        async function viewDoc(filename) {
+            try {
+                const res = await fetch(`${API_BASE}/api/documents/view/${filename}`);
+                const data = await res.json();
+
+                if (res.ok) {
+                    document.getElementById('docPreview').textContent = data.content;
+                } else {
+                    throw new Error(data.detail || '加载失败');
+                }
+            } catch (err) {
+                document.getElementById('docPreview').textContent = '加载失败: ' + err.message;
+            }
+        }
+
+        // 删除文档
+        async function deleteDoc(filename) {
+            if (!confirm(`确定删除 ${filename}？`)) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/api/documents/delete/${filename}`, {
+                    method: 'DELETE'
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    showToast('删除成功', 'success');
+                    loadDocList();
+                    document.getElementById('docPreview').textContent = '点击文档查看内容...';
+                } else {
+                    throw new Error(data.detail || '删除失败');
+                }
+            } catch (err) {
+                showToast('删除失败: ' + err.message, 'error');
+            }
+        }
+
+        // 显示提示
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = `toast toast-${type}`;
+            toast.style.display = 'block';
+            setTimeout(() => {
+                toast.style.display = 'none';
+            }, 3000);
+        }
+    </script>
+</body>
+</html>

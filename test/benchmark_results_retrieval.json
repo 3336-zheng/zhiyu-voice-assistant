@@ -1,0 +1,890 @@
+{
+  "benchmark": "retrieval",
+  "timestamp": "2026-05-09T23:14:47.216204",
+  "top_k": 5,
+  "test_cases": 12,
+  "methods": {
+    "BM25": {
+      "method": "BM25",
+      "hit_rate": 1.0,
+      "avg_precision": 0.7833333333333332,
+      "avg_recall": 0.9583333333333334,
+      "avg_latency_ms": 6.9121519724528,
+      "total_latency_ms": 82.9458236694336,
+      "hits": 12,
+      "total": 12
+    },
+    "Embedding": {
+      "method": "Embedding",
+      "hit_rate": 1.0,
+      "avg_precision": 0.6666666666666666,
+      "avg_recall": 0.9166666666666666,
+      "avg_latency_ms": 56.343913078308105,
+      "total_latency_ms": 676.1269569396973,
+      "hits": 12,
+      "total": 12
+    },
+    "Hybrid (RRF)": {
+      "method": "Hybrid (RRF)",
+      "hit_rate": 1.0,
+      "avg_precision": 0.8166666666666665,
+      "avg_recall": 1.0,
+      "avg_latency_ms": 19.449830055236816,
+      "total_latency_ms": 233.3979606628418,
+      "hits": 12,
+      "total": 12
+    },
+    "Hybrid+Reranker": {
+      "method": "Hybrid+Reranker",
+      "hit_rate": 1.0,
+      "avg_precision": 0.8500000000000001,
+      "avg_recall": 1.0,
+      "avg_latency_ms": 22861.03743314743,
+      "total_latency_ms": 274332.44919776917,
+      "hits": 12,
+      "total": 12
+    }
+  },
+  "category_analysis": {
+    "关键词匹配": {
+      "BM25": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 22.02582359313965,
+        "count": 3
+      },
+      "Embedding": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 144.87560590108237,
+        "count": 3
+      },
+      "Hybrid (RRF)": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 18.338123957316082,
+        "count": 3
+      },
+      "Hybrid+Reranker": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 23318.87952486674,
+        "count": 3
+      }
+    },
+    "精确术语": {
+      "BM25": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 1.0037422180175781,
+        "count": 2
+      },
+      "Embedding": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 26.04961395263672,
+        "count": 2
+      },
+      "Hybrid (RRF)": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 20.213723182678223,
+        "count": 2
+      },
+      "Hybrid+Reranker": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 29388.314723968506,
+        "count": 2
+      }
+    },
+    "混合难度": {
+      "BM25": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 1.654505729675293,
+        "count": 2
+      },
+      "Embedding": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 21.327853202819824,
+        "count": 2
+      },
+      "Hybrid (RRF)": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 20.662665367126465,
+        "count": 2
+      },
+      "Hybrid+Reranker": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 29363.670468330383,
+        "count": 2
+      }
+    },
+    "语义理解": {
+      "BM25": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 2.6728312174479165,
+        "count": 3
+      },
+      "Embedding": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 30.197302500406902,
+        "count": 3
+      },
+      "Hybrid (RRF)": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 16.68071746826172,
+        "count": 3
+      },
+      "Hybrid+Reranker": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 16921.3383992513,
+        "count": 3
+      }
+    },
+    "跨文档": {
+      "BM25": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 1.7666816711425781,
+        "count": 2
+      },
+      "Embedding": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 28.076648712158203,
+        "count": 2
+      },
+      "Hybrid (RRF)": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 23.29432964324951,
+        "count": 2
+      },
+      "Hybrid+Reranker": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 18053.91252040863,
+        "count": 2
+      }
+    }
+  },
+  "details": {
+    "BM25": [
+      {
+        "query": "BM25分词和倒排索引的原理",
+        "category": "关键词匹配",
+        "hit": true,
+        "hit_count": 4,
+        "returned_count": 5,
+        "precision": 0.8,
+        "recall": 1.0,
+        "latency_ms": 62.059879302978516,
+        "top3_ids": [
+          "doc_RAG面试问题汇总_79",
+          "doc_RAG面试问题汇总_13",
+          "doc_基于《all-in-rag》的RAG核心知识点_21"
+        ]
+      },
+      {
+        "query": "ChromaDB向量数据库配置和持久化",
+        "category": "关键词匹配",
+        "hit": true,
+        "hit_count": 4,
+        "returned_count": 5,
+        "precision": 0.8,
+        "recall": 1.0,
+        "latency_ms": 2.9816627502441406,
+        "top3_ids": [
+          "doc_RAG面试问题汇总_14",
+          "doc_基于《hello-agent》的核心知识点_33",
+          "doc_Agent面试核心知识点汇总_7"
+        ]
+      },
+      {
+        "query": "ReAct框架的思考行动观察循环",
+        "category": "关键词匹配",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 1.035928726196289,
+        "top3_ids": [
+          "doc_Agent面试核心知识点汇总_2",
+          "doc_Agent面试核心知识点汇总_3",
+          "doc_基于《hello-agent》的核心知识点_2"
+        ]
+      },
+      {
+        "query": "如何让大模型减少胡说八道的问题",
+        "category": "语义理解",
+        "hit": true,
+        "hit_count": 4,
+        "returned_count": 5,
+        "precision": 0.8,
+        "recall": 1.0,
+        "latency_ms": 3.0198097229003906,
+        "top3_ids": [
+          "doc_RAG面试问题汇总_58",
+          "doc_RAG面试问题汇总_9",
+          "doc_RAG面试问题汇总_6"
+        ]
+      },
+      {
+        "query": "怎样把很长的文章切分成小段来搜索",
+        "category": "语义理解",
+        "hit": true,
+        "hit_count": 2,
+        "returned_count": 5,
+        "precision": 0.4,
+        "recall": 1.0,
+        "latency_ms": 3.0088424682617188,
+        "top3_ids": [
+          "doc_基于《all-in-rag》的RAG核心知识点_11",
+          "doc_Agent应用开发实践踩坑与经验分享_32",
+          "doc_RAG检索全流程思维导图_3"
+        ]
+      },
+      {
+        "query": "多个搜索结果怎么合并排成一个列表",
+        "category": "语义理解",
+        "hit": true,
+        "hit_count": 1,
+        "returned_count": 5,
+        "precision": 0.2,
+        "recall": 0.5,
+        "latency_ms": 1.9898414611816406,
+        "top3_ids": [
+          "doc_基于《all-in-rag》的RAG核心知识点_11",
+          "doc_Agent应用开发实践踩坑与经验分享_20",
+          "doc_Agent面试核心知识点汇总_5"
+        ]
+      },
+      {
+        "query": "RAG系统的完整开发流程从数据准备到检索生成",
+        "category": "跨文档",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 1.0006427764892578,
+        "top3_ids": [
+          "doc_基于《all-in-rag》的RAG核心知识点_51",
+          "doc_RAG面试问题汇总_7",
+          "doc_RAG检索全流程思维导图_3"
+        ]
+      },
+      {
+        "query": "Agent开发中遇到的坑和实际经验教训",
+        "category": "跨文档",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 2.5327205657958984,
+        "top3_ids": [
+          "doc_Agent应用开发实践踩坑与经验分享_0",
+          "doc_Agent应用开发实践踩坑与经验分享_102",
+          "doc_Agent面试核心知识点汇总_13"
+        ]
+      },
+      {
+        "query": "BGE-M3嵌入模型和BGE-reranker重排序",
+        "category": "精确术语",
+        "hit": true,
+        "hit_count": 4,
+        "returned_count": 5,
+        "precision": 0.8,
+        "recall": 1.0,
+        "latency_ms": 0.9999275207519531,
+        "top3_ids": [
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_18",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_12",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_41"
+        ]
+      },
+      {
+        "query": "Plan-and-Execute架构模式的拓扑排序并行执行",
+        "category": "精确术语",
+        "hit": true,
+        "hit_count": 3,
+        "returned_count": 5,
+        "precision": 0.6,
+        "recall": 1.0,
+        "latency_ms": 1.0075569152832031,
+        "top3_ids": [
+          "doc_基于《hello-agent》的核心知识点_6",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_24",
+          "doc_Agent应用开发实践踩坑与经验分享_1"
+        ]
+      },
+      {
+        "query": "语义分块是怎么判断在哪里切开的",
+        "category": "混合难度",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 1.0068416595458984,
+        "top3_ids": [
+          "doc_RAG面试问题汇总_29",
+          "doc_RAG面试问题汇总_27",
+          "doc_RAG面试问题汇总_34"
+        ]
+      },
+      {
+        "query": "对话记忆和会话管理的上下文窗口",
+        "category": "混合难度",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 2.3021697998046875,
+        "top3_ids": [
+          "doc_Agent面试核心知识点汇总_6",
+          "doc_基于《hello-agent》的核心知识点_31",
+          "doc_基于《hello-agent》的核心知识点_39"
+        ]
+      }
+    ],
+    "Embedding": [
+      {
+        "query": "BM25分词和倒排索引的原理",
+        "category": "关键词匹配",
+        "hit": true,
+        "hit_count": 3,
+        "returned_count": 5,
+        "precision": 0.6,
+        "recall": 1.0,
+        "latency_ms": 289.08634185791016,
+        "top3_ids": [
+          "doc_RAG面试问题汇总_13",
+          "doc_RAG面试问题汇总_66",
+          "doc_RAG面试问题汇总_52"
+        ]
+      },
+      {
+        "query": "ChromaDB向量数据库配置和持久化",
+        "category": "关键词匹配",
+        "hit": true,
+        "hit_count": 1,
+        "returned_count": 5,
+        "precision": 0.2,
+        "recall": 0.5,
+        "latency_ms": 115.92507362365723,
+        "top3_ids": [
+          "doc_基于《all-in-rag》的RAG核心知识点_17",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_15",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_11"
+        ]
+      },
+      {
+        "query": "ReAct框架的思考行动观察循环",
+        "category": "关键词匹配",
+        "hit": true,
+        "hit_count": 4,
+        "returned_count": 5,
+        "precision": 0.8,
+        "recall": 1.0,
+        "latency_ms": 29.615402221679688,
+        "top3_ids": [
+          "doc_Agent面试核心知识点汇总_3",
+          "doc_基于《hello-agent》的核心知识点_1",
+          "doc_Agent面试核心知识点汇总_2"
+        ]
+      },
+      {
+        "query": "如何让大模型减少胡说八道的问题",
+        "category": "语义理解",
+        "hit": true,
+        "hit_count": 2,
+        "returned_count": 5,
+        "precision": 0.4,
+        "recall": 1.0,
+        "latency_ms": 29.399871826171875,
+        "top3_ids": [
+          "doc_Agent应用开发实践踩坑与经验分享_63",
+          "doc_Agent应用开发实践踩坑与经验分享_60",
+          "doc_RAG面试问题汇总_6"
+        ]
+      },
+      {
+        "query": "怎样把很长的文章切分成小段来搜索",
+        "category": "语义理解",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 35.54558753967285,
+        "top3_ids": [
+          "doc_基于《all-in-rag》的RAG核心知识点_7",
+          "doc_基于《all-in-rag》的RAG核心知识点_21",
+          "doc_RAG面试问题汇总_29"
+        ]
+      },
+      {
+        "query": "多个搜索结果怎么合并排成一个列表",
+        "category": "语义理解",
+        "hit": true,
+        "hit_count": 4,
+        "returned_count": 5,
+        "precision": 0.8,
+        "recall": 1.0,
+        "latency_ms": 25.646448135375977,
+        "top3_ids": [
+          "doc_RAG面试问题汇总_66",
+          "doc_RAG检索全流程思维导图_5",
+          "doc_RAG面试问题汇总_25"
+        ]
+      },
+      {
+        "query": "RAG系统的完整开发流程从数据准备到检索生成",
+        "category": "跨文档",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 30.420541763305664,
+        "top3_ids": [
+          "doc_RAG面试问题汇总_83",
+          "doc_RAG面试问题汇总_80",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_33"
+        ]
+      },
+      {
+        "query": "Agent开发中遇到的坑和实际经验教训",
+        "category": "跨文档",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 25.732755661010742,
+        "top3_ids": [
+          "doc_Agent应用开发实践踩坑与经验分享_1",
+          "doc_Agent应用开发实践踩坑与经验分享_46",
+          "doc_Agent应用开发实践踩坑与经验分享_62"
+        ]
+      },
+      {
+        "query": "BGE-M3嵌入模型和BGE-reranker重排序",
+        "category": "精确术语",
+        "hit": true,
+        "hit_count": 3,
+        "returned_count": 5,
+        "precision": 0.6,
+        "recall": 1.0,
+        "latency_ms": 25.806188583374023,
+        "top3_ids": [
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_12",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_11",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_13"
+        ]
+      },
+      {
+        "query": "Plan-and-Execute架构模式的拓扑排序并行执行",
+        "category": "精确术语",
+        "hit": true,
+        "hit_count": 1,
+        "returned_count": 5,
+        "precision": 0.2,
+        "recall": 0.5,
+        "latency_ms": 26.293039321899414,
+        "top3_ids": [
+          "doc_基于《hello-agent》的核心知识点_38",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_18",
+          "doc_Agent应用开发实践踩坑与经验分享_62"
+        ]
+      },
+      {
+        "query": "语义分块是怎么判断在哪里切开的",
+        "category": "混合难度",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 20.60246467590332,
+        "top3_ids": [
+          "doc_基于《all-in-rag》的RAG核心知识点_7",
+          "doc_RAG面试问题汇总_47",
+          "doc_RAG面试问题汇总_29"
+        ]
+      },
+      {
+        "query": "对话记忆和会话管理的上下文窗口",
+        "category": "混合难度",
+        "hit": true,
+        "hit_count": 2,
+        "returned_count": 5,
+        "precision": 0.4,
+        "recall": 1.0,
+        "latency_ms": 22.053241729736328,
+        "top3_ids": [
+          "doc_Agent应用开发实践踩坑与经验分享_63",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_2",
+          "doc_Agent应用开发实践踩坑与经验分享_66"
+        ]
+      }
+    ],
+    "Hybrid (RRF)": [
+      {
+        "query": "BM25分词和倒排索引的原理",
+        "category": "关键词匹配",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 21.017074584960938,
+        "top3_ids": [
+          "doc_RAG面试问题汇总_13",
+          "doc_RAG面试问题汇总_66",
+          "doc_RAG面试问题汇总_52"
+        ]
+      },
+      {
+        "query": "ChromaDB向量数据库配置和持久化",
+        "category": "关键词匹配",
+        "hit": true,
+        "hit_count": 3,
+        "returned_count": 5,
+        "precision": 0.6,
+        "recall": 1.0,
+        "latency_ms": 17.287492752075195,
+        "top3_ids": [
+          "doc_基于《all-in-rag》的RAG核心知识点_17",
+          "doc_RAG面试问题汇总_14",
+          "doc_RAG面试问题汇总_33"
+        ]
+      },
+      {
+        "query": "ReAct框架的思考行动观察循环",
+        "category": "关键词匹配",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 16.70980453491211,
+        "top3_ids": [
+          "doc_Agent面试核心知识点汇总_3",
+          "doc_Agent面试核心知识点汇总_2",
+          "doc_基于《hello-agent》的核心知识点_1"
+        ]
+      },
+      {
+        "query": "如何让大模型减少胡说八道的问题",
+        "category": "语义理解",
+        "hit": true,
+        "hit_count": 4,
+        "returned_count": 5,
+        "precision": 0.8,
+        "recall": 1.0,
+        "latency_ms": 17.050981521606445,
+        "top3_ids": [
+          "doc_Agent应用开发实践踩坑与经验分享_63",
+          "doc_RAG面试问题汇总_9",
+          "doc_RAG面试问题汇总_6"
+        ]
+      },
+      {
+        "query": "怎样把很长的文章切分成小段来搜索",
+        "category": "语义理解",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 15.283584594726562,
+        "top3_ids": [
+          "doc_RAG检索全流程思维导图_3",
+          "doc_RAG面试问题汇总_35",
+          "doc_基于《all-in-rag》的RAG核心知识点_21"
+        ]
+      },
+      {
+        "query": "多个搜索结果怎么合并排成一个列表",
+        "category": "语义理解",
+        "hit": true,
+        "hit_count": 3,
+        "returned_count": 5,
+        "precision": 0.6,
+        "recall": 1.0,
+        "latency_ms": 17.70758628845215,
+        "top3_ids": [
+          "doc_基于《all-in-rag》的RAG核心知识点_24",
+          "doc_Agent应用开发实践踩坑与经验分享_20",
+          "doc_基于《all-in-rag》的RAG核心知识点_11"
+        ]
+      },
+      {
+        "query": "RAG系统的完整开发流程从数据准备到检索生成",
+        "category": "跨文档",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 21.93450927734375,
+        "top3_ids": [
+          "doc_RAG面试问题汇总_7",
+          "doc_RAG面试问题汇总_83",
+          "doc_RAG面试问题汇总_74"
+        ]
+      },
+      {
+        "query": "Agent开发中遇到的坑和实际经验教训",
+        "category": "跨文档",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 24.654150009155273,
+        "top3_ids": [
+          "doc_Agent应用开发实践踩坑与经验分享_0",
+          "doc_Agent应用开发实践踩坑与经验分享_1",
+          "doc_Agent应用开发实践踩坑与经验分享_46"
+        ]
+      },
+      {
+        "query": "BGE-M3嵌入模型和BGE-reranker重排序",
+        "category": "精确术语",
+        "hit": true,
+        "hit_count": 4,
+        "returned_count": 5,
+        "precision": 0.8,
+        "recall": 1.0,
+        "latency_ms": 20.592927932739258,
+        "top3_ids": [
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_12",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_18",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_11"
+        ]
+      },
+      {
+        "query": "Plan-and-Execute架构模式的拓扑排序并行执行",
+        "category": "精确术语",
+        "hit": true,
+        "hit_count": 2,
+        "returned_count": 5,
+        "precision": 0.4,
+        "recall": 1.0,
+        "latency_ms": 19.834518432617188,
+        "top3_ids": [
+          "doc_基于《hello-agent》的核心知识点_6",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_18",
+          "doc_基于《hello-agent》的核心知识点_1"
+        ]
+      },
+      {
+        "query": "语义分块是怎么判断在哪里切开的",
+        "category": "混合难度",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 18.028974533081055,
+        "top3_ids": [
+          "doc_RAG面试问题汇总_29",
+          "doc_RAG面试问题汇总_47",
+          "doc_RAG面试问题汇总_65"
+        ]
+      },
+      {
+        "query": "对话记忆和会话管理的上下文窗口",
+        "category": "混合难度",
+        "hit": true,
+        "hit_count": 3,
+        "returned_count": 5,
+        "precision": 0.6,
+        "recall": 1.0,
+        "latency_ms": 23.296356201171875,
+        "top3_ids": [
+          "doc_Agent面试核心知识点汇总_6",
+          "doc_Agent应用开发实践踩坑与经验分享_66",
+          "doc_基于《hello-agent》的核心知识点_31"
+        ]
+      }
+    ],
+    "Hybrid+Reranker": [
+      {
+        "query": "BM25分词和倒排索引的原理",
+        "category": "关键词匹配",
+        "hit": true,
+        "hit_count": 4,
+        "returned_count": 5,
+        "precision": 0.8,
+        "recall": 1.0,
+        "latency_ms": 24200.817584991455,
+        "top3_ids": [
+          "doc_RAG面试问题汇总_13",
+          "doc_RAG面试问题汇总_66",
+          "doc_RAG检索全流程思维导图_5"
+        ]
+      },
+      {
+        "query": "ChromaDB向量数据库配置和持久化",
+        "category": "关键词匹配",
+        "hit": true,
+        "hit_count": 3,
+        "returned_count": 5,
+        "precision": 0.6,
+        "recall": 1.0,
+        "latency_ms": 22860.58473587036,
+        "top3_ids": [
+          "doc_基于《all-in-rag》的RAG核心知识点_17",
+          "doc_RAG面试问题汇总_14",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_5"
+        ]
+      },
+      {
+        "query": "ReAct框架的思考行动观察循环",
+        "category": "关键词匹配",
+        "hit": true,
+        "hit_count": 4,
+        "returned_count": 5,
+        "precision": 0.8,
+        "recall": 1.0,
+        "latency_ms": 22895.236253738403,
+        "top3_ids": [
+          "doc_基于《hello-agent》的核心知识点_2",
+          "doc_Agent面试核心知识点汇总_2",
+          "doc_Agent面试核心知识点汇总_3"
+        ]
+      },
+      {
+        "query": "如何让大模型减少胡说八道的问题",
+        "category": "语义理解",
+        "hit": true,
+        "hit_count": 3,
+        "returned_count": 5,
+        "precision": 0.6,
+        "recall": 1.0,
+        "latency_ms": 13364.161968231201,
+        "top3_ids": [
+          "doc_RAG面试问题汇总_9",
+          "doc_RAG面试问题汇总_58",
+          "doc_Agent应用开发实践踩坑与经验分享_49"
+        ]
+      },
+      {
+        "query": "怎样把很长的文章切分成小段来搜索",
+        "category": "语义理解",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 13148.821592330933,
+        "top3_ids": [
+          "doc_基于《all-in-rag》的RAG核心知识点_7",
+          "doc_RAG检索全流程思维导图_3",
+          "doc_RAG面试问题汇总_29"
+        ]
+      },
+      {
+        "query": "多个搜索结果怎么合并排成一个列表",
+        "category": "语义理解",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 24251.031637191772,
+        "top3_ids": [
+          "doc_基于《all-in-rag》的RAG核心知识点_24",
+          "doc_基于《all-in-rag》的RAG核心知识点_38",
+          "doc_RAG检索全流程思维导图_5"
+        ]
+      },
+      {
+        "query": "RAG系统的完整开发流程从数据准备到检索生成",
+        "category": "跨文档",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 22208.97364616394,
+        "top3_ids": [
+          "doc_RAG面试问题汇总_7",
+          "doc_RAG面试问题汇总_83",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_33"
+        ]
+      },
+      {
+        "query": "Agent开发中遇到的坑和实际经验教训",
+        "category": "跨文档",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 13898.85139465332,
+        "top3_ids": [
+          "doc_Agent应用开发实践踩坑与经验分享_1",
+          "doc_Agent应用开发实践踩坑与经验分享_0",
+          "doc_Agent应用开发实践踩坑与经验分享_45"
+        ]
+      },
+      {
+        "query": "BGE-M3嵌入模型和BGE-reranker重排序",
+        "category": "精确术语",
+        "hit": true,
+        "hit_count": 4,
+        "returned_count": 5,
+        "precision": 0.8,
+        "recall": 1.0,
+        "latency_ms": 28792.333126068115,
+        "top3_ids": [
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_41",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_18",
+          "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_12"
+        ]
+      },
+      {
+        "query": "Plan-and-Execute架构模式的拓扑排序并行执行",
+        "category": "精确术语",
+        "hit": true,
+        "hit_count": 3,
+        "returned_count": 5,
+        "precision": 0.6,
+        "recall": 1.0,
+        "latency_ms": 29984.296321868896,
+        "top3_ids": [
+          "doc_基于《hello-agent》的核心知识点_6",
+          "doc_Agent应用开发实践踩坑与经验分享_1",
+          "doc_基于《hello-agent》的核心知识点_1"
+        ]
+      },
+      {
+        "query": "语义分块是怎么判断在哪里切开的",
+        "category": "混合难度",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 29216.449737548828,
+        "top3_ids": [
+          "doc_基于《all-in-rag》的RAG核心知识点_8",
+          "doc_RAG面试问题汇总_16",
+          "doc_RAG面试问题汇总_29"
+        ]
+      },
+      {
+        "query": "对话记忆和会话管理的上下文窗口",
+        "category": "混合难度",
+        "hit": true,
+        "hit_count": 5,
+        "returned_count": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "latency_ms": 29510.89119911194,
+        "top3_ids": [
+          "doc_基于《hello-agent》的核心知识点_39",
+          "doc_Agent面试核心知识点汇总_6",
+          "doc_基于《hello-agent》的核心知识点_31"
+        ]
+      }
+    ]
+  }
+}

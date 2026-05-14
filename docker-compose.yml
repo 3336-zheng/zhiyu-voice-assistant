@@ -1,0 +1,26 @@
+# 智语端侧智能语音笔记助手 Docker Compose 配置
+# 使用方法：docker compose up --build
+
+services:
+  zhiyu:
+    build: .
+    container_name: zhiyu-assistant
+    ports:
+      - "${PORT:-8337}:8337"
+    volumes:
+      # 环境变量配置文件
+      - ./.env:/app/.env:ro
+      # 数据持久化（数据库、上传文件、向量库、日志）
+      - ./data:/app/data
+      # 模型文件挂载（用户在 .env 中配置路径）
+      - ${WHISPER_MODEL_PATH}:/app/models/whisper:ro
+      - ${EMBEDDING_MODEL_PATH}:/app/models/embedding:ro
+      - ${RERANKER_MODEL_PATH}:/app/models/reranker:ro
+    env_file:
+      - .env
+    environment:
+      # 覆盖 .env 中的模型路径为容器内路径
+      - WHISPER_MODEL_PATH=/app/models/whisper
+      - EMBEDDING_MODEL_PATH=/app/models/embedding
+      - RERANKER_MODEL_PATH=/app/models/reranker
+    restart: unless-stopped

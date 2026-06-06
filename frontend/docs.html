@@ -9,24 +9,30 @@
 <body>
     <!-- 顶部导航 -->
     <nav class="navbar">
-        <h1>智语 - 文档管理</h1>
-        <a href="index.html">← 语音交互</a>
+        <h1><span class="brand-icon">🧠</span> 智语</h1>
+        <div class="navbar-nav">
+            <a href="index.html">🔍 问题检索</a>
+            <a href="summary.html">📝 纪要总结</a>
+            <a href="docs.html" class="active">📂 文档管理</a>
+        </div>
     </nav>
 
     <div class="container">
         <!-- MD文档上传区 -->
         <div class="card">
-            <div class="card-title">上传文档</div>
+            <div class="card-title"><span class="icon">📤</span> 上传文档</div>
             <div class="upload-area" onclick="document.getElementById('mdFile').click()">
                 <input type="file" id="mdFile" accept=".md,.txt,.pdf,.docx" onchange="handleUpload(this)">
-                <p style="color: var(--text-secondary);">点击选择文件（支持 .md、.txt、.pdf、.docx，PDF/Word 会自动转为 Markdown）</p>
+                <p style="font-size: 32px; margin-bottom: 8px;">📁</p>
+                <p style="color: var(--text-secondary); font-size: 14px;">点击选择文件（支持 .md、.txt、.pdf、.docx）</p>
+                <p style="color: #B0B0C0; font-size: 12px; margin-top: 4px;">PDF / Word 会自动转为 Markdown</p>
             </div>
         </div>
 
         <div class="grid-2">
             <!-- 文档存储区 -->
             <div class="card">
-                <div class="card-title">文档列表</div>
+                <div class="card-title"><span class="icon">📚</span> 文档列表</div>
                 <ul id="docList" class="doc-list">
                     <li class="doc-item">
                         <span style="color: var(--text-secondary);">加载中...</span>
@@ -36,9 +42,12 @@
 
             <!-- 文档预览区 -->
             <div class="card">
-                <div class="card-title">文档预览</div>
+                <div class="card-title"><span class="icon">👁️</span> 文档预览</div>
                 <div id="docPreview" class="result-area" style="min-height: 300px;">
-                    点击文档查看内容...
+                    <div class="empty-state">
+                        <div class="empty-icon">📄</div>
+                        <p>点击文档查看内容</p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -76,7 +85,7 @@
                         </li>
                     `).join('');
                 } else {
-                    docList.innerHTML = '<li class="doc-item"><span style="color: var(--text-secondary);">暂无文档</span></li>';
+                    docList.innerHTML = '<li class="doc-item"><div class="empty-state"><div class="empty-icon">📭</div><p>暂无文档，上传一个试试</p></div></li>';
                 }
             } catch (err) {
                 console.error('加载文档列表失败:', err);
@@ -117,7 +126,7 @@
                 const data = await res.json();
 
                 if (res.ok) {
-                    document.getElementById('docPreview').textContent = data.content;
+                    document.getElementById('docPreview').innerHTML = '<div class="result-content">' + renderMarkdown(data.content) + '</div>';
                 } else {
                     throw new Error(data.detail || '加载失败');
                 }
@@ -139,7 +148,7 @@
                 if (res.ok) {
                     showToast('删除成功', 'success');
                     loadDocList();
-                    document.getElementById('docPreview').textContent = '点击文档查看内容...';
+                    document.getElementById('docPreview').innerHTML = '<div class="empty-state"><div class="empty-icon">📄</div><p>点击文档查看内容</p></div>';
                 } else {
                     throw new Error(data.detail || '删除失败');
                 }
@@ -151,12 +160,37 @@
         // 显示提示
         function showToast(message, type = 'success') {
             const toast = document.getElementById('toast');
-            toast.textContent = message;
+            const icon = type === 'success' ? '✅' : '❌';
+            toast.innerHTML = icon + ' ' + message;
             toast.className = `toast toast-${type}`;
             toast.style.display = 'block';
             setTimeout(() => {
                 toast.style.display = 'none';
             }, 3000);
+        }
+
+        // 轻量 Markdown 渲染
+        function renderMarkdown(text) {
+            if (!text) return '';
+            let html = text
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+                .replace(/`([^`]+)`/g, '<code>$1</code>')
+                .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+                .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+                .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                .replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
+                .replace(/^---$/gm, '<hr>')
+                .replace(/^[*\-+] (.+)$/gm, '<li>$1</li>')
+                .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+                .replace(/\n/g, '<br>');
+            html = html.replace(/(<li>.*?<\/li>)(?:\s*<br>)?/g, '$1');
+            html = html.replace(/((?:<li>.*?<\/li>\s*)+)/g, '<ul>$1</ul>');
+            return html;
         }
     </script>
 </body>

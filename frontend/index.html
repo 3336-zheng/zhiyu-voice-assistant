@@ -3,33 +3,47 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>智语 - 语音交互</title>
+    <title>智语 - 问题检索</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <!-- 顶部导航 -->
     <nav class="navbar">
-        <h1>智语 - 语音交互</h1>
-        <a href="docs.html">文档管理 →</a>
+        <h1><span class="brand-icon">🧠</span> 智语</h1>
+        <div class="navbar-nav">
+            <a href="index.html" class="active">🔍 问题检索</a>
+            <a href="summary.html">📝 纪要总结</a>
+            <a href="docs.html">📂 文档管理</a>
+        </div>
     </nav>
 
     <div class="container">
+        <!-- 会话管理栏 -->
+        <div class="session-bar">
+            <div id="sessionIndicator" class="session-indicator"></div>
+            <button class="btn-new-session" onclick="newSession()">+ 新建会话</button>
+            <div class="session-dropdown-wrap">
+                <button class="btn-history" onclick="toggleSessionDropdown()">📋 历史会话</button>
+                <div id="sessionDropdown" class="session-dropdown"></div>
+            </div>
+        </div>
+
         <!-- 语音输入区 -->
         <div class="card">
-            <div class="card-title">语音输入</div>
+            <div class="card-title"><span class="icon">🎙️</span> 语音输入</div>
             <div class="btn-group">
                 <button id="btnRecord" class="btn btn-primary" onclick="toggleRecord()">
-                    开始录音
+                    🎙️ 开始录音
                 </button>
                 <button id="btnStop" class="btn btn-outline" onclick="stopRecord()" disabled>
-                    停止录音
+                    ⏹️ 停止录音
                 </button>
                 <label class="btn btn-outline">
-                    上传音频
+                    📁 上传音频
                     <input type="file" id="audioFile" accept=".wav,.mp3,.flac,.ogg" onchange="handleFileUpload(this)" hidden>
                 </label>
                 <button id="btnTranscribe" class="btn btn-success" onclick="transcribe()" disabled>
-                    转录
+                    📝 转录
                 </button>
                 <select id="asrProvider" class="btn btn-outline" style="min-width: 180px; cursor: pointer;">
                     <option value="">加载中...</option>
@@ -41,20 +55,31 @@
             </div>
         </div>
 
-        <!-- 转录区 -->
+        <!-- 转录区（作为上下文，不存储） -->
         <div class="card">
-            <div class="card-title">转录文本（可编辑）</div>
+            <div class="card-title"><span class="icon">📄</span> 转录文本（作为上下文，不会被存储）</div>
             <textarea id="transcriptText" placeholder="转录结果将显示在这里，您可以手动编辑..."></textarea>
+            <div style="margin-top: 8px;">
+                <a id="toggleRaw" href="javascript:void(0)" onclick="toggleRawText()"
+                   style="display: none; font-size: 12px; color: var(--text-secondary); text-decoration: underline; cursor: pointer;">
+                    查看原始转录
+                </a>
+            </div>
             <div style="margin-top: 12px;">
-                <button class="btn btn-primary" onclick="sendToAI()">发送给 AI</button>
+                <button class="btn btn-primary" onclick="sendToAI()">✨ 发送给 AI 检索</button>
             </div>
         </div>
 
         <!-- 结果回应区 -->
         <div class="card">
-            <div class="card-title">AI 处理结果</div>
+            <div class="card-title"><span class="icon">✨</span> AI 检索结果</div>
             <div id="resultArea" class="result-area">
                 等待发送...
+            </div>
+            <div style="margin-top: 12px;">
+                <button id="btnSaveAnswer" class="btn btn-success" onclick="saveAnswer()" style="display: none;">
+                    💾 保存答案到笔记
+                </button>
             </div>
         </div>
     </div>
@@ -67,7 +92,130 @@
         let mediaRecorder = null;
         let audioChunks = [];
         let currentAudioId = null;
-        let sessionId = 'session_' + Date.now();
+        let lastAnswer = '';  // 保存最后一次 AI 回复
+        let rawTranscript = '';   // 原始转录文本
+        let polishedTranscript = '';  // 润色后文本
+        let showingRaw = false;   // 当前显示的是原始文本
+
+        // ===== 会话管理 =====
+        const SESSION_KEY = 'zhiyu_session_id';
+
+        function getSessionId() {
+            let sid = localStorage.getItem(SESSION_KEY);
+            if (!sid) {
+                sid = 'session_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+                localStorage.setItem(SESSION_KEY, sid);
+            }
+            return sid;
+        }
+
+        let sessionId = getSessionId();
+        updateSessionIndicator();
+
+        function updateSessionIndicator() {
+            const el = document.getElementById('sessionIndicator');
+            if (el) {
+                const short = sessionId.replace('session_', '').slice(0, 8);
+                el.innerHTML = '会话: <span class="sid">#' + short + '</span>';
+            }
+        }
+
+        function newSession() {
+            localStorage.removeItem(SESSION_KEY);
+            sessionId = getSessionId();
+            updateSessionIndicator();
+            // 重置页面状态
+            document.getElementById('transcriptText').value = '';
+            document.getElementById('resultArea').innerHTML = '等待发送...';
+            document.getElementById('btnSaveAnswer').style.display = 'none';
+            document.getElementById('toggleRaw').style.display = 'none';
+            rawTranscript = '';
+            polishedTranscript = '';
+            showingRaw = false;
+            lastAnswer = '';
+            currentAudioId = null;
+            updateStatus('', '新会话已创建');
+            showToast('已创建新会话', 'success');
+        }
+
+        async function loadSessions() {
+            try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 8000); // 8秒超时
+                const res = await fetch(`${API_BASE}/agent/sessions/`, { signal: controller.signal });
+                clearTimeout(timeout);
+                if (!res.ok) return [];
+                const data = await res.json();
+                return data.sessions || [];
+            } catch (err) {
+                console.warn('加载会话列表失败:', err);
+                return [];
+            }
+        }
+
+        async function toggleSessionDropdown() {
+            const dropdown = document.getElementById('sessionDropdown');
+            const isOpen = dropdown.classList.contains('open');
+
+            if (isOpen) {
+                dropdown.classList.remove('open');
+                return;
+            }
+
+            // 加载会话列表
+            dropdown.innerHTML = '<div class="session-dropdown-empty">加载中...</div>';
+            dropdown.classList.add('open');
+
+            const sessions = await loadSessions();
+            if (sessions.length === 0) {
+                dropdown.innerHTML = '<div class="session-dropdown-empty">暂无历史会话</div>';
+                return;
+            }
+
+            dropdown.innerHTML = sessions.map(s => {
+                const short = s.session_id.replace('session_', '').slice(0, 12);
+                const isActive = s.session_id === sessionId;
+                const date = s.updated_at ? new Date(s.updated_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+                return `
+                    <div class="session-dropdown-item ${isActive ? 'active' : ''}" onclick="switchSession('${s.session_id}')">
+                        <div>
+                            <div class="item-sid">#${short}</div>
+                            <div class="item-info">${s.message_count || 0} 条消息 · ${date}</div>
+                        </div>
+                        ${isActive ? '<span style="font-size:11px;color:var(--primary);">当前</span>' : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function switchSession(sid) {
+            sessionId = sid;
+            localStorage.setItem(SESSION_KEY, sid);
+            updateSessionIndicator();
+            document.getElementById('sessionDropdown').classList.remove('open');
+            // 重置页面状态
+            document.getElementById('transcriptText').value = '';
+            document.getElementById('resultArea').innerHTML = '等待发送...';
+            document.getElementById('btnSaveAnswer').style.display = 'none';
+            document.getElementById('toggleRaw').style.display = 'none';
+            rawTranscript = '';
+            polishedTranscript = '';
+            showingRaw = false;
+            lastAnswer = '';
+            currentAudioId = null;
+            updateStatus('', '已切换会话');
+            showToast('已切换到会话 #' + sid.replace('session_', '').slice(0, 8), 'success');
+        }
+
+        // 点击外部关闭下拉
+        document.addEventListener('click', (e) => {
+            const wrap = document.querySelector('.session-dropdown-wrap');
+            if (wrap && !wrap.contains(e.target)) {
+                document.getElementById('sessionDropdown').classList.remove('open');
+            }
+        });
+
+        // 历史会话加载失败时静默降级，不影响页面使用
 
         // 录音功能
         async function toggleRecord() {
@@ -95,8 +243,9 @@
                 };
 
                 mediaRecorder.start();
-                btn.textContent = '录音中...';
+                btn.textContent = '🎙️ 录音中...';
                 btn.disabled = true;
+                btn.classList.add('btn-recording');
                 btnStop.disabled = false;
                 updateStatus('recording', '录音中...');
 
@@ -108,8 +257,10 @@
         function stopRecord() {
             if (mediaRecorder && mediaRecorder.state === 'recording') {
                 mediaRecorder.stop();
-                document.getElementById('btnRecord').textContent = '开始录音';
-                document.getElementById('btnRecord').disabled = false;
+                const btn = document.getElementById('btnRecord');
+                btn.textContent = '🎙️ 开始录音';
+                btn.disabled = false;
+                btn.classList.remove('btn-recording');
                 document.getElementById('btnStop').disabled = true;
             }
         }
@@ -147,7 +298,6 @@
                     updateStatus('active', `已上传: ${filename}`);
                     showToast('音频上传成功', 'success');
                 } else {
-                    // 显示完整错误信息
                     const errMsg = data?.detail || text || `HTTP ${res.status}`;
                     document.getElementById('transcriptText').value = `[上传错误] ${errMsg}`;
                     updateStatus('', '上传失败');
@@ -183,7 +333,6 @@
             }
         }
 
-        // 页面加载时获取 ASR 引擎列表
         loadASRProviders();
 
         // 转录音频
@@ -198,9 +347,7 @@
             try {
                 const url = new URL(`${API_BASE}/audio/transcribe/${currentAudioId}`);
                 if (provider) url.searchParams.set('provider', provider);
-                const res = await fetch(url.toString(), {
-                    method: 'POST'
-                });
+                const res = await fetch(url.toString(), { method: 'POST' });
                 const text = await res.text();
                 let data;
                 try {
@@ -210,22 +357,68 @@
                 }
 
                 if (res.ok && data) {
+                    rawTranscript = data.transcription;
                     document.getElementById('transcriptText').value = data.transcription;
-                    updateStatus('active', `转录完成 (${data.transcribe_time?.toFixed(2) || '-'}秒)`);
-                    showToast('转录完成', 'success');
+                    updateStatus('active', `转录完成 (${data.transcribe_time?.toFixed(2) || '-'}秒)，润色中...`);
+                    showToast('转录完成，正在润色...', 'success');
+                    // 自动润色
+                    polishTranscript(currentAudioId);
                 } else {
-                    // 显示完整错误信息
                     const errMsg = data?.detail || text || `HTTP ${res.status}`;
                     document.getElementById('transcriptText').value = `[转录错误] ${errMsg}`;
                     updateStatus('', '转录失败');
                     showToast('转录失败，详见转录区错误信息', 'error');
                 }
             } catch (err) {
-                document.getElementById('transcriptText').value = `[转录异常] ${err.message}\n\n可能原因:\n1. 本地 Whisper 模型加载失败\n2. 百炼 API Key 未配置或无效\n3. 音频文件损坏\n4. 服务器内部错误\n\n请查看服务器终端获取详细日志`;
+                document.getElementById('transcriptText').value = `[转录异常] ${err.message}\n\n可能原因:\n1. 本地 Whisper 模型加载失败\n2. 百炼 API Key 未配置或无效\n3. 音频文件损坏\n4. 服务器内部错误`;
                 updateStatus('', '转录失败');
                 showToast('转录失败，详见转录区错误信息', 'error');
             } finally {
                 document.getElementById('btnTranscribe').disabled = false;
+            }
+        }
+
+        // 润色转录文本
+        async function polishTranscript(audioId) {
+            const toggleLink = document.getElementById('toggleRaw');
+            if (toggleLink) toggleLink.style.display = 'none';
+            showingRaw = false;
+
+            try {
+                const res = await fetch(`${API_BASE}/audio/polish/${audioId}`, { method: 'POST' });
+                const data = await res.json();
+
+                if (data.success) {
+                    polishedTranscript = data.polished;
+                    document.getElementById('transcriptText').value = polishedTranscript;
+                    if (toggleLink) toggleLink.style.display = 'inline';
+                    updateStatus('active', '润色完成');
+                    showToast('润色完成', 'success');
+                } else {
+                    // 润色失败，保留原始文本
+                    polishedTranscript = rawTranscript;
+                    updateStatus('active', '润色失败，已使用原始文本');
+                    showToast('润色失败，已使用原始文本', 'error');
+                }
+            } catch (err) {
+                polishedTranscript = rawTranscript;
+                updateStatus('active', '润色失败，已使用原始文本');
+                showToast('润色失败: ' + err.message, 'error');
+            }
+        }
+
+        // 切换显示原始/润色文本
+        function toggleRawText() {
+            const textarea = document.getElementById('transcriptText');
+            const link = document.getElementById('toggleRaw');
+            if (showingRaw) {
+                textarea.value = polishedTranscript || rawTranscript;
+                link.textContent = '查看原始转录';
+                showingRaw = false;
+            } else {
+                textarea.value = rawTranscript;
+                link.textContent = '查看润色文本';
+                showingRaw = true;
             }
         }
 
@@ -238,7 +431,8 @@
             }
 
             const resultArea = document.getElementById('resultArea');
-            resultArea.innerHTML = '<span class="loading"></span> AI 处理中...';
+            resultArea.innerHTML = '<span class="loading"></span> AI 检索中...';
+            document.getElementById('btnSaveAnswer').style.display = 'none';
 
             try {
                 const res = await fetch(`${API_BASE}/agent/chat/`, {
@@ -252,14 +446,47 @@
                 const data = await res.json();
 
                 if (res.ok) {
-                    resultArea.textContent = data.response;
-                    showToast('处理完成', 'success');
+                    resultArea.innerHTML = '<div class="result-content">' + renderMarkdown(data.response) + '</div>';
+                    lastAnswer = data.response;
+                    document.getElementById('btnSaveAnswer').style.display = 'inline-block';
+                    showToast('检索完成', 'success');
                 } else {
                     throw new Error(data.detail || '处理失败');
                 }
             } catch (err) {
                 resultArea.textContent = '处理失败: ' + err.message;
                 showToast('AI 处理失败', 'error');
+            }
+        }
+
+        // 保存答案到 data/notes/（直接调用文件写入 API）
+        async function saveAnswer() {
+            if (!lastAnswer) {
+                showToast('没有可保存的答案', 'error');
+                return;
+            }
+
+            const title = prompt('请输入笔记标题:', `检索答案_${new Date().toLocaleDateString()}`);
+            if (!title) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/notes/create-file`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title: title,
+                        content: lastAnswer
+                    })
+                });
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    showToast(`答案已保存到笔记: ${data.filename}`, 'success');
+                } else {
+                    throw new Error(data.detail || '保存失败');
+                }
+            } catch (err) {
+                showToast('保存失败: ' + err.message, 'error');
             }
         }
 
@@ -275,12 +502,48 @@
         // 显示提示
         function showToast(message, type = 'success') {
             const toast = document.getElementById('toast');
-            toast.textContent = message;
+            const icon = type === 'success' ? '✅' : '❌';
+            toast.innerHTML = icon + ' ' + message;
             toast.className = `toast toast-${type}`;
             toast.style.display = 'block';
             setTimeout(() => {
                 toast.style.display = 'none';
             }, 3000);
+        }
+
+        // 轻量 Markdown 渲染（不依赖外部库）
+        function renderMarkdown(text) {
+            if (!text) return '';
+            let html = text
+                // 转义 HTML
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                // 代码块
+                .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+                // 行内代码
+                .replace(/`([^`]+)`/g, '<code>$1</code>')
+                // 标题
+                .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+                .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+                .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+                // 粗体和斜体
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                // 引用
+                .replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
+                // 分割线
+                .replace(/^---$/gm, '<hr>')
+                // 无序列表
+                .replace(/^[*\-+] (.+)$/gm, '<li>$1</li>')
+                // 有序列表
+                .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+                // 换行
+                .replace(/\n/g, '<br>');
+            // 包裹连续 li
+            html = html.replace(/(<li>.*?<\/li>)(?:\s*<br>)?/g, '$1');
+            html = html.replace(/((?:<li>.*?<\/li>\s*)+)/g, '<ul>$1</ul>');
+            return html;
         }
     </script>
 </body>

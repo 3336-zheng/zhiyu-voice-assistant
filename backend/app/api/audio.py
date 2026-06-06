@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from ..core.database import get_db
 from ..core.config import settings
 from ..services.whisper_service import get_asr_service, get_available_asr_providers
+from ..services.llm_service import get_llm_service
 from ..models import Audio
 
 
@@ -317,3 +318,68 @@ async def list_asr_providers():
         "default": settings.asr_provider,
         "providers": providers,
     }
+
+
+@router.post("/polish/{audio_id}")
+async def polish_transcription(audio_id: int, db: Session = Depends(get_db)):
+    """
+    对已转录的文本做口语清理（去口头禅、补标点、修正明显错误）
+    不改变原意，不增删实质内容
+    """
+    log(f"[Polish] 收到润色请求: audio_id={audio_id}")
+    try:
+        audio = db.query(Audio).filter(Audio.id == audio_id).first()
+        if not audio:
+            raise HTTPException(status_code=404, detail="音频记录未找到")
+
+        raw_text = audio.transcription
+        if not raw_text:
+            raise HTTPException(status_code=400, detail="该音频尚未转录，无法润色")
+
+        llm = get_llm_service()
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一个语音转录文本清理助手。请对以下语音转录文本做清理：\n"
+                    "1. 去除无意义的口头禅和填充词（嗯、呃、那个、就是说、然后呢、对吧、你知道吗、怎么说呢、额、啊等）\n"
+                    "2. 补全标点符号（句号、逗号、问号、感叹号等）\n"
+                    "3. 修正语音识别错误：\n"
+                    "   - 同音字/近音字错误（如「在见」→「再见」、「人事」→「认识」）\n"
+                    "   - 明显的断词错误（如「机 器学习」→「机器学习」）\n"
+                    "   - 乱码或无意义字符直接删除\n"
+                    "4. 合理分段\n\n"
+                    "严格要求：\n"
+                    "- 不要改变原文的含义和观点\n"
+                    "- 不要增删实质内容（口头禅和识别错误除外）\n"
+                    "- 不要重组句子结构\n"
+                    "- 不要添加原文没有的信息\n"
+                    "- 遇到不确定的专有名词，保留原文不做修改\n"
+                    "- 直接返回清理后的文本，不要加任何解释或前缀"
+                )
+            },
+            {
+                "role": "user",
+                "content": raw_text
+            }
+        ]
+
+        polished = llm.chat(messages=messages, max_tokens=2000, temperature=0.3)
+        log(f"[Polish] 润色完成，原文 {len(raw_text)} 字 -> 润色后 {len(polished)} 字")
+
+        return {
+            "success": True,
+            "raw": raw_text,
+            "polished": polished
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log(f"[Polish] 润色异常: {type(e).__name__}: {e}")
+        # 润色失败时返回原始文本，不影响使用
+        return {
+            "success": False,
+            "raw": audio.transcription if audio else "",
+            "polished": audio.transcription if audio else "",
+            "detail": f"润色失败，已返回原始文本: {str(e)}"
+        }

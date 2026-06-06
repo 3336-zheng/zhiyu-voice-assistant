@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """测试 DeepSeek API 连接"""
+import os
 from openai import OpenAI
 
 client = OpenAI(
-    api_key='sk-f4114da6625442b2b3013c1a6fb365b2',
+    api_key=os.environ.get('DEEPSEEK_API_KEY', ''),
     base_url='https://api.deepseek.com/v1'
 )
 

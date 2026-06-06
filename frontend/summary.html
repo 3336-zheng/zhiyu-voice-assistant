@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智语 - 纪要总结</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- 顶部导航 -->
+    <nav class="navbar">
+        <h1><span class="brand-icon">🧠</span> 智语</h1>
+        <div class="navbar-nav">
+            <a href="index.html">🔍 问题检索</a>
+            <a href="summary.html" class="active">📝 纪要总结</a>
+            <a href="docs.html">📂 文档管理</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- 语音输入区 -->
+        <div class="card">
+            <div class="card-title"><span class="icon">🎙️</span> 语音输入</div>
+            <div class="btn-group">
+                <button id="btnRecord" class="btn btn-primary" onclick="toggleRecord()">
+                    🎙️ 开始录音
+                </button>
+                <button id="btnStop" class="btn btn-outline" onclick="stopRecord()" disabled>
+                    ⏹️ 停止录音
+                </button>
+                <label class="btn btn-outline">
+                    📁 上传音频
+                    <input type="file" id="audioFile" accept=".wav,.mp3,.flac,.ogg" onchange="handleFileUpload(this)" hidden>
+                </label>
+                <button id="btnTranscribe" class="btn btn-success" onclick="transcribe()" disabled>
+                    📝 转录
+                </button>
+                <select id="asrProvider" class="btn btn-outline" style="min-width: 180px; cursor: pointer;">
+                    <option value="">加载中...</option>
+                </select>
+            </div>
+            <div class="status">
+                <span id="statusDot" class="status-dot"></span>
+                <span id="statusText">就绪</span>
+            </div>
+        </div>
+
+        <!-- 转录区 -->
+        <div class="card">
+            <div class="card-title"><span class="icon">📄</span> 转录文本</div>
+            <textarea id="transcriptText" placeholder="转录结果将显示在这里，您可以手动编辑..."></textarea>
+            <div style="margin-top: 8px;">
+                <a id="toggleRaw" href="javascript:void(0)" onclick="toggleRawText()"
+                   style="display: none; font-size: 12px; color: var(--text-secondary); text-decoration: underline; cursor: pointer;">
+                    查看原始转录
+                </a>
+            </div>
+            <div style="margin-top: 12px;">
+                <select id="summaryStyle" class="btn btn-outline" style="min-width: 150px;">
+                    <option value="meeting">会议纪要</option>
+                    <option value="lecture">课堂笔记</option>
+                    <option value="general">通用整理</option>
+                </select>
+                <button class="btn btn-primary" onclick="generateSummary()">✨ 生成纪要</button>
+            </div>
+        </div>
+
+        <!-- 纪要预览区 -->
+        <div class="card">
+            <div class="card-title"><span class="icon">📋</span> 纪要预览（可编辑）</div>
+            <textarea id="summaryText" placeholder="生成的纪要将显示在这里，您可以编辑后再保存..." style="min-height: 300px;"></textarea>
+            <div style="margin-top: 12px;">
+                <input type="text" id="summaryFilename" placeholder="文件名（如：2026-05-30会议纪要）"
+                    style="padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; width: 300px;">
+                <button id="btnSaveSummary" class="btn btn-success" onclick="saveSummary()" disabled>
+                    💾 确认保存到知识库
+                </button>
+            </div>
+            <div id="saveResult" style="margin-top: 8px; font-size: 13px; color: #666;"></div>
+        </div>
+    </div>
+
+    <!-- 提示消息 -->
+    <div id="toast" class="toast" style="display: none;"></div>
+
+    <script>
+        const API_BASE = 'http://localhost:8337';
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let currentAudioId = null;
+        let rawTranscript = '';
+        let polishedTranscript = '';
+        let showingRaw = false;
+
+        // 录音功能
+        async function toggleRecord() {
+            const btn = document.getElementById('btnRecord');
+            const btnStop = document.getElementById('btnStop');
+
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                stopRecord();
+                return;
+            }
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (e) => {
+                    audioChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    uploadAudio(audioBlob, 'recording.webm');
+                    stream.getTracks().forEach(track => track.stop());
+                };
+
+                mediaRecorder.start();
+                btn.textContent = '🎙️ 录音中...';
+                btn.disabled = true;
+                btn.classList.add('btn-recording');
+                btnStop.disabled = false;
+                updateStatus('recording', '录音中...');
+
+            } catch (err) {
+                showToast('无法访问麦克风: ' + err.message, 'error');
+            }
+        }
+
+        function stopRecord() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                const btn = document.getElementById('btnRecord');
+                btn.textContent = '🎙️ 开始录音';
+                btn.disabled = false;
+                btn.classList.remove('btn-recording');
+                document.getElementById('btnStop').disabled = true;
+            }
+        }
+
+        function handleFileUpload(input) {
+            const file = input.files[0];
+            if (file) {
+                uploadAudio(file, file.name);
+            }
+        }
+
+        async function uploadAudio(blob, filename) {
+            updateStatus('active', '上传中...');
+            const formData = new FormData();
+            formData.append('file', blob, filename);
+
+            try {
+                const res = await fetch(`${API_BASE}/audio/upload/`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+
+                if (res.ok && data) {
+                    currentAudioId = data.audio_id;
+                    document.getElementById('btnTranscribe').disabled = false;
+                    updateStatus('active', `已上传: ${filename}`);
+                    showToast('音频上传成功', 'success');
+                } else {
+                    document.getElementById('transcriptText').value = `[上传错误] ${data?.detail || '未知错误'}`;
+                    updateStatus('', '上传失败');
+                    showToast('上传失败', 'error');
+                }
+            } catch (err) {
+                document.getElementById('transcriptText').value = `[上传异常] ${err.message}`;
+                updateStatus('', '上传失败');
+                showToast('上传失败', 'error');
+            }
+        }
+
+        async function loadASRProviders() {
+            try {
+                const res = await fetch(`${API_BASE}/audio/asr-providers`);
+                const data = await res.json();
+                const select = document.getElementById('asrProvider');
+                select.innerHTML = '';
+                data.providers.forEach(p => {
+                    const opt = document.createElement('option');
+                    opt.value = p.id;
+                    opt.textContent = p.name + (p.available ? '' : ' (未配置)');
+                    opt.disabled = !p.available;
+                    if (p.id === data.default) opt.selected = true;
+                    select.appendChild(opt);
+                });
+            } catch (err) {
+                const select = document.getElementById('asrProvider');
+                select.innerHTML = '<option value="whisper">本地 Whisper</option>';
+            }
+        }
+
+        loadASRProviders();
+
+        async function transcribe() {
+            if (!currentAudioId) return;
+
+            const provider = document.getElementById('asrProvider').value;
+            updateStatus('active', '转录中...');
+            document.getElementById('btnTranscribe').disabled = true;
+            document.getElementById('transcriptText').value = '正在转录中，请稍候...';
+
+            try {
+                const url = new URL(`${API_BASE}/audio/transcribe/${currentAudioId}`);
+                if (provider) url.searchParams.set('provider', provider);
+                const res = await fetch(url.toString(), { method: 'POST' });
+                const data = await res.json();
+
+                if (res.ok) {
+                    rawTranscript = data.transcription;
+                    document.getElementById('transcriptText').value = data.transcription;
+                    updateStatus('active', `转录完成 (${data.transcribe_time?.toFixed(2) || '-'}秒)，润色中...`);
+                    showToast('转录完成，正在润色...', 'success');
+                    polishTranscript(currentAudioId);
+                } else {
+                    document.getElementById('transcriptText').value = `[转录错误] ${data?.detail || '未知错误'}`;
+                    updateStatus('', '转录失败');
+                    showToast('转录失败', 'error');
+                }
+            } catch (err) {
+                document.getElementById('transcriptText').value = `[转录异常] ${err.message}`;
+                updateStatus('', '转录失败');
+                showToast('转录失败', 'error');
+            } finally {
+                document.getElementById('btnTranscribe').disabled = false;
+            }
+        }
+
+        // 润色转录文本
+        async function polishTranscript(audioId) {
+            const toggleLink = document.getElementById('toggleRaw');
+            if (toggleLink) toggleLink.style.display = 'none';
+            showingRaw = false;
+
+            try {
+                const res = await fetch(`${API_BASE}/audio/polish/${audioId}`, { method: 'POST' });
+                const data = await res.json();
+
+                if (data.success) {
+                    polishedTranscript = data.polished;
+                    document.getElementById('transcriptText').value = polishedTranscript;
+                    if (toggleLink) toggleLink.style.display = 'inline';
+                    updateStatus('active', '润色完成');
+                    showToast('润色完成', 'success');
+                } else {
+                    polishedTranscript = rawTranscript;
+                    updateStatus('active', '润色失败，已使用原始文本');
+                    showToast('润色失败，已使用原始文本', 'error');
+                }
+            } catch (err) {
+                polishedTranscript = rawTranscript;
+                updateStatus('active', '润色失败，已使用原始文本');
+                showToast('润色失败: ' + err.message, 'error');
+            }
+        }
+
+        // 切换显示原始/润色文本
+        function toggleRawText() {
+            const textarea = document.getElementById('transcriptText');
+            const link = document.getElementById('toggleRaw');
+            if (showingRaw) {
+                textarea.value = polishedTranscript || rawTranscript;
+                link.textContent = '查看原始转录';
+                showingRaw = false;
+            } else {
+                textarea.value = rawTranscript;
+                link.textContent = '查看润色文本';
+                showingRaw = true;
+            }
+        }
+
+        // 生成纪要（仅预览，不存储）
+        async function generateSummary() {
+            const content = document.getElementById('transcriptText').value.trim();
+            if (!content) {
+                showToast('请先输入或转录文本', 'error');
+                return;
+            }
+
+            const style = document.getElementById('summaryStyle').value;
+            const summaryArea = document.getElementById('summaryText');
+            summaryArea.value = '正在生成纪要，请稍候...';
+            document.getElementById('btnSaveSummary').disabled = true;
+
+            try {
+                const res = await fetch(`${API_BASE}/summary/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        content: content,
+                        style: style
+                    })
+                });
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    summaryArea.value = data.summary;
+                    // 自动生成文件名
+                    const now = new Date();
+                    const dateStr = now.toISOString().slice(0, 10);
+                    const styleNames = { meeting: '会议纪要', lecture: '课堂笔记', general: '笔记' };
+                    document.getElementById('summaryFilename').value =
+                        `${dateStr}_${styleNames[style] || '纪要'}`;
+                    document.getElementById('btnSaveSummary').disabled = false;
+                    showToast('纪要生成成功，请预览后确认保存', 'success');
+                } else {
+                    summaryArea.value = `[生成失败] ${data.detail || '未知错误'}`;
+                    showToast('纪要生成失败', 'error');
+                }
+            } catch (err) {
+                summaryArea.value = `[生成异常] ${err.message}`;
+                showToast('纪要生成失败', 'error');
+            }
+        }
+
+        // 保存纪要到 data/docs/ + 索引
+        async function saveSummary() {
+            const content = document.getElementById('summaryText').value.trim();
+            const filename = document.getElementById('summaryFilename').value.trim();
+
+            if (!content) {
+                showToast('纪要内容为空', 'error');
+                return;
+            }
+            if (!filename) {
+                showToast('请输入文件名', 'error');
+                return;
+            }
+
+            const saveResult = document.getElementById('saveResult');
+            saveResult.textContent = '保存中...';
+
+            try {
+                const res = await fetch(`${API_BASE}/summary/save`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        content: content,
+                        filename: filename
+                    })
+                });
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    saveResult.textContent = `已保存: ${data.filename}，已索引 ${data.chunks} 个分块`;
+                    document.getElementById('btnSaveSummary').disabled = true;
+                    showToast('纪要已保存并索引到知识库', 'success');
+                } else {
+                    saveResult.textContent = `保存失败: ${data.detail || '未知错误'}`;
+                    showToast('保存失败', 'error');
+                }
+            } catch (err) {
+                saveResult.textContent = `保存异常: ${err.message}`;
+                showToast('保存失败', 'error');
+            }
+        }
+
+        updateStatus('', '就绪');
+        function updateStatus(type, text) {
+            const dot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            dot.className = 'status-dot' + (type ? ` ${type}` : '');
+            statusText.textContent = text;
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            const icon = type === 'success' ? '✅' : '❌';
+            toast.innerHTML = icon + ' ' + message;
+            toast.className = `toast toast-${type}`;
+            toast.style.display = 'block';
+            setTimeout(() => { toast.style.display = 'none'; }, 3000);
+        }
+    </script>
+</body>
+</html>

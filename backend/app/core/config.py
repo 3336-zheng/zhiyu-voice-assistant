@@ -10,17 +10,17 @@ class Settings(BaseSettings):
     # 应用配置
     app_name: str = "智语端侧智能语音笔记助手"
     app_version: str = "1.0.0"
-    debug: bool = True
-    host: str = "0.0.0.0"
+    debug: bool = False
+    host: str = "127.0.0.1"
     port: int = 8337
 
     # 数据库配置
     database_url: str = "sqlite:///data/database/notes.db"
 
-    # 模型路径配置
-    whisper_model_path: str = "C:/语音识别大模型/Whisper-Finetune/models--temp--2.0/whisper-small-finetune-ct2--int8"
-    embedding_model_path: str = "D:/agent_project/BGE"
-    reranker_model_path: str = "D:/agent_project/BGE-reranker-v2-m3"
+    # 模型路径配置（需在 .env 中填写实际路径）
+    whisper_model_path: str = ""
+    embedding_model_path: str = ""
+    reranker_model_path: str = ""
 
     # 文件存储配置
     upload_dir: str = "data/uploads"
@@ -67,9 +67,18 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_file: str = "data/logs/app.log"
 
+    # CORS 配置
+    cors_origins: str = "*"  # 逗号分隔的域名列表，如 "https://example.com,https://app.example.com"
+
     # 性能配置
     max_concurrent_requests: int = 10
     timeout_seconds: int = 300
+
+    def get_cors_origins(self) -> list:
+        """获取 CORS 允许的源列表"""
+        if self.cors_origins == "*":
+            return ["*"]
+        return [o.strip() for o in self.cors_origins.split(",")]
 
     class Config:
         env_file = ".env"

@@ -133,10 +133,11 @@ async def startup_event():
 app.add_middleware(LoggingMiddleware)
 
 # 添加CORS中间件
+# 开源部署时建议将 allow_origins 限制为实际前端域名
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.get_cors_origins(),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

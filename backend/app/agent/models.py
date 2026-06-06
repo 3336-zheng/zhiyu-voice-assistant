@@ -109,8 +109,8 @@ class CreateNoteParameters(BaseModel):
 
 
 class UpdateNoteParameters(BaseModel):
-    """更新笔记参数"""
-    note_id: int
+    """更新笔记参数（基于文件名操作 data/notes/ 下的 md 文件）"""
+    filename: str
     title: Optional[str] = None
     content: Optional[str] = None
     tags: Optional[List[str]] = None

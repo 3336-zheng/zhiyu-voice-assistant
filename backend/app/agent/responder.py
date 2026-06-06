@@ -161,28 +161,28 @@ class Responder:
             created = result.final_data.get("created_note")
             if created:
                 lines.append(f"笔记创建成功")
+                lines.append(f"文件名: {created.get('filename')}")
                 lines.append(f"标题: {created.get('title')}")
-                lines.append(f"ID: {created.get('id')}")
 
         elif plan.intent == IntentType.UPDATE_NOTE:
             updated = result.final_data.get("updated_note")
             if updated:
                 lines.append(f"笔记更新成功")
+                lines.append(f"文件名: {updated.get('filename')}")
                 lines.append(f"标题: {updated.get('title')}")
-                lines.append(f"ID: {updated.get('id')}")
 
         elif plan.intent == IntentType.DELETE_NOTE:
             deleted = result.final_data.get("deleted_note")
             if deleted:
                 lines.append(f"笔记删除成功")
-                lines.append(f"ID: {deleted.get('note_id')}")
+                lines.append(f"文件名: {deleted.get('filename')}")
 
         elif plan.intent == IntentType.LIST_NOTES:
             notes = result.final_data.get("notes_list", [])
             if notes:
                 lines.append(f"共 {len(notes)} 条笔记：")
                 for note in notes[:10]:
-                    lines.append(f"- {note.get('title')} (ID: {note.get('id')})")
+                    lines.append(f"- {note.get('filename')} ({note.get('title')})")
             else:
                 lines.append("暂无笔记。")
 
@@ -306,7 +306,7 @@ class Responder:
         if not created_note:
             return "创建笔记成功，但无法获取详情。"
 
-        return f"笔记创建成功！\n\n标题：{created_note.get('title', '无标题')}\nID：{created_note.get('id')}"
+        return f"笔记创建成功！\n\n标题：{created_note.get('title', '无标题')}\n文件：{created_note.get('filename')}"
 
     def _template_update_note_response(self, plan: Plan, result: ExecutionResult) -> str:
         """模板：更新笔记回复"""
@@ -318,7 +318,7 @@ class Responder:
         if not updated_note:
             return "更新笔记成功。"
 
-        return f"笔记更新成功！\n\n标题：{updated_note.get('title', '无标题')}\nID：{updated_note.get('id')}"
+        return f"笔记更新成功！\n\n标题：{updated_note.get('title', '无标题')}\n文件：{updated_note.get('filename')}"
 
     def _template_delete_note_response(self, plan: Plan, result: ExecutionResult) -> str:
         """模板：删除笔记回复"""
@@ -328,7 +328,7 @@ class Responder:
 
         deleted_note = result.final_data.get("deleted_note")
         if deleted_note:
-            return f"已删除笔记：{deleted_note.get('title', 'ID=' + str(deleted_note.get('note_id')))}"
+            return f"已删除笔记：{deleted_note.get('filename')}"
         return "笔记已删除。"
 
     def _template_list_notes_response(self, plan: Plan, result: ExecutionResult) -> str:
@@ -341,13 +341,11 @@ class Responder:
         lines = [f"共 {len(notes_list)} 条笔记：", ""]
 
         for note in notes_list:
-            title = note.get("title", "无标题")
+            filename = note.get("filename", "未知文件")
             created = note.get("created_at", "")[:10]
-            tags = note.get("tags", [])
-            tag_str = f" [{', '.join(tags)}]" if tags else ""
 
-            lines.append(f"- **{title}** (ID: {note.get('id')}){tag_str}")
-            lines.append(f"  创建于: {created}")
+            lines.append(f"- **{filename}**")
+            lines.append(f"  修改于: {created}")
             lines.append("")
 
         return "\n".join(lines)

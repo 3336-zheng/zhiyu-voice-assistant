@@ -32,8 +32,8 @@ INTENT_RECOGNITION_PROMPT = """你是一个智能笔记助手的意图识别模�
 支持的意图类型：
 - search: 检索知识库（如"查找关于AI的笔记"、"搜索会议记录"）
 - create_note: 创建笔记（如"创建笔记标题是XXX内容是YYY"、"记录一下..."）
-- update_note: 更新笔记（如"更新笔记ID为5的内容"、"修改笔记..."）
-- delete_note: 删除笔记（如"删除笔记ID为3"、"删掉这条笔记"）
+- update_note: 更新笔记（如"更新笔记xxx的内容"、"修改笔记..."），需要 filename 参数
+- delete_note: 删除笔记（如"删除笔记xxx"、"删掉这条笔记"），需要 filename 参数
 - list_notes: 列出笔记（如"显示所有笔记"、"列出本周的笔记"）
 - time_query: 时间查询（如"现在几点"、"今天星期几"）
 - summarize: 摘要总结（如"总结关于项目的讨论"、"概括一下AI相关内容"）
@@ -41,7 +41,9 @@ INTENT_RECOGNITION_PROMPT = """你是一个智能笔记助手的意图识别模�
 - write_md: 写入MD文件（如"把这段话写进md文件"、"记录到文件里"、"写入笔记文件"）
 - write_md（组合场景）: 当用户要求"总结/整理/概括某主题并写成md文档"时，也归为write_md，content留空，query字段填写用于知识库检索的核心关键词（如"RAG分块策略"而非完整句子）
 - date_search: 按日期搜索笔记（如"查看上周的笔记"、"找5月份关于AI的笔记"、"搜索今天的记录"）
-- note_detail: 查看笔记详情（如"查看笔记5的详情"、"看看那条笔记的完整内容"、"打开笔记3"）
+- note_detail: 查看笔记详情（如"查看笔记xxx的详情"、"看看那条笔记的完整内容"、"打开笔记xxx"），需要 filename 参数
+
+重要：笔记现在以 md 文件形式存储在 data/notes/ 目录下，不再使用数据库 ID。更新、删除、查看详情时，使用 filename（文件名）而非 note_id。
 
 请以JSON格式返回：
 {
@@ -52,11 +54,10 @@ INTENT_RECOGNITION_PROMPT = """你是一个智能笔记助手的意图识别模�
         "original_query_cleaned": "修正语音错误但保留完整语义的查询",
         "title": "笔记标题（如果是创建/更新）",
         "content": "笔记内容（如果是创建/更新）",
-        "note_id": 123,
+        "filename": "文件名（更新/删除/查看详情时必须，如'笔记_20260530'）",
         "tags": ["标签1", "标签2"],
         "date_from": "YYYY-MM-DD",
         "date_to": "YYYY-MM-DD",
-        "filename": "文件名（如果是创建/写入MD文件）",
         "mode": "append或overwrite（如果是写入MD文件）"
     },
     "reasoning": "识别理由，说明做了哪些语音纠错"
@@ -236,8 +237,9 @@ class Planner:
 
     def _plan_update_note_from_llm(self, query: str, params: Dict, reasoning: str) -> Plan:
         """从 LLM 结果生成更新笔记计划"""
+        filename = params.get("filename", "")
         update_params = UpdateNoteParameters(
-            note_id=params.get("note_id", 0),
+            filename=filename,
             title=params.get("title"),
             content=params.get("content"),
             tags=params.get("tags")
@@ -250,7 +252,7 @@ class Planner:
                 step_id=1,
                 tool_name=ToolName.UPDATE_NOTE,
                 parameters=update_params.dict(),
-                description=f"更新笔记 ID={update_params.note_id}"
+                description=f"更新笔记: {filename}"
             )],
             estimated_steps=1,
             reasoning=reasoning or f"用户意图是更新笔记。"
@@ -258,7 +260,7 @@ class Planner:
 
     def _plan_delete_note_from_llm(self, query: str, params: Dict, reasoning: str) -> Plan:
         """从 LLM 结果生成删除笔记计划"""
-        note_id = params.get("note_id")
+        filename = params.get("filename", "")
 
         return Plan(
             intent=IntentType.DELETE_NOTE,
@@ -266,8 +268,8 @@ class Planner:
             steps=[PlanStep(
                 step_id=1,
                 tool_name=ToolName.DELETE_NOTE,
-                parameters={"note_id": note_id},
-                description=f"删除笔记 ID={note_id}" if note_id else "删除笔记"
+                parameters={"filename": filename},
+                description=f"删除笔记: {filename}" if filename else "删除笔记"
             )],
             estimated_steps=1,
             reasoning=reasoning or "用户意图是删除笔记。"
@@ -457,12 +459,7 @@ class Planner:
 
     def _plan_note_detail_from_llm(self, query: str, params: Dict, reasoning: str) -> Plan:
         """从 LLM 结果生成查看笔记详情计划"""
-        note_id = params.get("note_id")
-        if not note_id:
-            # 尝试从查询中提取笔记ID
-            id_match = re.search(r'(?:笔记|note)\s*[ID编号]*\s*[是为：:]*\s*(\d+)', query, re.IGNORECASE)
-            if id_match:
-                note_id = int(id_match.group(1))
+        filename = params.get("filename", "")
 
         return Plan(
             intent=IntentType.NOTE_DETAIL,
@@ -470,8 +467,8 @@ class Planner:
             steps=[PlanStep(
                 step_id=1,
                 tool_name=ToolName.GET_NOTE_DETAIL,
-                parameters={"note_id": note_id},
-                description=f"查看笔记详情 ID={note_id}" if note_id else "查看笔记详情"
+                parameters={"filename": filename},
+                description=f"查看笔记详情: {filename}" if filename else "查看笔记详情"
             )],
             estimated_steps=1,
             reasoning=reasoning or "用户意图是查看笔记详情。"
@@ -685,12 +682,7 @@ class Planner:
 
     def _plan_note_detail(self, query: str) -> Plan:
         """生成查看笔记详情计划（规则匹配）"""
-        note_id = None
-
-        # 尝试从查询中提取笔记ID
-        id_match = re.search(r'(?:笔记|note)\s*[ID编号]*\s*[是为：:]*\s*(\d+)', query, re.IGNORECASE)
-        if id_match:
-            note_id = int(id_match.group(1))
+        filename = self._extract_filename(query)
 
         return Plan(
             intent=IntentType.NOTE_DETAIL,
@@ -698,8 +690,8 @@ class Planner:
             steps=[PlanStep(
                 step_id=1,
                 tool_name=ToolName.GET_NOTE_DETAIL,
-                parameters={"note_id": note_id},
-                description=f"查看笔记详情 ID={note_id}" if note_id else "查看笔记详情"
+                parameters={"filename": filename},
+                description=f"查看笔记详情: {filename}" if filename else "查看笔记详情"
             )],
             estimated_steps=1,
             reasoning=f"用户查询'{query}'被识别为查看笔记详情意图。"
@@ -731,23 +723,23 @@ class Planner:
                 step_id=1,
                 tool_name=ToolName.UPDATE_NOTE,
                 parameters=params.dict(),
-                description=f"更新笔记 ID={params.note_id}"
+                description=f"更新笔记: {params.filename}"
             )],
             estimated_steps=1,
-            reasoning=f"用户意图是更新笔记 ID={params.note_id}。"
+            reasoning=f"用户意图是更新笔记 {params.filename}。"
         )
 
     def _plan_delete_note(self, query: str) -> Plan:
         """生成删除笔记计划"""
-        note_id = self._extract_note_id(query)
+        filename = self._extract_filename(query)
         return Plan(
             intent=IntentType.DELETE_NOTE,
             original_query=query,
             steps=[PlanStep(
                 step_id=1,
                 tool_name=ToolName.DELETE_NOTE,
-                parameters={"note_id": note_id},
-                description=f"删除笔记 ID={note_id}" if note_id else "删除笔记"
+                parameters={"filename": filename},
+                description=f"删除笔记: {filename}" if filename else "删除笔记"
             )],
             estimated_steps=1,
             reasoning="用户意图是删除笔记。"
@@ -955,8 +947,8 @@ class Planner:
 
     def _parse_update_note_params(self, query: str) -> UpdateNoteParameters:
         """解析更新笔记参数"""
-        note_id = self._extract_note_id(query) or 0
-        params = {"note_id": note_id}
+        filename = self._extract_filename(query) or ""
+        params = {"filename": filename}
 
         title_match = re.search(r"标题[改设置为]([^，。,.]+)", query)
         if title_match:
@@ -972,19 +964,20 @@ class Planner:
 
         return UpdateNoteParameters(**params)
 
-    def _extract_note_id(self, query: str) -> Optional[int]:
-        """提取笔记ID"""
+    def _extract_filename(self, query: str) -> Optional[str]:
+        """提取笔记文件名（从用户查询中）"""
+        # 匹配"笔记xxx"或"文件xxx"格式
         patterns = [
-            r"(?:id|ID)[是为\s]*[:：\s]*(\d+)",
-            r"第\s*(\d+)\s*(?:条|个|篇|号)",
+            r'(?:笔记|文件)\s*[名叫是为：:]\s*[「"“]?([^」"”，。,.]+)',
+            r'(?:笔记|文件)\s+(.+?)(?:\s|$)',
         ]
         for pattern in patterns:
             match = re.search(pattern, query)
             if match:
-                try:
-                    return int(match.group(1))
-                except ValueError:
-                    continue
+                name = match.group(1).strip()
+                # 过滤掉无意义的词
+                if name and name not in ("的", "了", "吗", "吧", "呢"):
+                    return name if name.endswith(".md") else name
         return None
 
     def _extract_date_range(self, query: str):

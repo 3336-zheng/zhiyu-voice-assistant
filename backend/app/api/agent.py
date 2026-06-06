@@ -131,8 +131,8 @@ async def list_sessions(db: Session = Depends(get_db)):
         SessionListResponse: 会话列表
     """
     try:
-        agent = get_agent()
-        sessions = agent.list_sessions(db)
+        memory_service = get_memory_service()
+        sessions = memory_service.list_sessions(db)
         return SessionListResponse(
             sessions=sessions,
             total=len(sessions)

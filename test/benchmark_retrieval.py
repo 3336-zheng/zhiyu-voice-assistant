@@ -178,7 +178,6 @@ class RetrievalBenchmark:
         from backend.app.services.rrf_service import get_rrf_service
         from backend.app.services.doc_index_service import get_doc_index_service
         from backend.app.core.database import engine, Base
-        from backend.app.models import Note, Audio  # 触发模型注册
 
         print("正在加载服务（首次加载模型可能需要 30-60 秒）...")
         start = time.time()
@@ -394,24 +393,9 @@ class RetrievalBenchmark:
 
     def _enrich_results(self, rrf_results: List[Tuple[str, float]], db) -> List[Dict]:
         """将 RRF 结果转为带内容的字典列表"""
-        from backend.app.models.note import Note
-
         enriched = []
         for doc_id, score in rrf_results:
-            if doc_id.startswith("note_"):
-                try:
-                    note_id = int(doc_id.split("_", 1)[1])
-                    note = db.query(Note).filter(Note.id == note_id).first()
-                    if note:
-                        enriched.append({
-                            "id": doc_id,
-                            "title": note.title or "",
-                            "content": note.content or "",
-                            "source_type": "note",
-                        })
-                except (ValueError, Exception):
-                    pass
-            elif doc_id.startswith("doc_"):
+            if doc_id.startswith("doc_"):
                 # 从 BM25 corpus 获取，如果不在则查 ChromaDB
                 content = self.bm25_service.corpus.get(doc_id, "")
                 if not content:

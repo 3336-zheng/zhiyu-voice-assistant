@@ -1,6 +1,6 @@
 {
   "benchmark": "retrieval",
-  "timestamp": "2026-05-09T23:14:47.216204",
+  "timestamp": "2026-06-06T21:21:36.886300",
   "top_k": 5,
   "test_cases": 12,
   "methods": {
@@ -9,8 +9,8 @@
       "hit_rate": 1.0,
       "avg_precision": 0.7833333333333332,
       "avg_recall": 0.9583333333333334,
-      "avg_latency_ms": 6.9121519724528,
-      "total_latency_ms": 82.9458236694336,
+      "avg_latency_ms": 2.69011656443278,
+      "total_latency_ms": 32.28139877319336,
       "hits": 12,
       "total": 12
     },
@@ -19,8 +19,8 @@
       "hit_rate": 1.0,
       "avg_precision": 0.6666666666666666,
       "avg_recall": 0.9166666666666666,
-      "avg_latency_ms": 56.343913078308105,
-      "total_latency_ms": 676.1269569396973,
+      "avg_latency_ms": 53.367396195729576,
+      "total_latency_ms": 640.4087543487549,
       "hits": 12,
       "total": 12
     },
@@ -29,130 +29,130 @@
       "hit_rate": 1.0,
       "avg_precision": 0.8166666666666665,
       "avg_recall": 1.0,
-      "avg_latency_ms": 19.449830055236816,
-      "total_latency_ms": 233.3979606628418,
+      "avg_latency_ms": 27.184665203094482,
+      "total_latency_ms": 326.2159824371338,
       "hits": 12,
       "total": 12
     },
     "Hybrid+Reranker": {
       "method": "Hybrid+Reranker",
       "hit_rate": 1.0,
-      "avg_precision": 0.8500000000000001,
+      "avg_precision": 0.8333333333333334,
       "avg_recall": 1.0,
-      "avg_latency_ms": 22861.03743314743,
-      "total_latency_ms": 274332.44919776917,
+      "avg_latency_ms": 208.72533321380615,
+      "total_latency_ms": 2504.703998565674,
       "hits": 12,
       "total": 12
     }
   },
   "category_analysis": {
-    "关键词匹配": {
+    "语义理解": {
       "BM25": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 22.02582359313965,
+        "avg_latency_ms": 0.6667772928873698,
         "count": 3
       },
       "Embedding": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 144.87560590108237,
+        "avg_latency_ms": 45.48144340515137,
         "count": 3
       },
       "Hybrid (RRF)": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 18.338123957316082,
+        "avg_latency_ms": 30.207713445027668,
         "count": 3
       },
       "Hybrid+Reranker": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 23318.87952486674,
+        "avg_latency_ms": 160.51848729451498,
         "count": 3
-      }
-    },
-    "精确术语": {
-      "BM25": {
-        "hit_rate": 1.0,
-        "avg_latency_ms": 1.0037422180175781,
-        "count": 2
-      },
-      "Embedding": {
-        "hit_rate": 1.0,
-        "avg_latency_ms": 26.04961395263672,
-        "count": 2
-      },
-      "Hybrid (RRF)": {
-        "hit_rate": 1.0,
-        "avg_latency_ms": 20.213723182678223,
-        "count": 2
-      },
-      "Hybrid+Reranker": {
-        "hit_rate": 1.0,
-        "avg_latency_ms": 29388.314723968506,
-        "count": 2
       }
     },
     "混合难度": {
       "BM25": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 1.654505729675293,
+        "avg_latency_ms": 0.499725341796875,
         "count": 2
       },
       "Embedding": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 21.327853202819824,
+        "avg_latency_ms": 35.478830337524414,
         "count": 2
       },
       "Hybrid (RRF)": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 20.662665367126465,
+        "avg_latency_ms": 26.781201362609863,
         "count": 2
       },
       "Hybrid+Reranker": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 29363.670468330383,
+        "avg_latency_ms": 182.33132362365723,
         "count": 2
       }
     },
-    "语义理解": {
+    "关键词匹配": {
       "BM25": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 2.6728312174479165,
+        "avg_latency_ms": 9.091933568318685,
         "count": 3
       },
       "Embedding": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 30.197302500406902,
+        "avg_latency_ms": 79.37200864156087,
         "count": 3
       },
       "Hybrid (RRF)": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 16.68071746826172,
+        "avg_latency_ms": 25.25607744852702,
         "count": 3
       },
       "Hybrid+Reranker": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 16921.3383992513,
+        "avg_latency_ms": 226.67638460795084,
         "count": 3
       }
     },
     "跨文档": {
       "BM25": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 1.7666816711425781,
+        "avg_latency_ms": 0.5010366439819336,
         "count": 2
       },
       "Embedding": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 28.076648712158203,
+        "avg_latency_ms": 46.526432037353516,
         "count": 2
       },
       "Hybrid (RRF)": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 23.29432964324951,
+        "avg_latency_ms": 24.85489845275879,
         "count": 2
       },
       "Hybrid+Reranker": {
         "hit_rate": 1.0,
-        "avg_latency_ms": 18053.91252040863,
+        "avg_latency_ms": 280.87377548217773,
+        "count": 2
+      }
+    },
+    "精确术语": {
+      "BM25": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 0.5018711090087891,
+        "count": 2
+      },
+      "Embedding": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 50.91893672943115,
+        "count": 2
+      },
+      "Hybrid (RRF)": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 28.27620506286621,
+        "count": 2
+      },
+      "Hybrid+Reranker": {
+        "hit_rate": 1.0,
+        "avg_latency_ms": 208.35459232330322,
         "count": 2
       }
     }
@@ -167,7 +167,7 @@
         "returned_count": 5,
         "precision": 0.8,
         "recall": 1.0,
-        "latency_ms": 62.059879302978516,
+        "latency_ms": 24.769306182861328,
         "top3_ids": [
           "doc_RAG面试问题汇总_79",
           "doc_RAG面试问题汇总_13",
@@ -182,7 +182,7 @@
         "returned_count": 5,
         "precision": 0.8,
         "recall": 1.0,
-        "latency_ms": 2.9816627502441406,
+        "latency_ms": 1.5087127685546875,
         "top3_ids": [
           "doc_RAG面试问题汇总_14",
           "doc_基于《hello-agent》的核心知识点_33",
@@ -197,7 +197,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 1.035928726196289,
+        "latency_ms": 0.9977817535400391,
         "top3_ids": [
           "doc_Agent面试核心知识点汇总_2",
           "doc_Agent面试核心知识点汇总_3",
@@ -212,7 +212,7 @@
         "returned_count": 5,
         "precision": 0.8,
         "recall": 1.0,
-        "latency_ms": 3.0198097229003906,
+        "latency_ms": 0.0,
         "top3_ids": [
           "doc_RAG面试问题汇总_58",
           "doc_RAG面试问题汇总_9",
@@ -227,7 +227,7 @@
         "returned_count": 5,
         "precision": 0.4,
         "recall": 1.0,
-        "latency_ms": 3.0088424682617188,
+        "latency_ms": 1.003265380859375,
         "top3_ids": [
           "doc_基于《all-in-rag》的RAG核心知识点_11",
           "doc_Agent应用开发实践踩坑与经验分享_32",
@@ -242,7 +242,7 @@
         "returned_count": 5,
         "precision": 0.2,
         "recall": 0.5,
-        "latency_ms": 1.9898414611816406,
+        "latency_ms": 0.9970664978027344,
         "top3_ids": [
           "doc_基于《all-in-rag》的RAG核心知识点_11",
           "doc_Agent应用开发实践踩坑与经验分享_20",
@@ -257,7 +257,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 1.0006427764892578,
+        "latency_ms": 1.0020732879638672,
         "top3_ids": [
           "doc_基于《all-in-rag》的RAG核心知识点_51",
           "doc_RAG面试问题汇总_7",
@@ -272,7 +272,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 2.5327205657958984,
+        "latency_ms": 0.0,
         "top3_ids": [
           "doc_Agent应用开发实践踩坑与经验分享_0",
           "doc_Agent应用开发实践踩坑与经验分享_102",
@@ -287,7 +287,7 @@
         "returned_count": 5,
         "precision": 0.8,
         "recall": 1.0,
-        "latency_ms": 0.9999275207519531,
+        "latency_ms": 1.0037422180175781,
         "top3_ids": [
           "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_18",
           "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_12",
@@ -302,7 +302,7 @@
         "returned_count": 5,
         "precision": 0.6,
         "recall": 1.0,
-        "latency_ms": 1.0075569152832031,
+        "latency_ms": 0.0,
         "top3_ids": [
           "doc_基于《hello-agent》的核心知识点_6",
           "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_24",
@@ -317,7 +317,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 1.0068416595458984,
+        "latency_ms": 0.99945068359375,
         "top3_ids": [
           "doc_RAG面试问题汇总_29",
           "doc_RAG面试问题汇总_27",
@@ -332,7 +332,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 2.3021697998046875,
+        "latency_ms": 0.0,
         "top3_ids": [
           "doc_Agent面试核心知识点汇总_6",
           "doc_基于《hello-agent》的核心知识点_31",
@@ -349,7 +349,7 @@
         "returned_count": 5,
         "precision": 0.6,
         "recall": 1.0,
-        "latency_ms": 289.08634185791016,
+        "latency_ms": 176.3772964477539,
         "top3_ids": [
           "doc_RAG面试问题汇总_13",
           "doc_RAG面试问题汇总_66",
@@ -364,7 +364,7 @@
         "returned_count": 5,
         "precision": 0.2,
         "recall": 0.5,
-        "latency_ms": 115.92507362365723,
+        "latency_ms": 26.74579620361328,
         "top3_ids": [
           "doc_基于《all-in-rag》的RAG核心知识点_17",
           "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_15",
@@ -379,7 +379,7 @@
         "returned_count": 5,
         "precision": 0.8,
         "recall": 1.0,
-        "latency_ms": 29.615402221679688,
+        "latency_ms": 34.99293327331543,
         "top3_ids": [
           "doc_Agent面试核心知识点汇总_3",
           "doc_基于《hello-agent》的核心知识点_1",
@@ -394,7 +394,7 @@
         "returned_count": 5,
         "precision": 0.4,
         "recall": 1.0,
-        "latency_ms": 29.399871826171875,
+        "latency_ms": 53.46512794494629,
         "top3_ids": [
           "doc_Agent应用开发实践踩坑与经验分享_63",
           "doc_Agent应用开发实践踩坑与经验分享_60",
@@ -409,7 +409,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 35.54558753967285,
+        "latency_ms": 43.18356513977051,
         "top3_ids": [
           "doc_基于《all-in-rag》的RAG核心知识点_7",
           "doc_基于《all-in-rag》的RAG核心知识点_21",
@@ -424,7 +424,7 @@
         "returned_count": 5,
         "precision": 0.8,
         "recall": 1.0,
-        "latency_ms": 25.646448135375977,
+        "latency_ms": 39.795637130737305,
         "top3_ids": [
           "doc_RAG面试问题汇总_66",
           "doc_RAG检索全流程思维导图_5",
@@ -439,7 +439,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 30.420541763305664,
+        "latency_ms": 27.438879013061523,
         "top3_ids": [
           "doc_RAG面试问题汇总_83",
           "doc_RAG面试问题汇总_80",
@@ -454,7 +454,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 25.732755661010742,
+        "latency_ms": 65.61398506164551,
         "top3_ids": [
           "doc_Agent应用开发实践踩坑与经验分享_1",
           "doc_Agent应用开发实践踩坑与经验分享_46",
@@ -469,7 +469,7 @@
         "returned_count": 5,
         "precision": 0.6,
         "recall": 1.0,
-        "latency_ms": 25.806188583374023,
+        "latency_ms": 69.22173500061035,
         "top3_ids": [
           "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_12",
           "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_11",
@@ -484,7 +484,7 @@
         "returned_count": 5,
         "precision": 0.2,
         "recall": 0.5,
-        "latency_ms": 26.293039321899414,
+        "latency_ms": 32.61613845825195,
         "top3_ids": [
           "doc_基于《hello-agent》的核心知识点_38",
           "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_18",
@@ -499,7 +499,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 20.60246467590332,
+        "latency_ms": 43.057918548583984,
         "top3_ids": [
           "doc_基于《all-in-rag》的RAG核心知识点_7",
           "doc_RAG面试问题汇总_47",
@@ -514,7 +514,7 @@
         "returned_count": 5,
         "precision": 0.4,
         "recall": 1.0,
-        "latency_ms": 22.053241729736328,
+        "latency_ms": 27.899742126464844,
         "top3_ids": [
           "doc_Agent应用开发实践踩坑与经验分享_63",
           "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_2",
@@ -531,7 +531,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 21.017074584960938,
+        "latency_ms": 25.297880172729492,
         "top3_ids": [
           "doc_RAG面试问题汇总_13",
           "doc_RAG面试问题汇总_66",
@@ -546,7 +546,7 @@
         "returned_count": 5,
         "precision": 0.6,
         "recall": 1.0,
-        "latency_ms": 17.287492752075195,
+        "latency_ms": 25.809764862060547,
         "top3_ids": [
           "doc_基于《all-in-rag》的RAG核心知识点_17",
           "doc_RAG面试问题汇总_14",
@@ -561,7 +561,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 16.70980453491211,
+        "latency_ms": 24.660587310791016,
         "top3_ids": [
           "doc_Agent面试核心知识点汇总_3",
           "doc_Agent面试核心知识点汇总_2",
@@ -576,7 +576,7 @@
         "returned_count": 5,
         "precision": 0.8,
         "recall": 1.0,
-        "latency_ms": 17.050981521606445,
+        "latency_ms": 30.986785888671875,
         "top3_ids": [
           "doc_Agent应用开发实践踩坑与经验分享_63",
           "doc_RAG面试问题汇总_9",
@@ -591,7 +591,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 15.283584594726562,
+        "latency_ms": 35.51030158996582,
         "top3_ids": [
           "doc_RAG检索全流程思维导图_3",
           "doc_RAG面试问题汇总_35",
@@ -606,11 +606,11 @@
         "returned_count": 5,
         "precision": 0.6,
         "recall": 1.0,
-        "latency_ms": 17.70758628845215,
+        "latency_ms": 24.126052856445312,
         "top3_ids": [
           "doc_基于《all-in-rag》的RAG核心知识点_24",
           "doc_Agent应用开发实践踩坑与经验分享_20",
-          "doc_基于《all-in-rag》的RAG核心知识点_11"
+          "doc_RAG面试问题汇总_66"
         ]
       },
       {
@@ -621,7 +621,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 21.93450927734375,
+        "latency_ms": 22.849559783935547,
         "top3_ids": [
           "doc_RAG面试问题汇总_7",
           "doc_RAG面试问题汇总_83",
@@ -636,10 +636,10 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 24.654150009155273,
+        "latency_ms": 26.86023712158203,
         "top3_ids": [
-          "doc_Agent应用开发实践踩坑与经验分享_0",
           "doc_Agent应用开发实践踩坑与经验分享_1",
+          "doc_Agent应用开发实践踩坑与经验分享_0",
           "doc_Agent应用开发实践踩坑与经验分享_46"
         ]
       },
@@ -651,7 +651,7 @@
         "returned_count": 5,
         "precision": 0.8,
         "recall": 1.0,
-        "latency_ms": 20.592927932739258,
+        "latency_ms": 25.022029876708984,
         "top3_ids": [
           "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_12",
           "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_18",
@@ -666,7 +666,7 @@
         "returned_count": 5,
         "precision": 0.4,
         "recall": 1.0,
-        "latency_ms": 19.834518432617188,
+        "latency_ms": 31.530380249023438,
         "top3_ids": [
           "doc_基于《hello-agent》的核心知识点_6",
           "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_18",
@@ -681,7 +681,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 18.028974533081055,
+        "latency_ms": 31.008005142211914,
         "top3_ids": [
           "doc_RAG面试问题汇总_29",
           "doc_RAG面试问题汇总_47",
@@ -696,7 +696,7 @@
         "returned_count": 5,
         "precision": 0.6,
         "recall": 1.0,
-        "latency_ms": 23.296356201171875,
+        "latency_ms": 22.554397583007812,
         "top3_ids": [
           "doc_Agent面试核心知识点汇总_6",
           "doc_Agent应用开发实践踩坑与经验分享_66",
@@ -713,7 +713,7 @@
         "returned_count": 5,
         "precision": 0.8,
         "recall": 1.0,
-        "latency_ms": 24200.817584991455,
+        "latency_ms": 304.9006462097168,
         "top3_ids": [
           "doc_RAG面试问题汇总_13",
           "doc_RAG面试问题汇总_66",
@@ -728,7 +728,7 @@
         "returned_count": 5,
         "precision": 0.6,
         "recall": 1.0,
-        "latency_ms": 22860.58473587036,
+        "latency_ms": 176.86820030212402,
         "top3_ids": [
           "doc_基于《all-in-rag》的RAG核心知识点_17",
           "doc_RAG面试问题汇总_14",
@@ -743,7 +743,7 @@
         "returned_count": 5,
         "precision": 0.8,
         "recall": 1.0,
-        "latency_ms": 22895.236253738403,
+        "latency_ms": 198.26030731201172,
         "top3_ids": [
           "doc_基于《hello-agent》的核心知识点_2",
           "doc_Agent面试核心知识点汇总_2",
@@ -758,7 +758,7 @@
         "returned_count": 5,
         "precision": 0.6,
         "recall": 1.0,
-        "latency_ms": 13364.161968231201,
+        "latency_ms": 124.42135810852051,
         "top3_ids": [
           "doc_RAG面试问题汇总_9",
           "doc_RAG面试问题汇总_58",
@@ -773,7 +773,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 13148.821592330933,
+        "latency_ms": 117.10286140441895,
         "top3_ids": [
           "doc_基于《all-in-rag》的RAG核心知识点_7",
           "doc_RAG检索全流程思维导图_3",
@@ -784,15 +784,15 @@
         "query": "多个搜索结果怎么合并排成一个列表",
         "category": "语义理解",
         "hit": true,
-        "hit_count": 5,
+        "hit_count": 4,
         "returned_count": 5,
-        "precision": 1.0,
+        "precision": 0.8,
         "recall": 1.0,
-        "latency_ms": 24251.031637191772,
+        "latency_ms": 240.03124237060547,
         "top3_ids": [
           "doc_基于《all-in-rag》的RAG核心知识点_24",
-          "doc_基于《all-in-rag》的RAG核心知识点_38",
-          "doc_RAG检索全流程思维导图_5"
+          "doc_RAG检索全流程思维导图_5",
+          "doc_RAG检索全流程思维导图_6"
         ]
       },
       {
@@ -803,7 +803,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 22208.97364616394,
+        "latency_ms": 198.28367233276367,
         "top3_ids": [
           "doc_RAG面试问题汇总_7",
           "doc_RAG面试问题汇总_83",
@@ -818,7 +818,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 13898.85139465332,
+        "latency_ms": 363.4638786315918,
         "top3_ids": [
           "doc_Agent应用开发实践踩坑与经验分享_1",
           "doc_Agent应用开发实践踩坑与经验分享_0",
@@ -833,7 +833,7 @@
         "returned_count": 5,
         "precision": 0.8,
         "recall": 1.0,
-        "latency_ms": 28792.333126068115,
+        "latency_ms": 230.30662536621094,
         "top3_ids": [
           "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_41",
           "doc_智语--端侧智能语音笔记助手（自研 Agent + RAG） - 项目文档_18",
@@ -848,7 +848,7 @@
         "returned_count": 5,
         "precision": 0.6,
         "recall": 1.0,
-        "latency_ms": 29984.296321868896,
+        "latency_ms": 186.4025592803955,
         "top3_ids": [
           "doc_基于《hello-agent》的核心知识点_6",
           "doc_Agent应用开发实践踩坑与经验分享_1",
@@ -863,7 +863,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 29216.449737548828,
+        "latency_ms": 186.49601936340332,
         "top3_ids": [
           "doc_基于《all-in-rag》的RAG核心知识点_8",
           "doc_RAG面试问题汇总_16",
@@ -878,7 +878,7 @@
         "returned_count": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "latency_ms": 29510.89119911194,
+        "latency_ms": 178.16662788391113,
         "top3_ids": [
           "doc_基于《hello-agent》的核心知识点_39",
           "doc_Agent面试核心知识点汇总_6",

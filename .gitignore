@@ -47,3 +47,16 @@ desktop.ini
 .pytest_cache/
 htmlcov/
 .coverage
+test/whisper_cpu_result.json
+whisper_test_result.json
+
+# 比赛材料
+智语_PPT内容稿.docx
+智语_比赛项目书.docx
+智语_比赛项目书.md
+generate_docx.py
+generate_ppt_content.py
+
+# 临时文件
+architecture_diagram.html
+*.db

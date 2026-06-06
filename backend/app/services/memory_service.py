@@ -311,12 +311,13 @@ class MemoryService:
             if should_close:
                 db.close()
 
-    def list_sessions(self, db: Session = None) -> List[Dict]:
+    def list_sessions(self, db: Session = None, limit: int = 50) -> List[Dict]:
         """
         列出所有会话
 
         Args:
             db: 数据库会话
+            limit: 返回数量限制
 
         Returns:
             List[Dict]: 会话列表
@@ -329,7 +330,7 @@ class MemoryService:
         try:
             conversations = db.query(Conversation).order_by(
                 Conversation.updated_at.desc()
-            ).all()
+            ).limit(limit).all()
 
             return [
                 {

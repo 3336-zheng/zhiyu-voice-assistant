@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from .api import audio_router, notes_router, health_router, agent_router
 from .api.docs import router as docs_router
+from .api.summary import router as summary_router
 from .core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -100,15 +101,15 @@ async def startup_event():
     os.makedirs(db_dir, exist_ok=True)
     from .core.database import engine, Base
     Base.metadata.create_all(bind=engine)
-    # 清理 notes 表中已废弃的 embedding 列（向量已由 ChromaDB 管理）
+    # 清理已废弃的 notes 表（笔记已迁移到文件系统 data/notes/*.md）
     with engine.connect() as conn:
         try:
             from sqlalchemy import text
-            conn.execute(text("ALTER TABLE notes DROP COLUMN embedding"))
+            conn.execute(text("DROP TABLE IF EXISTS notes"))
             conn.commit()
-            logger.info("已移除 notes.embedding 冗余列")
+            logger.info("已移除废弃的 notes 表")
         except Exception:
-            pass  # 列不存在时忽略
+            pass
     logger.info(f"数据库表已就绪: {db_dir}")
     # 确保上传目录是绝对路径
     upload_dir = settings.get_upload_dir()
@@ -146,6 +147,7 @@ app.include_router(notes_router, prefix="/notes", tags=["笔记管理"])
 app.include_router(agent_router, prefix="/agent", tags=["智能助手"])
 app.include_router(health_router, prefix="/health", tags=["健康检查"])
 app.include_router(docs_router, prefix="/api/documents", tags=["文档管理"])
+app.include_router(summary_router, prefix="/summary", tags=["纪要总结"])
 
 # 挂载前端静态文件（必须放在最后）
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

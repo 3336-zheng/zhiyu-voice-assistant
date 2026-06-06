@@ -2,9 +2,9 @@
 Plan-and-Execute Agent - Executor 执行器
 执行计划中的工具调用，支持无依赖步骤并行执行
 """
+import os
 import time
 import asyncio
-import numpy as np
 from typing import Dict, Any, List, Optional, Set
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor as ThreadExecutor
@@ -19,12 +19,8 @@ from backend.app.agent.models import (
     DateRangeParameters, CreateMdParameters, WriteMdParameters
 )
 from backend.app.services.hybrid_retrieval_service import get_hybrid_retrieval_service
-from backend.app.services.chroma_service import get_chroma_service
-from backend.app.services.bm25_service import get_bm25_service
-from backend.app.services.embedding_service import get_embedding_service
 from backend.app.agent.markdown_agent import get_markdown_agent
 from backend.app.core.database import SessionLocal
-from backend.app.models.note import Note
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +57,6 @@ class Executor:
 
         # 初始化服务
         self.hybrid_retrieval = get_hybrid_retrieval_service()
-        self.chroma_service = get_chroma_service()
-        self.bm25_service = get_bm25_service()
-        self.embedding_service = get_embedding_service()
         self.markdown_agent = get_markdown_agent()
 
     def _build_waves(self, steps: List[PlanStep]) -> List[List[PlanStep]]:
@@ -427,156 +420,138 @@ class Executor:
 
     def create_note(self, parameters: Dict, db: Session) -> Dict:
         """
-        创建笔记
+        创建笔记（写入 data/notes/ 作为 md 文件，不写入 SQLite/ChromaDB/BM25）
 
         Args:
             parameters: 创建参数
-            db: 数据库会话
+            db: 数据库会话（未使用）
 
         Returns:
             Dict: 创建的笔记信息
         """
         params = CreateNoteParameters(**parameters)
 
-        # 生成摘要（简单实现）
-        if not params.summary and params.content:
-            params.summary = params.content[:100] + "..." if len(params.content) > 100 else params.content
+        # 生成文件名：优先用 title，否则用时间戳
+        filename = params.title or f"笔记_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-        # 生成嵌入向量
-        embedding = self.embedding_service.encode(params.content)
-
-        # 创建笔记
-        note = Note(
+        # 写入 data/notes/ 目录
+        result = self.markdown_agent.create_md_file(
+            filename=filename,
             title=params.title,
             content=params.content,
-            summary=params.summary,
-            tags=params.tags or [],
-            audio_id=params.audio_id,
-            duration=0.0
+            directory="data/notes"
         )
 
-        db.add(note)
-        db.commit()
-        db.refresh(note)
+        if result.get("success"):
+            # 同步索引到 ChromaDB + BM25（使笔记可被搜索）
+            try:
+                from backend.app.services.doc_index_service import get_doc_index_service
+                get_doc_index_service().index_doc(result.get("file_path"))
+            except Exception as e:
+                logger.warning(f"笔记 {result.get('filename')} 索引失败（不影响创建）: {e}")
 
-        # 同步到 ChromaDB
-        self.chroma_service.add_embedding(
-            note_id=note.id,
-            embedding=embedding,
-            content=params.content,
-            metadata={
+            return {
+                "id": None,
                 "title": params.title,
-                "tags": params.tags or []
+                "content": params.content,
+                "file_path": result.get("file_path"),
+                "filename": result.get("filename"),
+                "created_at": result.get("created_at")
             }
-        )
-
-        # 更新 BM25 索引
-        self.bm25_service.add_document(f"note_{note.id}", params.content, params.title)
-
-        return {
-            "id": note.id,
-            "title": note.title,
-            "content": note.content,
-            "summary": note.summary,
-            "tags": note.tags,
-            "created_at": note.created_at.isoformat() if note.created_at else None
-        }
+        else:
+            raise ValueError(f"创建笔记文件失败: {result.get('error')}")
 
     def update_note(self, parameters: Dict, db: Session) -> Dict:
         """
-        更新笔记
+        更新笔记（覆写 data/notes/ 下的 md 文件）
 
         Args:
             parameters: 更新参数
-            db: 数据库会话
+            db: 数据库会话（未使用）
 
         Returns:
             Dict: 更新后的笔记信息
         """
         params = UpdateNoteParameters(**parameters)
 
-        note = db.query(Note).filter(Note.id == params.note_id).first()
-        if not note:
-            raise ValueError(f"笔记不存在: ID={params.note_id}")
+        # 先读取原文件内容，确认文件存在
+        read_result = self.markdown_agent.read_md_file(params.filename, directory="data/notes")
+        if not read_result.get("success"):
+            raise ValueError(f"笔记文件不存在: {params.filename}")
 
-        # 更新字段
+        # 构建新内容：保留原标题行，覆写正文
+        new_content = params.content or ""
         if params.title:
-            note.title = params.title
-        if params.content:
-            note.content = params.content
-            # 重新生成摘要
-            note.summary = params.content[:100] + "..." if len(params.content) > 100 else params.content
-        if params.tags:
-            note.tags = params.tags
-        if params.summary:
-            note.summary = params.summary
+            new_content = f"# {params.title}\n\n{new_content}"
 
-        db.commit()
-        db.refresh(note)
+        # 覆写文件
+        result = self.markdown_agent.write_md_file(
+            filename=params.filename,
+            content=new_content,
+            mode="overwrite",
+            directory="data/notes"
+        )
 
-        # 更新 ChromaDB
-        if params.content:
-            self.chroma_service.update_embedding(
-                note_id=note.id,
-                embedding=self.embedding_service.encode(note.content),
-                content=note.content,
-                metadata={"title": note.title, "tags": note.tags}
-            )
+        if result.get("success"):
+            # 同步更新索引
+            try:
+                from backend.app.services.doc_index_service import get_doc_index_service
+                get_doc_index_service().index_doc(result.get("file_path"))
+            except Exception as e:
+                logger.warning(f"笔记 {params.filename} 索引更新失败: {e}")
 
-            # 更新 BM25 索引
-            self.bm25_service.update_document(note.id, note.content, note.title)
-
-        return {
-            "id": note.id,
-            "title": note.title,
-            "content": note.content,
-            "summary": note.summary,
-            "tags": note.tags,
-            "updated_at": note.updated_at.isoformat() if note.updated_at else None
-        }
+            return {
+                "filename": params.filename,
+                "title": params.title,
+                "content": new_content,
+                "updated_at": result.get("written_at")
+            }
+        else:
+            raise ValueError(f"更新笔记文件失败: {result.get('error')}")
 
     def delete_note(self, parameters: Dict, db: Session) -> Dict:
         """
-        删除笔记
+        删除笔记（删除 data/notes/ 下的 md 文件）
 
         Args:
-            parameters: 删除参数
-            db: 数据库会话
+            parameters: 删除参数（filename 字段）
+            db: 数据库会话（未使用）
 
         Returns:
             Dict: 删除结果
         """
-        note_id = parameters.get("note_id")
-        if not note_id:
-            raise ValueError("必须提供笔记ID")
+        filename = parameters.get("filename")
+        if not filename:
+            raise ValueError("必须提供文件名")
 
-        note = db.query(Note).filter(Note.id == note_id).first()
-        if not note:
-            raise ValueError(f"笔记不存在: ID={note_id}")
+        file_path = self.markdown_agent._get_file_path(filename, directory="data/notes")
 
-        # 删除数据库记录
-        db.delete(note)
-        db.commit()
+        if not os.path.exists(file_path):
+            raise ValueError(f"笔记文件不存在: {filename}")
 
-        # 删除 ChromaDB 向量
-        self.chroma_service.delete_by_note_id(note_id)
+        os.remove(file_path)
+        logger.info(f"删除笔记文件: {file_path}")
 
-        # 删除 BM25 索引
-        self.bm25_service.remove_document(note_id)
+        # 清理索引
+        try:
+            from backend.app.services.doc_index_service import get_doc_index_service
+            get_doc_index_service().remove_doc(filename if filename.endswith(".md") else f"{filename}.md")
+        except Exception as e:
+            logger.warning(f"笔记 {filename} 索引清理失败: {e}")
 
         return {
             "deleted": True,
-            "note_id": note_id,
-            "title": note.title if note else None
+            "filename": filename,
+            "file_path": file_path
         }
 
     def list_notes(self, parameters: Dict, db: Session) -> List[Dict]:
         """
-        列出笔记
+        列出笔记（读取 data/notes/ 目录下的 md 文件）
 
         Args:
-            parameters: 列表参数
-            db: 数据库会话
+            parameters: 列表参数（limit, date_from, date_to）
+            db: 数据库会话（未使用）
 
         Returns:
             List[Dict]: 笔记列表
@@ -585,29 +560,33 @@ class Executor:
         date_from = parameters.get("date_from")
         date_to = parameters.get("date_to")
 
-        query = db.query(Note)
+        result = self.markdown_agent.list_md_files(directory="data/notes")
+        files = result.get("files", [])
 
-        # 应用日期过滤
-        if date_from:
-            from_date = datetime.fromisoformat(date_from)
-            query = query.filter(Note.created_at >= from_date)
-        if date_to:
-            to_date = datetime.fromisoformat(date_to)
-            query = query.filter(Note.created_at <= to_date)
+        # 按文件修改时间过滤
+        filtered = []
+        for f in files:
+            mtime = f.get("modified_at", "")
+            if date_from and mtime < date_from:
+                continue
+            if date_to and mtime > date_to + "T23:59:59":
+                continue
+            filtered.append(f)
 
-        # 按时间倒序
-        query = query.order_by(Note.created_at.desc())
-        notes = query.limit(limit).all()
+        # 限制数量
+        filtered = filtered[:limit]
 
         return [
             {
-                "id": note.id,
-                "title": note.title,
-                "summary": note.summary,
-                "tags": note.tags,
-                "created_at": note.created_at.isoformat() if note.created_at else None
+                "id": None,
+                "filename": f["filename"],
+                "title": f["filename"].replace(".md", ""),
+                "summary": "",
+                "tags": [],
+                "created_at": f.get("modified_at"),
+                "file_path": f.get("file_path")
             }
-            for note in notes
+            for f in filtered
         ]
 
     def get_current_time(self, parameters: Dict, db: Session = None) -> Dict:
@@ -634,79 +613,71 @@ class Executor:
 
     def search_by_date_range(self, parameters: Dict, db: Session) -> List[Dict]:
         """
-        按日期范围搜索笔记
+        按日期范围搜索笔记（基于 data/notes/ 下 md 文件的修改时间）
 
         Args:
             parameters: 搜索参数
-            db: 数据库会话
+            db: 数据库会话（未使用）
 
         Returns:
             List[Dict]: 笔记列表
         """
         params = DateRangeParameters(**parameters)
 
-        query = db.query(Note)
+        result = self.markdown_agent.list_md_files(directory="data/notes")
+        files = result.get("files", [])
 
-        if params.date_from:
-            from_date = datetime.fromisoformat(params.date_from)
-            query = query.filter(Note.created_at >= from_date)
-        if params.date_to:
-            to_date = datetime.fromisoformat(params.date_to)
-            query = query.filter(Note.created_at <= to_date)
-
-        # 如果有附加查询，先进行语义过滤
-        if params.query:
-            # 使用 hybrid retrieval 获取相关笔记 ID
-            results = self.hybrid_retrieval.search_hybrid(
-                query=params.query,
-                top_k=50,
-                db=db
-            )
-            note_ids = [r["id"] for r in results]
-            query = query.filter(Note.id.in_(note_ids))
-
-        notes = query.order_by(Note.created_at.desc()).all()
+        # 按文件修改时间过滤
+        filtered = []
+        for f in files:
+            mtime = f.get("modified_at", "")
+            if params.date_from and mtime < params.date_from:
+                continue
+            if params.date_to and mtime > params.date_to + "T23:59:59":
+                continue
+            filtered.append(f)
 
         return [
             {
-                "id": note.id,
-                "title": note.title,
-                "summary": note.summary,
-                "tags": note.tags,
-                "created_at": note.created_at.isoformat() if note.created_at else None
+                "id": None,
+                "filename": f["filename"],
+                "title": f["filename"].replace(".md", ""),
+                "summary": "",
+                "tags": [],
+                "created_at": f.get("modified_at"),
+                "file_path": f.get("file_path")
             }
-            for note in notes
+            for f in filtered
         ]
 
     def get_note_detail(self, parameters: Dict, db: Session) -> Dict:
         """
-        获取笔记详情
+        获取笔记详情（读取 data/notes/ 下的 md 文件）
 
         Args:
-            parameters: 参数
-            db: 数据库会话
+            parameters: 参数（filename 字段）
+            db: 数据库会话（未使用）
 
         Returns:
             Dict: 笔记详情
         """
-        note_id = parameters.get("note_id")
-        if not note_id:
-            raise ValueError("必须提供笔记ID")
+        filename = parameters.get("filename")
+        if not filename:
+            raise ValueError("必须提供文件名")
 
-        note = db.query(Note).filter(Note.id == note_id).first()
-        if not note:
-            raise ValueError(f"笔记不存在: ID={note_id}")
+        result = self.markdown_agent.read_md_file(filename, directory="data/notes")
+        if not result.get("success"):
+            raise ValueError(f"笔记文件不存在: {filename}")
 
         return {
-            "id": note.id,
-            "title": note.title,
-            "content": note.content,
-            "summary": note.summary,
-            "tags": note.tags,
-            "created_at": note.created_at.isoformat() if note.created_at else None,
-            "updated_at": note.updated_at.isoformat() if note.updated_at else None,
-            "audio_id": note.audio_id,
-            "duration": note.duration
+            "id": None,
+            "filename": filename,
+            "title": filename.replace(".md", ""),
+            "content": result.get("content", ""),
+            "summary": "",
+            "tags": [],
+            "file_path": result.get("file_path"),
+            "content_length": result.get("content_length", 0)
         }
 
     def create_md_file(self, parameters: Dict, db: Session = None) -> Dict:

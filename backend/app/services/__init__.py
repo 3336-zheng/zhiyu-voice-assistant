@@ -3,7 +3,6 @@
 """
 from .whisper_service import WhisperService
 from .embedding_service import EmbeddingService
-from .note_service import NoteService, get_note_service
 from .retrieval_service import RetrievalService, get_retrieval_service
 from .reranker_service import RerankerService, get_reranker_service
 from .chroma_service import ChromaService, get_chroma_service
@@ -14,10 +13,10 @@ from .llm_service import LLMService, get_llm_service
 from .memory_service import MemoryService, get_memory_service
 
 __all__ = [
-    "WhisperService", "EmbeddingService", "NoteService", "RetrievalService",
+    "WhisperService", "EmbeddingService", "RetrievalService",
     "RerankerService", "ChromaService", "BM25Service", "RRFService", "HybridRetrievalService",
     "LLMService", "MemoryService",
-    "get_note_service", "get_retrieval_service", "get_reranker_service",
+    "get_retrieval_service", "get_reranker_service",
     "get_chroma_service", "get_bm25_service", "get_rrf_service", "get_hybrid_retrieval_service",
     "get_llm_service", "get_memory_service"
 ]

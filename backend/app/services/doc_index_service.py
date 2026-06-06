@@ -5,7 +5,7 @@
 
 启动时采用增量同步策略：
 - ChromaDB 持久化数据不丢失，无需重建
-- BM25 是内存索引，每次启动需从 Note 表 + ChromaDB doc chunks 重建
+- BM25 是内存索引，每次启动需从 ChromaDB doc chunks 重建
 - 仅对磁盘上新增/修改的文件重新嵌入入库，已有的跳过
 - 清理磁盘上已删除文件的残留 chunks
 """
@@ -387,7 +387,7 @@ class DocIndexService:
         增量同步 data/docs/ 下的文档索引（启动时调用）
 
         策略：
-        1. 从 SQLite Note 表 + ChromaDB 已有 doc chunks 重建 BM25（BM25 是内存索引）
+        1. 从 ChromaDB 已有 doc chunks 重建 BM25（BM25 是内存索引）
         2. 扫描磁盘文件，与 ChromaDB 中已存的 mtime 对比
         3. 仅对新增/修改的文件重新嵌入入库
         4. 清理磁盘上已删除文件的残留 chunks
@@ -460,12 +460,10 @@ class DocIndexService:
 
     def _rebuild_bm25_from_persistent(self):
         """
-        从 SQLite Note 表 + ChromaDB 已有 doc chunks 重建 BM25 索引。
+        从 ChromaDB 已有 doc chunks 重建 BM25 索引。
         BM25 是纯内存索引，每次启动必须重建。
         先收集所有文档，再一次性构建索引，避免逐条 add 的 O(n²) 开销。
         """
-        from backend.app.models.note import Note
-        from backend.app.core.database import SessionLocal
         from rank_bm25 import BM25Okapi
 
         bm25 = self.bm25_service
@@ -473,16 +471,6 @@ class DocIndexService:
 
         # 收集所有待索引文档: [(doc_id, content, title)]
         entries: List[tuple] = []
-
-        # 从 Note 表加载笔记
-        db = SessionLocal()
-        try:
-            notes = db.query(Note).all()
-            for note in notes:
-                if note.content:
-                    entries.append((f"note_{note.id}", note.content, note.title or ""))
-        finally:
-            db.close()
 
         # 从 ChromaDB 加载 doc chunks
         try:

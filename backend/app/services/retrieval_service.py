@@ -3,10 +3,7 @@
 内部使用 HybridRetrievalService (BM25 + Embedding + RRF + Reranker)
 """
 import logging
-from typing import List
-from sqlalchemy.orm import Session
-from ..core.database import SessionLocal
-from ..models import Note
+from typing import List, Dict, Any
 from .hybrid_retrieval_service import get_hybrid_retrieval_service
 
 logger = logging.getLogger(__name__)
@@ -21,7 +18,7 @@ class RetrievalService:
     def __init__(self):
         self.hybrid_service = get_hybrid_retrieval_service()
 
-    def search_notes(self, query: str, top_k: int = 5) -> list:
+    def search_notes(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
         搜索笔记（使用混合检索：BM25 + Embedding + RRF + Reranker）
 
@@ -30,36 +27,21 @@ class RetrievalService:
             top_k: 返回结果数量
 
         Returns:
-            相关笔记列表（按相似度排序）
+            检索结果列表（按相关度排序）
         """
-        db = SessionLocal()
         try:
-            results = self.hybrid_service.search_hybrid(query, top_k, db=db)
+            results = self.hybrid_service.search_hybrid(query, top_k)
 
             if not results:
                 logger.info("混合检索无匹配结果")
                 return []
 
-            # 从结果中提取笔记对象（兼容旧接口）
-            note_ids = [r["id"] for r in results]
-            notes = db.query(Note).filter(Note.id.in_(note_ids)).all()
-            note_map = {note.id: note for note in notes}
-
-            # 按混合检索结果顺序排列
-            final_notes = []
-            for r in results:
-                note = note_map.get(r["id"])
-                if note:
-                    final_notes.append(note)
-
-            logger.info(f"混合检索完成，找到 {len(final_notes)} 个相关笔记")
-            return final_notes
+            logger.info(f"混合检索完成，找到 {len(results)} 条结果")
+            return results
 
         except Exception as e:
             logger.error(f"混合检索失败: {e}", exc_info=True)
             return []
-        finally:
-            db.close()
 
 
 # 全局服务实例

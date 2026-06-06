@@ -7,14 +7,11 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 
 from backend.app.core.config import settings
-from backend.app.core.database import SessionLocal
 from backend.app.services.chroma_service import get_chroma_service
 from backend.app.services.bm25_service import get_bm25_service
 from backend.app.services.rrf_service import get_rrf_service
 from backend.app.services.embedding_service import get_embedding_service
 from backend.app.services.reranker_service import get_reranker_service
-from backend.app.models.note import Note
-from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +30,35 @@ class HybridRetrievalService:
         self.embedding_service = get_embedding_service()
         self.reranker_service = get_reranker_service()
 
+    def _fetch_doc_chunks(self, doc_ids: List[str]) -> Dict[str, Dict]:
+        """
+        从 ChromaDB 批量获取文档块详情
+
+        Args:
+            doc_ids: 文档 ID 列表
+
+        Returns:
+            Dict: {doc_id: {"content": ..., "metadata": ...}}
+        """
+        if not doc_ids:
+            return {}
+        try:
+            chunk_results = self.chroma_service.collection.get(
+                ids=doc_ids,
+                include=["documents", "metadatas"]
+            )
+            chunks_dict = {}
+            if chunk_results["ids"]:
+                for i, cid in enumerate(chunk_results["ids"]):
+                    chunks_dict[cid] = {
+                        "content": chunk_results["documents"][i] if chunk_results["documents"] else "",
+                        "metadata": chunk_results["metadatas"][i] if chunk_results["metadatas"] else {}
+                    }
+            return chunks_dict
+        except Exception as e:
+            logger.error(f"获取文档块失败: {e}")
+            return {}
+
     def search_hybrid(
         self,
         query: str,
@@ -40,7 +66,7 @@ class HybridRetrievalService:
         bm25_top_k: int = None,
         embedding_top_k: int = None,
         rrf_top_k: int = None,
-        db: Session = None
+        **kwargs
     ) -> List[Dict[str, Any]]:
         """
         执行混合检索
@@ -51,10 +77,9 @@ class HybridRetrievalService:
             bm25_top_k: BM25 检索数量
             embedding_top_k: Embedding 检索数量
             rrf_top_k: RRF 融合后候选数量
-            db: 数据库会话
 
         Returns:
-            List[Dict]: 检索结果列表，包含笔记完整信息和分数
+            List[Dict]: 检索结果列表，包含完整信息和分数
         """
         # 使用默认配置
         if bm25_top_k is None:
@@ -115,73 +140,34 @@ class HybridRetrievalService:
                 rrf_results = self.rrf_service.fuse(bm25_results, embedding_results, top_k=rrf_top_k)
                 logger.info(f"RRF 融合完成: {len(rrf_results)} 条")
 
-            # Step 4: 按 ID 类型分组，分别获取详情
+            # Step 4: 从 ChromaDB 获取所有候选文档块详情
             doc_ids = [doc_id for doc_id, _ in rrf_results]
             if not doc_ids:
                 return []
 
-            note_ids = []
-            doc_chunk_ids = []
-            for doc_id in doc_ids:
-                if doc_id.startswith("note_"):
-                    try:
-                        note_ids.append(int(doc_id.split("_", 1)[1]))
-                    except ValueError:
-                        pass
-                elif doc_id.startswith("doc_"):
-                    doc_chunk_ids.append(doc_id)
+            chunks_dict = self._fetch_doc_chunks(doc_ids)
 
-            # 获取笔记详情（从 SQLite）
-            notes_dict = {}
-            if note_ids:
-                if db is None:
-                    db = SessionLocal()
-                    should_close = True
-                else:
-                    should_close = False
-                try:
-                    notes = db.query(Note).filter(Note.id.in_(note_ids)).all()
-                    notes_dict = {f"note_{note.id}": note for note in notes}
-                finally:
-                    if should_close:
-                        db.close()
-
-            # 获取文档块详情（从 ChromaDB）
-            doc_chunks_dict = {}
-            if doc_chunk_ids:
-                try:
-                    chunk_results = self.chroma_service.collection.get(
-                        ids=doc_chunk_ids,
-                        include=["documents", "metadatas"]
-                    )
-                    if chunk_results["ids"]:
-                        for i, cid in enumerate(chunk_results["ids"]):
-                            doc_chunks_dict[cid] = {
-                                "content": chunk_results["documents"][i],
-                                "metadata": chunk_results["metadatas"][i] if chunk_results["metadatas"] else {}
-                            }
-                except Exception as e:
-                    logger.error(f"获取文档块失败: {e}")
-
-            # Step 5: BGE-reranker 精排
+            # Step 5: 准备候选文档并执行 BGE-reranker 精排
             candidate_docs = []
             for doc_id, _ in rrf_results:
-                if doc_id in notes_dict:
-                    note = notes_dict[doc_id]
-                    candidate_docs.append({
-                        "doc_id": doc_id,
-                        "content": note.content,
-                        "title": note.title or "",
-                        "source_type": "note"
-                    })
-                elif doc_id in doc_chunks_dict:
-                    chunk = doc_chunks_dict[doc_id]
+                if doc_id in chunks_dict:
+                    chunk = chunks_dict[doc_id]
                     candidate_docs.append({
                         "doc_id": doc_id,
                         "content": chunk["content"],
                         "title": chunk["metadata"].get("section_title", ""),
-                        "source_type": "doc"
+                        "source_type": chunk["metadata"].get("source_type", "doc")
                     })
+                else:
+                    # BM25 独有的文档（从内存 corpus 取内容）
+                    content = self.bm25_service.corpus.get(doc_id, "")
+                    if content:
+                        candidate_docs.append({
+                            "doc_id": doc_id,
+                            "content": content,
+                            "title": doc_id,
+                            "source_type": "doc"
+                        })
 
             if not candidate_docs:
                 logger.warning("未找到候选文档")
@@ -200,40 +186,21 @@ class HybridRetrievalService:
                 idx = rerank_item["index"]
                 rerank_score = rerank_item["score"]
                 doc = candidate_docs[idx]
+                chunk = chunks_dict.get(doc["doc_id"], {})
+                metadata = chunk.get("metadata", {})
 
-                if doc["source_type"] == "note":
-                    note = notes_dict.get(doc["doc_id"])
-                    if note:
-                        final_results.append({
-                            "id": note.id,
-                            "title": note.title,
-                            "content": note.content,
-                            "summary": note.summary,
-                            "tags": note.tags,
-                            "source_type": "note",
-                            "created_at": note.created_at.isoformat() if note.created_at else None,
-                            "updated_at": note.updated_at.isoformat() if note.updated_at else None,
-                            "rerank_score": rerank_score,
-                            "rank": i + 1
-                        })
-                else:
-                    # 文档块
-                    chunk = doc_chunks_dict.get(doc["doc_id"], {})
-                    metadata = chunk.get("metadata", {})
-                    final_results.append({
-                        "id": doc["doc_id"],
-                        "title": metadata.get("section_title", metadata.get("filename", "")),
-                        "content": doc["content"],
-                        "summary": doc["content"][:200] + "..." if len(doc["content"]) > 200 else doc["content"],
-                        "tags": ["文档"],
-                        "source_type": "doc",
-                        "filename": metadata.get("filename", ""),
-                        "section_title": metadata.get("section_title", ""),
-                        "created_at": None,
-                        "updated_at": None,
-                        "rerank_score": rerank_score,
-                        "rank": i + 1
-                    })
+                final_results.append({
+                    "id": doc["doc_id"],
+                    "title": metadata.get("section_title", metadata.get("filename", doc["title"])),
+                    "content": doc["content"],
+                    "summary": doc["content"][:200] + "..." if len(doc["content"]) > 200 else doc["content"],
+                    "tags": metadata.get("tags", []),
+                    "source_type": doc["source_type"],
+                    "filename": metadata.get("filename", ""),
+                    "section_title": metadata.get("section_title", ""),
+                    "rerank_score": rerank_score,
+                    "rank": i + 1
+                })
 
             logger.info(f"混合检索完成，返回 {len(final_results)} 条结果")
             return final_results
@@ -246,7 +213,7 @@ class HybridRetrievalService:
         self,
         query: str,
         top_k: int = 5,
-        db: Session = None
+        **kwargs
     ) -> List[Dict[str, Any]]:
         """
         纯 BM25 检索（用于对比测试）
@@ -254,68 +221,28 @@ class HybridRetrievalService:
         Args:
             query: 查询字符串
             top_k: 返回结果数量
-            db: 数据库会话
 
         Returns:
             List[Dict]: 检索结果
         """
         try:
-            # BM25 检索
             bm25_results = self.bm25_service.search(query, top_k=top_k)
             if not bm25_results:
                 return []
 
-            # 按 ID 类型分组
-            int_note_ids = []
-            for doc_id, _ in bm25_results:
-                if doc_id.startswith("note_"):
-                    try:
-                        int_note_ids.append(int(doc_id.split("_", 1)[1]))
-                    except ValueError:
-                        pass
-
-            notes_dict = {}
-            if int_note_ids:
-                if db is None:
-                    db = SessionLocal()
-                    should_close = True
-                else:
-                    should_close = False
-                try:
-                    notes = db.query(Note).filter(Note.id.in_(int_note_ids)).all()
-                    notes_dict = {f"note_{note.id}": note for note in notes}
-                finally:
-                    if should_close:
-                        db.close()
-
-            # 组装结果
             results = []
             for i, (doc_id, score) in enumerate(bm25_results):
-                if doc_id in notes_dict:
-                    note = notes_dict[doc_id]
-                    results.append({
-                        "id": note.id,
-                        "title": note.title,
-                        "content": note.content,
-                        "summary": note.summary,
-                        "tags": note.tags,
-                        "source_type": "note",
-                        "bm25_score": score,
-                        "rank": i + 1
-                    })
-                else:
-                    # doc chunk — 从 BM25 corpus 取内容
-                    content = self.bm25_service.corpus.get(doc_id, "")
-                    results.append({
-                        "id": doc_id,
-                        "title": doc_id,
-                        "content": content,
-                        "summary": content[:200] + "..." if len(content) > 200 else content,
-                        "tags": ["文档"],
-                        "source_type": "doc",
-                        "bm25_score": score,
-                        "rank": i + 1
-                    })
+                content = self.bm25_service.corpus.get(doc_id, "")
+                results.append({
+                    "id": doc_id,
+                    "title": doc_id,
+                    "content": content,
+                    "summary": content[:200] + "..." if len(content) > 200 else content,
+                    "tags": [],
+                    "source_type": "doc",
+                    "bm25_score": score,
+                    "rank": i + 1
+                })
 
             return results
 
@@ -327,7 +254,7 @@ class HybridRetrievalService:
         self,
         query: str,
         top_k: int = 5,
-        db: Session = None
+        **kwargs
     ) -> List[Dict[str, Any]]:
         """
         纯 Embedding 检索（用于对比测试）
@@ -335,93 +262,36 @@ class HybridRetrievalService:
         Args:
             query: 查询字符串
             top_k: 返回结果数量
-            db: 数据库会话
 
         Returns:
             List[Dict]: 检索结果
         """
         try:
-            # 生成查询向量
             query_embedding = self.embedding_service.encode(query)
-
-            # Embedding 检索
             embedding_results = self.chroma_service.search(query_embedding, top_k=top_k)
             if not embedding_results:
                 return []
 
-            # 按 ID 类型分组
-            int_note_ids = []
-            doc_chunk_ids = []
-            for doc_id, _ in embedding_results:
-                if doc_id.startswith("note_"):
-                    try:
-                        int_note_ids.append(int(doc_id.split("_", 1)[1]))
-                    except ValueError:
-                        pass
-                elif doc_id.startswith("doc_"):
-                    doc_chunk_ids.append(doc_id)
+            doc_ids = [doc_id for doc_id, _ in embedding_results]
+            chunks_dict = self._fetch_doc_chunks(doc_ids)
 
-            # 获取笔记详情
-            notes_dict = {}
-            if int_note_ids:
-                if db is None:
-                    db = SessionLocal()
-                    should_close = True
-                else:
-                    should_close = False
-                try:
-                    notes = db.query(Note).filter(Note.id.in_(int_note_ids)).all()
-                    notes_dict = {f"note_{note.id}": note for note in notes}
-                finally:
-                    if should_close:
-                        db.close()
-
-            # 获取文档块详情
-            doc_chunks_dict = {}
-            if doc_chunk_ids:
-                try:
-                    chunk_results = self.chroma_service.collection.get(
-                        ids=doc_chunk_ids,
-                        include=["documents", "metadatas"]
-                    )
-                    if chunk_results["ids"]:
-                        for i, cid in enumerate(chunk_results["ids"]):
-                            doc_chunks_dict[cid] = {
-                                "content": chunk_results["documents"][i],
-                                "metadata": chunk_results["metadatas"][i] if chunk_results["metadatas"] else {}
-                            }
-                except Exception as e:
-                    logger.error(f"获取文档块失败: {e}")
-
-            # 组装结果
             results = []
             for i, (doc_id, score) in enumerate(embedding_results):
-                if doc_id in notes_dict:
-                    note = notes_dict[doc_id]
-                    results.append({
-                        "id": note.id,
-                        "title": note.title,
-                        "content": note.content,
-                        "summary": note.summary,
-                        "tags": note.tags,
-                        "source_type": "note",
-                        "embedding_score": score,
-                        "rank": i + 1
-                    })
-                elif doc_id in doc_chunks_dict:
-                    chunk = doc_chunks_dict[doc_id]
-                    metadata = chunk.get("metadata", {})
-                    results.append({
-                        "id": doc_id,
-                        "title": metadata.get("section_title", metadata.get("filename", "")),
-                        "content": chunk["content"],
-                        "summary": chunk["content"][:200] + "..." if len(chunk["content"]) > 200 else chunk["content"],
-                        "tags": ["文档"],
-                        "source_type": "doc",
-                        "filename": metadata.get("filename", ""),
-                        "embedding_score": score,
-                        "rank": i + 1
-                    })
+                chunk = chunks_dict.get(doc_id, {})
+                metadata = chunk.get("metadata", {})
+                content = chunk.get("content", "")
+
+                results.append({
+                    "id": doc_id,
+                    "title": metadata.get("section_title", metadata.get("filename", doc_id)),
+                    "content": content,
+                    "summary": content[:200] + "..." if len(content) > 200 else content,
+                    "tags": metadata.get("tags", []),
+                    "source_type": metadata.get("source_type", "doc"),
+                    "filename": metadata.get("filename", ""),
+                    "embedding_score": score,
+                    "rank": i + 1
+                })
 
             return results
 
@@ -436,7 +306,7 @@ class HybridRetrievalService:
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
         top_k: int = 5,
-        db: Session = None
+        **kwargs
     ) -> List[Dict[str, Any]]:
         """
         带元数据过滤的混合检索
@@ -447,13 +317,11 @@ class HybridRetrievalService:
             date_from: 开始日期（ISO格式）
             date_to: 结束日期（ISO格式）
             top_k: 返回结果数量
-            db: 数据库会话
 
         Returns:
             List[Dict]: 检索结果
         """
         try:
-            # 生成查询向量
             query_embedding = self.embedding_service.encode(query)
 
             # 构建 ChromaDB 过滤条件
@@ -461,7 +329,7 @@ class HybridRetrievalService:
             if tag_filter:
                 where_clause["tags"] = {"$contains": tag_filter}
 
-            # BM25 检索（BM25 不支持元数据过滤，需要后处理）
+            # BM25 检索（不支持元数据过滤）
             bm25_results = self.bm25_service.search(query, top_k=settings.bm25_top_k)
 
             # Embedding 检索（支持元数据过滤）
@@ -474,81 +342,32 @@ class HybridRetrievalService:
             # RRF 融合
             rrf_results = self.rrf_service.fuse(bm25_results, embedding_results, top_k=settings.rrf_top_k)
 
-            # 按 ID 类型分组
             doc_ids = [doc_id for doc_id, _ in rrf_results]
             if not doc_ids:
                 return []
 
-            int_note_ids = []
-            doc_chunk_ids = []
-            for doc_id in doc_ids:
-                if doc_id.startswith("note_"):
-                    try:
-                        int_note_ids.append(int(doc_id.split("_", 1)[1]))
-                    except ValueError:
-                        pass
-                elif doc_id.startswith("doc_"):
-                    doc_chunk_ids.append(doc_id)
-
-            # 获取笔记（带过滤）
-            notes_dict = {}
-            if int_note_ids:
-                if db is None:
-                    db = SessionLocal()
-                    should_close = True
-                else:
-                    should_close = False
-                try:
-                    from datetime import datetime
-                    query_stmt = db.query(Note).filter(Note.id.in_(int_note_ids))
-                    if date_from:
-                        from_date = datetime.fromisoformat(date_from)
-                        query_stmt = query_stmt.filter(Note.created_at >= from_date)
-                    if date_to:
-                        to_date = datetime.fromisoformat(date_to)
-                        query_stmt = query_stmt.filter(Note.created_at <= to_date)
-                    notes = query_stmt.all()
-                    notes_dict = {f"note_{note.id}": note for note in notes}
-                finally:
-                    if should_close:
-                        db.close()
-
-            # 获取文档块
-            doc_chunks_dict = {}
-            if doc_chunk_ids:
-                try:
-                    chunk_results = self.chroma_service.collection.get(
-                        ids=doc_chunk_ids,
-                        include=["documents", "metadatas"]
-                    )
-                    if chunk_results["ids"]:
-                        for i, cid in enumerate(chunk_results["ids"]):
-                            doc_chunks_dict[cid] = {
-                                "content": chunk_results["documents"][i],
-                                "metadata": chunk_results["metadatas"][i] if chunk_results["metadatas"] else {}
-                            }
-                except Exception as e:
-                    logger.error(f"获取文档块失败: {e}")
+            chunks_dict = self._fetch_doc_chunks(doc_ids)
 
             # 准备候选文档
             candidate_docs = []
             for doc_id, _ in rrf_results:
-                if doc_id in notes_dict:
-                    note = notes_dict[doc_id]
-                    candidate_docs.append({
-                        "doc_id": doc_id,
-                        "content": note.content,
-                        "title": note.title or "",
-                        "source_type": "note"
-                    })
-                elif doc_id in doc_chunks_dict:
-                    chunk = doc_chunks_dict[doc_id]
+                if doc_id in chunks_dict:
+                    chunk = chunks_dict[doc_id]
                     candidate_docs.append({
                         "doc_id": doc_id,
                         "content": chunk["content"],
                         "title": chunk["metadata"].get("section_title", ""),
-                        "source_type": "doc"
+                        "source_type": chunk["metadata"].get("source_type", "doc")
                     })
+                else:
+                    content = self.bm25_service.corpus.get(doc_id, "")
+                    if content:
+                        candidate_docs.append({
+                            "doc_id": doc_id,
+                            "content": content,
+                            "title": doc_id,
+                            "source_type": "doc"
+                        })
 
             if not candidate_docs:
                 return []
@@ -565,36 +384,20 @@ class HybridRetrievalService:
                 idx = rerank_item["index"]
                 rerank_score = rerank_item["score"]
                 doc = candidate_docs[idx]
+                chunk = chunks_dict.get(doc["doc_id"], {})
+                metadata = chunk.get("metadata", {})
 
-                if doc["source_type"] == "note":
-                    note = notes_dict.get(doc["doc_id"])
-                    if note:
-                        final_results.append({
-                            "id": note.id,
-                            "title": note.title,
-                            "content": note.content,
-                            "summary": note.summary,
-                            "tags": note.tags,
-                            "source_type": "note",
-                            "created_at": note.created_at.isoformat() if note.created_at else None,
-                            "rerank_score": rerank_score,
-                            "rank": i + 1
-                        })
-                else:
-                    chunk = doc_chunks_dict.get(doc["doc_id"], {})
-                    metadata = chunk.get("metadata", {})
-                    final_results.append({
-                        "id": doc["doc_id"],
-                        "title": metadata.get("section_title", metadata.get("filename", "")),
-                        "content": doc["content"],
-                        "summary": doc["content"][:200] + "..." if len(doc["content"]) > 200 else doc["content"],
-                        "tags": ["文档"],
-                        "source_type": "doc",
-                        "filename": metadata.get("filename", ""),
-                        "created_at": None,
-                        "rerank_score": rerank_score,
-                        "rank": i + 1
-                    })
+                final_results.append({
+                    "id": doc["doc_id"],
+                    "title": metadata.get("section_title", metadata.get("filename", doc["title"])),
+                    "content": doc["content"],
+                    "summary": doc["content"][:200] + "..." if len(doc["content"]) > 200 else doc["content"],
+                    "tags": metadata.get("tags", []),
+                    "source_type": doc["source_type"],
+                    "filename": metadata.get("filename", ""),
+                    "rerank_score": rerank_score,
+                    "rank": i + 1
+                })
 
             return final_results
 
@@ -606,23 +409,18 @@ class HybridRetrievalService:
         self,
         query: str,
         top_k: int = 5,
-        db: Session = None
+        **kwargs
     ) -> Dict[str, List[Dict]]:
         """
         对比三种检索方法的结果
-
-        Args:
-            query: 查询字符串
-            top_k: 返回结果数量
-            db: 数据库会话
 
         Returns:
             Dict: {"bm25": [...], "embedding": [...], "hybrid": [...]}
         """
         return {
-            "bm25": self.search_pure_bm25(query, top_k, db),
-            "embedding": self.search_pure_embedding(query, top_k, db),
-            "hybrid": self.search_hybrid(query, top_k, db=db)
+            "bm25": self.search_pure_bm25(query, top_k),
+            "embedding": self.search_pure_embedding(query, top_k),
+            "hybrid": self.search_hybrid(query, top_k)
         }
 
 

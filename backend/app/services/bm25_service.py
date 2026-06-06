@@ -8,9 +8,6 @@ from typing import List, Tuple, Optional, Dict
 from rank_bm25 import BM25Okapi
 import logging
 
-from backend.app.models.note import Note
-from backend.app.core.database import SessionLocal
-
 logger = logging.getLogger(__name__)
 
 
@@ -133,72 +130,6 @@ class BM25Service:
                 filtered.append(token)
 
         return filtered
-
-    def build_index(self, notes: List[Note]) -> bool:
-        """
-        从所有笔记构建 BM25 索引
-
-        Args:
-            notes: Note 模型列表
-
-        Returns:
-            bool: 是否成功
-        """
-        try:
-            self.corpus = {}
-            self.tokenized_corpus = []
-            self.doc_id_list = []
-
-            for note in notes:
-                if note.content:
-                    doc_id = f"note_{note.id}"
-                    self.corpus[doc_id] = note.content
-                    self.doc_id_list.append(doc_id)
-
-                    # 合并标题和内容进行索引
-                    text = f"{note.title or ''} {note.content}"
-                    tokens = self._tokenize(text)
-                    self.tokenized_corpus.append(tokens)
-
-            if len(self.tokenized_corpus) > 0:
-                self.bm25 = BM25Okapi(
-                    self.tokenized_corpus,
-                    k1=self.k1,
-                    b=self.b
-                )
-                logger.info(f"BM25 索引构建完成，文档数: {len(self.tokenized_corpus)}")
-            else:
-                logger.warning("语料为空，无法构建 BM25 索引")
-
-            return True
-        except Exception as e:
-            logger.error(f"构建 BM25 索引失败: {e}")
-            return False
-
-    def build_index_from_db(self, db_session=None) -> bool:
-        """
-        从数据库加载所有笔记并构建索引
-
-        Args:
-            db_session: 数据库会话，如果为 None 则创建新会话
-
-        Returns:
-            bool: 是否成功
-        """
-        try:
-            if db_session is None:
-                db = SessionLocal()
-                try:
-                    notes = db.query(Note).all()
-                    return self.build_index(notes)
-                finally:
-                    db.close()
-            else:
-                notes = db_session.query(Note).all()
-                return self.build_index(notes)
-        except Exception as e:
-            logger.error(f"从数据库构建 BM25 索引失败: {e}")
-            return False
 
     def search(self, query: str, top_k: int = 10) -> List[Tuple[str, float]]:
         """

@@ -4,6 +4,7 @@
 """
 import os
 os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"  # 禁止联网，只用本地模型
 
 import logging
 from typing import List, Tuple
@@ -18,11 +19,24 @@ class RerankerService:
     def __init__(self):
         """初始化重排序服务"""
         logger.info("加载重排序模型...")
-        self.tokenizer = AutoTokenizer.from_pretrained(settings.reranker_model_path)
-        self.model = AutoModelForSequenceClassification.from_pretrained(settings.reranker_model_path)
-        self.model.eval()
-
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            settings.reranker_model_path,
+            local_files_only=True  # 只用本地文件，不联网
+        )
+        # GPU 时使用 fp16 节省显存，CPU 时使用 fp32
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if self.device == 'cuda':
+            self.model = AutoModelForSequenceClassification.from_pretrained(
+                settings.reranker_model_path,
+                local_files_only=True,
+                torch_dtype=torch.float16
+            )
+        else:
+            self.model = AutoModelForSequenceClassification.from_pretrained(
+                settings.reranker_model_path,
+                local_files_only=True
+            )
+        self.model.eval()
         self.model.to(self.device)
         logger.info(f"重排序模型加载完成，使用设备: {self.device}")
 

@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_file: str = "data/logs/app.log"
 
+    # Langfuse 可观测配置（可选）
+    langfuse_host: str = ""  # Langfuse 服务地址
+    langfuse_public_key: str = ""  # Langfuse 公钥
+    langfuse_secret_key: str = ""  # Langfuse 私钥
+
     # CORS 配置
     cors_origins: str = "*"  # 逗号分隔的域名列表，如 "https://example.com,https://app.example.com"
 

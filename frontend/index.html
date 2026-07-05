@@ -421,7 +421,7 @@
             }
         }
 
-        // 发送给 AI 处理
+        // 发送给 AI 处理（支持流式输出）
         async function sendToAI() {
             const text = document.getElementById('transcriptText').value.trim();
             if (!text) {
@@ -434,7 +434,8 @@
             document.getElementById('btnSaveAnswer').style.display = 'none';
 
             try {
-                const res = await fetch(`${API_BASE}/agent/chat/`, {
+                // 使用流式接口
+                const res = await fetch(`${API_BASE}/agent/chat/stream/`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -442,16 +443,82 @@
                         session_id: sessionId
                     })
                 });
-                const data = await res.json();
 
-                if (res.ok) {
-                    resultArea.innerHTML = '<div class="result-content">' + renderMarkdown(data.response) + '</div>';
-                    lastAnswer = data.response;
-                    document.getElementById('btnSaveAnswer').style.display = 'inline-block';
-                    showToast('检索完成', 'success');
-                } else {
-                    throw new Error(data.detail || '处理失败');
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
                 }
+
+                // 处理 SSE 流
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let fullResponse = '';
+
+                resultArea.innerHTML = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // 处理 SSE 事件
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+
+                                switch (data.type) {
+                                    case 'start':
+                                        resultArea.innerHTML = '<div class="result-thinking">🔍 正在分析您的问题...</div>';
+                                        break;
+
+                                    case 'thinking':
+                                        resultArea.innerHTML = `<div class="result-thinking">💭 ${data.message}</div>`;
+                                        break;
+
+                                    case 'intent':
+                                        resultArea.innerHTML += `<div class="result-intent">📋 意图: ${data.intent}</div>`;
+                                        break;
+
+                                    case 'sources':
+                                        resultArea.innerHTML += `<div class="result-sources">📚 找到 ${data.count} 条相关内容</div>`;
+                                        break;
+
+                                    case 'token':
+                                        fullResponse += data.content;
+                                        // 更新显示
+                                        const contentEl = resultArea.querySelector('.result-content');
+                                        if (contentEl) {
+                                            contentEl.innerHTML = renderMarkdown(fullResponse);
+                                        } else {
+                                            resultArea.innerHTML += `<div class="result-content">${renderMarkdown(fullResponse)}</div>`;
+                                        }
+                                        // 滚动到底部
+                                        resultArea.scrollTop = resultArea.scrollHeight;
+                                        break;
+
+                                    case 'done':
+                                        lastAnswer = fullResponse;
+                                        document.getElementById('btnSaveAnswer').style.display = 'inline-block';
+                                        showToast('检索完成', 'success');
+                                        break;
+
+                                    case 'error':
+                                        throw new Error(data.message);
+                                }
+                            } catch (e) {
+                                if (e.message && !e.message.includes('JSON')) {
+                                    throw e;
+                                }
+                            }
+                        }
+                    }
+                }
+
             } catch (err) {
                 resultArea.textContent = '处理失败: ' + err.message;
                 showToast('AI 处理失败', 'error');

@@ -1,10 +1,11 @@
 """
 LLM 服务
 使用 OpenAI 兼容 SDK 调用 DeepSeek 等大模型
+支持 Langfuse 可观测
 """
 import json
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Generator
 from openai import OpenAI
 from backend.app.core.config import settings
 
@@ -27,12 +28,38 @@ class LLMService:
         self.max_tokens = settings.llm_max_tokens
         self.temperature = settings.llm_temperature
 
+        # Langfuse 可观测
+        self._langfuse = None
+        self._init_langfuse()
+
+    def _init_langfuse(self):
+        """初始化 Langfuse（如果配置了）"""
+        try:
+            langfuse_host = getattr(settings, 'langfuse_host', None)
+            langfuse_public_key = getattr(settings, 'langfuse_public_key', None)
+            langfuse_secret_key = getattr(settings, 'langfuse_secret_key', None)
+
+            if langfuse_host and langfuse_public_key and langfuse_secret_key:
+                from langfuse import Langfuse
+                self._langfuse = Langfuse(
+                    host=langfuse_host,
+                    public_key=langfuse_public_key,
+                    secret_key=langfuse_secret_key
+                )
+                logger.info("Langfuse 可观测已启用")
+            else:
+                logger.debug("Langfuse 未配置，跳过")
+        except Exception as e:
+            logger.warning(f"Langfuse 初始化失败: {e}")
+            self._langfuse = None
+
     def chat(
         self,
         messages: List[Dict[str, str]],
         temperature: float = None,
         max_tokens: int = None,
-        response_format: Dict = None
+        response_format: Dict = None,
+        trace_name: str = None
     ) -> str:
         """
         发送对话请求
@@ -42,10 +69,14 @@ class LLMService:
             temperature: 温度参数（可选）
             max_tokens: 最大生成 token 数（可选）
             response_format: 响应格式（可选）
+            trace_name: Langfuse trace 名称（可选）
 
         Returns:
             str: 模型回复内容
         """
+        import time
+        start_time = time.time()
+
         try:
             kwargs = {
                 "model": self.model,
@@ -58,7 +89,28 @@ class LLMService:
 
             response = self.client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content
-            logger.debug(f"LLM 调用成功，回复长度: {len(content)}")
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            logger.debug(f"LLM 调用成功，回复长度: {len(content)}，耗时: {duration_ms}ms")
+
+            # Langfuse trace
+            if self._langfuse and trace_name:
+                try:
+                    self._langfuse.trace(
+                        name=trace_name,
+                        input=messages[-1].get("content", "") if messages else "",
+                        output=content,
+                        metadata={
+                            "model": self.model,
+                            "temperature": temperature or self.temperature,
+                            "max_tokens": max_tokens or self.max_tokens,
+                            "duration_ms": duration_ms,
+                            "tokens_used": response.usage.total_tokens if response.usage else None
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(f"Langfuse trace 失败: {e}")
+
             return content
 
         except Exception as e:
@@ -94,6 +146,42 @@ class LLMService:
             if json_match:
                 return json.loads(json_match.group(1).strip())
             raise RuntimeError(f"无法解析 LLM 返回的 JSON: {content[:200]}")
+
+    def stream_chat(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = None,
+        max_tokens: int = None
+    ) -> Generator[str, None, None]:
+        """
+        流式对话请求
+
+        Args:
+            messages: 对话消息列表
+            temperature: 温度参数（可选）
+            max_tokens: 最大生成 token 数（可选）
+
+        Yields:
+            str: 增量 token
+        """
+        try:
+            kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature or self.temperature,
+                "max_tokens": max_tokens or self.max_tokens,
+                "stream": True
+            }
+
+            stream = self.client.chat.completions.create(**kwargs)
+
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+
+        except Exception as e:
+            logger.error(f"LLM 流式调用失败: {e}")
+            yield f"[错误] {str(e)}"
 
     def generate_summary(self, content: str, max_length: int = 200) -> str:
         """

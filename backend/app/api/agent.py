@@ -1,17 +1,20 @@
 """
 Agent 对话 API 接口
-支持多轮对话记忆和会话管理
+支持多轮对话记忆和会话管理，支持流式输出
 """
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import logging
+import json
 
 from backend.app.core.database import get_db
 from backend.app.agent.agent import get_agent
 from backend.app.agent.models import AgentResponse
 from backend.app.services.memory_service import get_memory_service
+from backend.app.services.llm_service import get_llm_service
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +123,76 @@ async def agent_chat(
             response=f"处理请求时出现错误: {str(e)}",
             success=False
         )
+
+
+@router.post("/chat/stream/")
+async def agent_chat_stream(
+    request: AgentChatRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Agent 流式对话接口（SSE）
+
+    支持：
+    - 流式返回 Agent 思考过程和答案
+    - 打字机效果
+    """
+    if not request.query or not request.query.strip():
+        raise HTTPException(status_code=400, detail="查询文本不能为空")
+
+    async def generate_stream():
+        """生成 SSE 流"""
+        try:
+            # 发送开始事件
+            yield f"data: {json.dumps({'type': 'start', 'query': request.query})}\n\n"
+
+            # 发送思考中事件
+            yield f"data: {json.dumps({'type': 'thinking', 'message': '正在分析您的问题...'})}\n\n"
+
+            # 获取 Agent 响应（非流式）
+            agent = get_agent()
+            response: AgentResponse = await agent.run(
+                request.query.strip(),
+                session_id=request.session_id,
+                db=db
+            )
+
+            # 发送意图识别结果
+            if response.plan:
+                yield f"data: {json.dumps({'type': 'intent', 'intent': response.plan.intent.value})}\n\n"
+
+            # 发送检索结果数量
+            if response.sources:
+                yield f"data: {json.dumps({'type': 'sources', 'count': len(response.sources)})}\n\n"
+
+            # 流式返回答案
+            llm = get_llm_service()
+            messages = [
+                {"role": "system", "content": "请直接回答以下问题，不要添加任何前缀。"},
+                {"role": "user", "content": f"问题：{request.query}\n\n参考资料：{response.response}"}
+            ]
+
+            full_response = ""
+            for chunk in llm.stream_chat(messages=messages, temperature=0.3):
+                full_response += chunk
+                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+
+            # 发送完成事件
+            yield f"data: {json.dumps({'type': 'done', 'session_id': response.session_id, 'execution_time_ms': response.execution_time_ms})}\n\n"
+
+        except Exception as e:
+            logger.error(f"流式对话失败: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 
 @router.get("/sessions/", response_model=SessionListResponse)

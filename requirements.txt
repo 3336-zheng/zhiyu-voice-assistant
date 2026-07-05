@@ -23,3 +23,4 @@ rank-bm25>=0.2.2
 jieba>=0.42.1
 pdfplumber>=0.11.0
 python-docx>=1.1.0
+openai

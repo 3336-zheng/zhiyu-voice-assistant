@@ -1,6 +1,6 @@
 """
-LangGraph 状态机 Agent
-将手写 Plan-and-Execute 重构为图状态机，支持条件分支和循环
+LangGraph 状态机 Agent（Agentic RAG 版本）
+集成 Query 改写（P1-5）和 CRAG 检索后纠错（P1-6）
 """
 import logging
 from typing import TypedDict, List, Dict, Any, Optional
@@ -10,6 +10,8 @@ from backend.app.agent.models import IntentType, Plan, PlanStep, ToolName
 from backend.app.agent.planner import get_planner
 from backend.app.agent.executor import get_executor
 from backend.app.agent.responder import get_responder
+from backend.app.services.query_rewrite_service import get_query_rewrite_service, RewriteStrategy
+from backend.app.services.crag_grader_service import get_crag_grader_service, RelevanceGrade
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +25,11 @@ class AgentState(TypedDict):
 
     # 中间状态
     plan: Optional[Plan]
+    rewritten_queries: List[str]  # P1-5: 改写后的查询
     search_results: Optional[List[Dict]]
     execution_results: Optional[Dict[str, Any]]
+    relevance_grade: Optional[str]  # P1-6: CRAG 评分结果
+    refined_content: Optional[str]  # P1-6: 精炼后的内容
 
     # 输出
     answer: Optional[str]
@@ -53,15 +58,47 @@ def route_node(state: AgentState) -> AgentState:
     try:
         plan = planner.plan(state["query"], state.get("context"))
         logger.info(f"[graph] 意图识别完成：{plan.intent.value}, 步骤数={len(plan.steps)}")
-        return {**state, "plan": plan}
+        return {**state, "plan": plan, "iter_count": state.get("iter_count", 0) + 1}
     except Exception as e:
         logger.error(f"[graph] 意图识别失败: {e}")
         return {**state, "error": str(e)}
 
 
+def query_rewrite_node(state: AgentState) -> AgentState:
+    """
+    Query 改写节点（P1-5）：生成多个视角的查询
+
+    Args:
+        state: 当前状态
+
+    Returns:
+        AgentState: 更新后的状态
+    """
+    logger.info("[graph] Query 改写节点：生成多个视角的查询...")
+    rewrite_service = get_query_rewrite_service()
+
+    query = state["query"]
+
+    try:
+        # 使用 RAG-Fusion 策略
+        rewritten_queries = rewrite_service.rewrite_query(
+            query,
+            strategy=RewriteStrategy.RAG_FUSION,
+            num_queries=3
+        )
+
+        logger.info(f"[graph] Query 改写完成: 原始='{query[:30]}...', 改写数={len(rewritten_queries)-1}")
+        return {**state, "rewritten_queries": rewritten_queries}
+
+    except Exception as e:
+        logger.error(f"[graph] Query 改写失败: {e}")
+        # 失败时使用原始查询
+        return {**state, "rewritten_queries": [query]}
+
+
 def retrieve_node(state: AgentState) -> AgentState:
     """
-    检索节点：执行混合检索
+    检索节点：执行混合检索（支持多查询）
 
     Args:
         state: 当前状态
@@ -72,26 +109,32 @@ def retrieve_node(state: AgentState) -> AgentState:
     logger.info("[graph] 检索节点：执行混合检索...")
     executor = get_executor()
 
-    plan = state.get("plan")
-    if not plan:
-        return {**state, "error": "没有执行计划"}
+    rewritten_queries = state.get("rewritten_queries", [state["query"]])
 
     try:
-        # 找到检索步骤
-        search_step = None
-        for step in plan.steps:
-            if step.tool_name == ToolName.SEARCH_KNOWLEDGE_BASE:
-                search_step = step
-                break
+        all_results = []
 
-        if search_step:
-            # 执行检索
-            results = executor.search_knowledge_base(search_step.parameters, None)
-            logger.info(f"[graph] 检索完成，结果数: {len(results)}")
-            return {**state, "search_results": results}
-        else:
-            logger.info("[graph] 无需检索，跳过")
-            return {**state, "search_results": []}
+        # 对每个改写后的查询执行检索
+        for query in rewritten_queries:
+            params = {"query": query, "top_k": 5}
+            results = executor.search_knowledge_base(params, None)
+            all_results.extend(results)
+
+        # 去重（基于 content）
+        seen_contents = set()
+        unique_results = []
+        for result in all_results:
+            content = result.get("content", "")
+            if content not in seen_contents:
+                seen_contents.add(content)
+                unique_results.append(result)
+
+        # 按 rerank_score 排序，取 top 10
+        unique_results.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
+        unique_results = unique_results[:10]
+
+        logger.info(f"[graph] 检索完成: 查询数={len(rewritten_queries)}, 结果数={len(unique_results)}")
+        return {**state, "search_results": unique_results}
 
     except Exception as e:
         logger.error(f"[graph] 检索失败: {e}")
@@ -100,7 +143,7 @@ def retrieve_node(state: AgentState) -> AgentState:
 
 def grade_node(state: AgentState) -> AgentState:
     """
-    评分节点：CRAG 相关性评分（占位，P1-6 实现）
+    CRAG 评分节点（P1-6）：评估文档相关性
 
     Args:
         state: 当前状态
@@ -108,11 +151,37 @@ def grade_node(state: AgentState) -> AgentState:
     Returns:
         AgentState: 更新后的状态
     """
-    logger.info("[graph] 评分节点：CRAG 相关性评分（占位）...")
+    logger.info("[graph] CRAG 评分节点：评估文档相关性...")
+    grader_service = get_crag_grader_service()
 
-    # TODO: P1-6 实现 CRAG 打分逻辑
-    # 当前直接返回，不做评分
-    return state
+    query = state["query"]
+    search_results = state.get("search_results", [])
+
+    try:
+        # 评估文档相关性
+        grade_result = grader_service.grade_documents(query, search_results)
+
+        grade = grade_result["grade"]
+        reasoning = grade_result["reasoning"]
+
+        logger.info(f"[graph] CRAG 评分完成: grade={grade.value}, 理由='{reasoning[:50]}...'")
+
+        # 如果是 ambiguous，执行知识精炼
+        refined_content = None
+        if grade == RelevanceGrade.AMBIGUOUS:
+            refined_content = grader_service.refine_documents(query, search_results)
+            logger.info(f"[graph] 知识精炼完成: 长度={len(refined_content)}")
+
+        return {
+            **state,
+            "relevance_grade": grade.value,
+            "refined_content": refined_content
+        }
+
+    except Exception as e:
+        logger.error(f"[graph] CRAG 评分失败: {e}")
+        # 失败时默认 ambiguous，触发重试
+        return {**state, "relevance_grade": "ambiguous"}
 
 
 def generate_node(state: AgentState) -> AgentState:
@@ -130,11 +199,18 @@ def generate_node(state: AgentState) -> AgentState:
 
     plan = state.get("plan")
     search_results = state.get("search_results")
+    refined_content = state.get("refined_content")
 
     if not plan:
         return {**state, "error": "没有执行计划", "answer": "抱歉，无法处理您的请求。"}
 
     try:
+        # 如果有精炼后的内容，使用精炼内容
+        if refined_content:
+            logger.info("[graph] 使用精炼后的内容生成答案")
+            # 构建虚拟的检索结果
+            search_results = [{"content": refined_content, "rerank_score": 1.0}]
+
         # 构建执行结果
         from backend.app.agent.models import ExecutionResult, ToolResult
 
@@ -203,13 +279,25 @@ def should_continue(state: AgentState) -> str:
         logger.info("[graph] 已生成答案，结束")
         return "end"
 
+    # 检查 CRAG 评分
+    grade = state.get("relevance_grade")
+    if grade == "correct":
+        logger.info("[graph] CRAG 评分 correct，继续生成")
+        return "generate"
+    elif grade == "ambiguous":
+        logger.info("[graph] CRAG 评分 ambiguous，继续生成（使用精炼内容）")
+        return "generate"
+    elif grade == "incorrect":
+        logger.info("[graph] CRAG 评分 incorrect，需要改写重检")
+        return "rewrite"
+
     # 默认继续
-    return "continue"
+    return "generate"
 
 
 def create_agent_graph() -> StateGraph:
     """
-    创建 Agent 图状态机
+    创建 Agent 图状态机（Agentic RAG 版本）
 
     Returns:
         StateGraph: 编译后的图
@@ -219,6 +307,7 @@ def create_agent_graph() -> StateGraph:
 
     # 添加节点
     workflow.add_node("route", route_node)
+    workflow.add_node("rewrite", query_rewrite_node)
     workflow.add_node("retrieve", retrieve_node)
     workflow.add_node("grade", grade_node)
     workflow.add_node("generate", generate_node)
@@ -227,9 +316,20 @@ def create_agent_graph() -> StateGraph:
     workflow.set_entry_point("route")
 
     # 添加边
-    workflow.add_edge("route", "retrieve")
+    workflow.add_edge("route", "rewrite")
+    workflow.add_edge("rewrite", "retrieve")
     workflow.add_edge("retrieve", "grade")
-    workflow.add_edge("grade", "generate")
+
+    # 添加条件边：根据 CRAG 评分决定下一步
+    workflow.add_conditional_edges(
+        "grade",
+        should_continue,
+        {
+            "generate": "generate",
+            "rewrite": "rewrite",  # 循环回到改写
+            "end": END
+        }
+    )
 
     # 添加条件边：生成后判断是否结束
     workflow.add_conditional_edges(
@@ -237,13 +337,14 @@ def create_agent_graph() -> StateGraph:
         should_continue,
         {
             "end": END,
-            "continue": "route"  # 循环回到路由（用于 CRAG 重检）
+            "generate": "generate",  # 继续生成
+            "rewrite": "rewrite"  # 循环回到改写
         }
     )
 
     # 编译图
     graph = workflow.compile()
-    logger.info("[graph] Agent 图状态机编译完成")
+    logger.info("[graph] Agent 图状态机编译完成（Agentic RAG 版本）")
 
     return graph
 

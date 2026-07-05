@@ -1,6 +1,7 @@
 """
-Plan-and-Execute Agent 主类
+Plan-and-Execute Agent 主类（LangGraph 版本）
 整合 Planner、Executor、Responder，支持多轮对话记忆
+使用 LangGraph 状态机替代手写 if-else 编排
 """
 import time
 import logging
@@ -65,7 +66,7 @@ class PlanExecuteAgent:
         db: Session = None
     ) -> AgentResponse:
         """
-        执行 Agent 主流程
+        执行 Agent 主流程（使用 LangGraph 图状态机）
 
         Args:
             user_query: 用户输入
@@ -97,22 +98,51 @@ class PlanExecuteAgent:
                 except Exception as e:
                     logger.warning(f"获取对话历史失败: {e}")
 
-            # Step 1: Plan - 分析意图，生成计划
-            logger.info("Step 1: 生成执行计划...")
-            plan = self.planner.plan(user_query, context)
-            logger.info(f"计划生成完成：意图={plan.intent.value}, 步骤数={len(plan.steps)}")
+            # 使用 LangGraph 图状态机执行
+            from backend.app.agent.graph import get_agent_graph
+            graph = get_agent_graph()
 
-            # Step 2: Execute - 执行计划
-            logger.info("Step 2: 执行计划...")
-            execution_result = await self.executor.execute(plan, db)
-            logger.info(f"计划执行完成：成功步骤={execution_result.completed_steps}/{execution_result.total_steps}")
+            # 构建初始状态
+            initial_state = {
+                "query": user_query,
+                "session_id": session_id,
+                "context": context,
+                "plan": None,
+                "search_results": None,
+                "execution_results": None,
+                "answer": None,
+                "sources": None,
+                "confidence": 0.0,
+                "iter_count": 0,
+                "max_iterations": 5,
+                "error": None
+            }
 
-            # Step 3: Respond - 生成回复
-            logger.info("Step 3: 生成回复...")
-            response = self.responder.generate_response(user_query, plan, execution_result, context)
+            # 执行图
+            logger.info("执行 LangGraph 图状态机...")
+            final_state = graph.invoke(initial_state)
+
+            # 提取结果
+            answer = final_state.get("answer", "抱歉，无法生成答案。")
+            sources = final_state.get("sources", [])
+            confidence = final_state.get("confidence", 0.0)
+            error = final_state.get("error")
+
+            if error:
+                logger.warning(f"图执行过程中出现错误: {error}")
 
             total_time = int((time.time() - start_time) * 1000)
-            response.execution_time_ms = total_time
+
+            # 构建响应
+            response = AgentResponse(
+                query=user_query,
+                response=answer,
+                session_id=session_id,
+                sources=sources,
+                confidence=confidence,
+                timestamp=datetime.now(),
+                execution_time_ms=total_time
+            )
 
             # 保存对话历史
             if self.memory_service:
@@ -122,7 +152,6 @@ class PlanExecuteAgent:
                         session_id=session_id,
                         role="user",
                         content=user_query,
-                        intent=plan.intent.value,
                         db=db
                     )
 
@@ -130,9 +159,8 @@ class PlanExecuteAgent:
                     self.memory_service.add_message(
                         session_id=session_id,
                         role="assistant",
-                        content=response.response,
-                        intent=plan.intent.value,
-                        metadata={"sources": response.sources},
+                        content=answer,
+                        metadata={"sources": sources},
                         db=db
                     )
 
@@ -142,11 +170,7 @@ class PlanExecuteAgent:
                     logger.warning(f"保存对话历史失败: {e}")
 
             logger.info(f"Agent 处理完成，总耗时 {total_time}ms")
-
-            # 将 session_id 附加到响应
-            response_dict = response.dict()
-            response_dict["session_id"] = session_id
-            return AgentResponse(**response_dict)
+            return response
 
         except Exception as e:
             logger.error(f"Agent 执行失败: {e}", exc_info=True)

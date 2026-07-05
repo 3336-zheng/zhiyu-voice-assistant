@@ -11,8 +11,7 @@ from backend.app.agent.models import (
     AgentResponse,
     SearchParameters,
     CreateNoteParameters,
-    UpdateNoteParameters,
-    DateRangeParameters
+    UpdateNoteParameters
 )
 from backend.app.agent.planner import Planner, get_planner
 from backend.app.agent.executor import Executor, get_executor
@@ -31,7 +30,6 @@ __all__ = [
     "SearchParameters",
     "CreateNoteParameters",
     "UpdateNoteParameters",
-    "DateRangeParameters",
     # 组件
     "Planner",
     "Executor",

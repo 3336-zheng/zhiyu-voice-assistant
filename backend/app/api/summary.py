@@ -1,6 +1,6 @@
 """
-纪要总结模块 API
-生成会议纪要 → 预览 → 用户确认 → 保存到 data/docs/ + 索引到 ChromaDB + BM25
+课堂笔记模块 API
+生成课堂笔记 → 预览 → 用户确认 → 保存到 data/docs/ + 索引到 ChromaDB + BM25
 """
 import os
 import logging
@@ -18,10 +18,9 @@ router = APIRouter()
 
 
 class SummaryGenerateRequest(BaseModel):
-    """生成纪要请求"""
+    """生成课堂笔记请求"""
     content: str           # 转录文字
-    title: str = None      # 可选标题
-    style: str = "meeting" # 纪要风格: meeting(会议纪要) / lecture(课堂笔记) / general(通用)
+    title: str = None      # 可选标题（课程名称）
 
 
 class SummarySaveRequest(BaseModel):
@@ -34,7 +33,8 @@ class SummarySaveRequest(BaseModel):
 @router.post("/generate")
 async def generate_summary(req: SummaryGenerateRequest):
     """
-    生成纪要（仅预览，不存储）
+    生成课堂笔记（仅预览，不存储）
+    输出固定四段结构：① 知识点提纲 ② 重点概念/公式 ③ 课后疑问 ④ 复习卡片
     """
     if not req.content or not req.content.strip():
         raise HTTPException(status_code=400, detail="转录内容不能为空")
@@ -42,38 +42,37 @@ async def generate_summary(req: SummaryGenerateRequest):
     try:
         llm = get_llm_service()
 
-        style_prompts = {
-            "meeting": (
-                "你是一个专业的会议纪要助手。请根据以下转录内容生成结构化的会议纪要。\n"
-                "要求：\n"
-                "1. 使用 Markdown 格式\n"
-                "2. 包含：会议主题、参会人（如有提及）、讨论要点、决议事项、待办事项\n"
-                "3. 只使用转录中提到的内容，不要编造\n"
-                "4. 语言简洁专业"
-            ),
-            "lecture": (
-                "你是一个课堂笔记整理助手。请根据以下转录内容生成结构化的课堂笔记。\n"
-                "要求：\n"
-                "1. 使用 Markdown 格式\n"
-                "2. 按知识点分章节，使用标题层级\n"
-                "3. 保留关键概念、公式、示例\n"
-                "4. 只使用转录中提到的内容"
-            ),
-            "general": (
-                "你是一个文本整理助手。请根据以下转录内容生成结构化的笔记。\n"
-                "要求：\n"
-                "1. 使用 Markdown 格式\n"
-                "2. 按主题分类整理，去除口语化表达\n"
-                "3. 保留关键信息\n"
-                "4. 只使用转录中提到的内容"
-            ),
-        }
+        system_prompt = (
+            "你是一个课堂笔记整理助手。请根据以下课堂转录内容，生成结构化的课堂笔记。\n\n"
+            "输出格式要求（严格按以下四段结构输出）：\n\n"
+            "## 📚 知识点提纲\n"
+            "按授课顺序列出本节课的主要知识点，使用层级列表（一、二、三...下辖 1. 2. 3...）。\n"
+            "每个知识点用一句话概括核心内容。\n\n"
+            "## ⭐ 重点概念与公式\n"
+            "提取本节课的关键概念、定理、公式、算法步骤等，逐条列出。\n"
+            "每个概念给出简明定义或解释，公式使用 LaTeX 格式。\n\n"
+            "## ❓ 课后疑问\n"
+            "列出学生可能存在的疑问点，包括：\n"
+            "1. 转录中明确提到「不太懂」「为什么」「没听清」的地方\n"
+            "2. 概念跳跃较大、逻辑链条断裂的地方\n"
+            "3. 需要进一步查阅资料才能理解的内容\n\n"
+            "## 🎴 复习卡片（Q&A）\n"
+            "生成 5-10 张复习卡片，每张格式如下：\n"
+            "**Q:** [问题]\n"
+            "**A:** [答案]\n\n"
+            "要求：\n"
+            "1. 只使用转录中提到的内容，不要编造\n"
+            "2. 语言简洁，适合快速复习\n"
+            "3. 使用 Markdown 格式\n"
+            "4. 保留转录中的关键术语、公式、示例"
+        )
 
-        system_prompt = style_prompts.get(req.style, style_prompts["general"])
+        # 如果有标题，作为课程名称提示
+        title_hint = f"课程名称：{req.title}\n\n" if req.title else ""
 
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"请基于以下转录内容生成纪要：\n\n{req.content}"}
+            {"role": "user", "content": f"{title_hint}请基于以下课堂转录内容生成结构化笔记：\n\n{req.content}"}
         ]
 
         summary = llm.chat(messages=messages, temperature=0.3, max_tokens=3000)
@@ -86,8 +85,8 @@ async def generate_summary(req: SummaryGenerateRequest):
         }
 
     except Exception as e:
-        logger.error(f"纪要生成失败: {e}")
-        raise HTTPException(status_code=500, detail=f"纪要生成失败: {str(e)}")
+        logger.error(f"课堂笔记生成失败: {e}")
+        raise HTTPException(status_code=500, detail=f"课堂笔记生成失败: {str(e)}")
 
 
 @router.post("/save")

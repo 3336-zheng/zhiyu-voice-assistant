@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>智语 - 纪要总结</title>
+    <title>智语 - 课堂录制与笔记</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,9 +11,8 @@
     <nav class="navbar">
         <h1><span class="brand-icon">🧠</span> 智语</h1>
         <div class="navbar-nav">
-            <a href="index.html">🔍 问题检索</a>
-            <a href="summary.html" class="active">📝 纪要总结</a>
-            <a href="docs.html">📂 文档管理</a>
+            <a href="summary.html" class="active">🎙️ 课堂录制+笔记</a>
+            <a href="index.html">💬 复习问答</a>
         </div>
     </nav>
 
@@ -56,12 +55,7 @@
                 </a>
             </div>
             <div style="margin-top: 12px;">
-                <select id="summaryStyle" class="btn btn-outline" style="min-width: 150px;">
-                    <option value="meeting">会议纪要</option>
-                    <option value="lecture">课堂笔记</option>
-                    <option value="general">通用整理</option>
-                </select>
-                <button class="btn btn-primary" onclick="generateSummary()">✨ 生成纪要</button>
+                <button class="btn btn-primary" onclick="generateSummary()">✨ 生成课堂笔记</button>
             </div>
         </div>
 
@@ -275,7 +269,7 @@
             }
         }
 
-        // 生成纪要（仅预览，不存储）
+        // 生成课堂笔记（仅预览，不存储）
         async function generateSummary() {
             const content = document.getElementById('transcriptText').value.trim();
             if (!content) {
@@ -283,9 +277,8 @@
                 return;
             }
 
-            const style = document.getElementById('summaryStyle').value;
             const summaryArea = document.getElementById('summaryText');
-            summaryArea.value = '正在生成纪要，请稍候...';
+            summaryArea.value = '正在生成课堂笔记，请稍候...';
             document.getElementById('btnSaveSummary').disabled = true;
 
             try {
@@ -293,8 +286,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        content: content,
-                        style: style
+                        content: content
                     })
                 });
                 const data = await res.json();
@@ -304,18 +296,17 @@
                     // 自动生成文件名
                     const now = new Date();
                     const dateStr = now.toISOString().slice(0, 10);
-                    const styleNames = { meeting: '会议纪要', lecture: '课堂笔记', general: '笔记' };
                     document.getElementById('summaryFilename').value =
-                        `${dateStr}_${styleNames[style] || '纪要'}`;
+                        `${dateStr}_课堂笔记`;
                     document.getElementById('btnSaveSummary').disabled = false;
-                    showToast('纪要生成成功，请预览后确认保存', 'success');
+                    showToast('课堂笔记生成成功，请预览后确认保存', 'success');
                 } else {
                     summaryArea.value = `[生成失败] ${data.detail || '未知错误'}`;
-                    showToast('纪要生成失败', 'error');
+                    showToast('课堂笔记生成失败', 'error');
                 }
             } catch (err) {
                 summaryArea.value = `[生成异常] ${err.message}`;
-                showToast('纪要生成失败', 'error');
+                showToast('课堂笔记生成失败', 'error');
             }
         }
 

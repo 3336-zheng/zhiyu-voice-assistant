@@ -1,5 +1,5 @@
 """
-Plan-and-Execute Agent - Executor 执行器
+Plan-and-Execute Agent - Executor 执行器（课堂学习场景聚焦版）
 执行计划中的工具调用，支持无依赖步骤并行执行
 """
 import os
@@ -15,8 +15,7 @@ from sqlalchemy.orm import Session
 from backend.app.agent.models import (
     Plan, PlanStep, ToolName, IntentType,
     ToolResult, ExecutionResult,
-    SearchParameters, CreateNoteParameters, UpdateNoteParameters,
-    DateRangeParameters, CreateMdParameters, WriteMdParameters
+    SearchParameters, CreateNoteParameters, UpdateNoteParameters
 )
 from backend.app.services.hybrid_retrieval_service import get_hybrid_retrieval_service
 from backend.app.agent.markdown_agent import get_markdown_agent
@@ -48,10 +47,6 @@ class Executor:
             ToolName.DELETE_NOTE: self.delete_note,
             ToolName.LIST_NOTES: self.list_notes,
             ToolName.GET_CURRENT_TIME: self.get_current_time,
-            ToolName.SEARCH_BY_DATE_RANGE: self.search_by_date_range,
-            ToolName.GET_NOTE_DETAIL: self.get_note_detail,
-            ToolName.CREATE_MD_FILE: self.create_md_file,
-            ToolName.WRITE_MD_FILE: self.write_md_file,
             ToolName.SUMMARIZE_TEXT: self.summarize_text,
         }
 
@@ -610,115 +605,6 @@ class Executor:
             "weekday": weekdays[now.weekday()],
             "timestamp": int(now.timestamp())
         }
-
-    def search_by_date_range(self, parameters: Dict, db: Session) -> List[Dict]:
-        """
-        按日期范围搜索笔记（基于 data/notes/ 下 md 文件的修改时间）
-
-        Args:
-            parameters: 搜索参数
-            db: 数据库会话（未使用）
-
-        Returns:
-            List[Dict]: 笔记列表
-        """
-        params = DateRangeParameters(**parameters)
-
-        result = self.markdown_agent.list_md_files(directory="data/notes")
-        files = result.get("files", [])
-
-        # 按文件修改时间过滤
-        filtered = []
-        for f in files:
-            mtime = f.get("modified_at", "")
-            if params.date_from and mtime < params.date_from:
-                continue
-            if params.date_to and mtime > params.date_to + "T23:59:59":
-                continue
-            filtered.append(f)
-
-        return [
-            {
-                "id": None,
-                "filename": f["filename"],
-                "title": f["filename"].replace(".md", ""),
-                "summary": "",
-                "tags": [],
-                "created_at": f.get("modified_at"),
-                "file_path": f.get("file_path")
-            }
-            for f in filtered
-        ]
-
-    def get_note_detail(self, parameters: Dict, db: Session) -> Dict:
-        """
-        获取笔记详情（读取 data/notes/ 下的 md 文件）
-
-        Args:
-            parameters: 参数（filename 字段）
-            db: 数据库会话（未使用）
-
-        Returns:
-            Dict: 笔记详情
-        """
-        filename = parameters.get("filename")
-        if not filename:
-            raise ValueError("必须提供文件名")
-
-        result = self.markdown_agent.read_md_file(filename, directory="data/notes")
-        if not result.get("success"):
-            raise ValueError(f"笔记文件不存在: {filename}")
-
-        return {
-            "id": None,
-            "filename": filename,
-            "title": filename.replace(".md", ""),
-            "content": result.get("content", ""),
-            "summary": "",
-            "tags": [],
-            "file_path": result.get("file_path"),
-            "content_length": result.get("content_length", 0)
-        }
-
-    def create_md_file(self, parameters: Dict, db: Session = None) -> Dict:
-        """
-        创建 MD 文件
-
-        Args:
-            parameters: 创建参数
-            db: 数据库会话（未使用）
-
-        Returns:
-            Dict: 创建结果
-        """
-        params = CreateMdParameters(**parameters)
-        result = self.markdown_agent.create_md_file(
-            filename=params.filename,
-            title=params.title,
-            content=params.content,
-            directory=params.directory
-        )
-        return result
-
-    def write_md_file(self, parameters: Dict, db: Session = None) -> Dict:
-        """
-        写入 MD 文件
-
-        Args:
-            parameters: 写入参数
-            db: 数据库会话（未使用）
-
-        Returns:
-            Dict: 写入结果
-        """
-        params = WriteMdParameters(**parameters)
-        result = self.markdown_agent.write_md_file(
-            filename=params.filename,
-            content=params.content,
-            mode=params.mode,
-            directory=params.directory
-        )
-        return result
 
     def summarize_text(self, parameters: Dict, db: Session = None, query: str = "") -> Dict:
         """

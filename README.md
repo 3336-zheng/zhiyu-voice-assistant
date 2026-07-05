@@ -1,6 +1,6 @@
-# 智语 - 端侧智能语音笔记助手
+# 智语 - 课堂学习智能助手
 
-端侧部署的智能语音笔记助手，集成语音转写、Plan-and-Execute Agent 多轮对话、混合检索（BM25 + Embedding + RRF + Reranker）、纪要生成和文档管理，支持本地 Whisper 与云端百炼 ASR 双引擎切换。
+面向学生的端侧智能语音笔记助手，聚焦课堂学习场景：**录课 → 转写 → 自动生成结构化课堂笔记 → 沉淀进知识库 → 用 Agent 问答复习**。
 
 GitHub: https://github.com/3336-zheng/zhiyu-voice-assistant
 
@@ -9,41 +9,39 @@ GitHub: https://github.com/3336-zheng/zhiyu-voice-assistant
 ## 功能亮点
 
 - **双 ASR 引擎** -- 本地 Whisper（faster-whisper / CTranslate2 量化）与阿里百炼 DashScope API，按需切换
-- **Plan-and-Execute Agent** -- LLM 驱动的意图识别 + 多步规划 + 工具执行，支持检索、笔记 CRUD、摘要总结、MD 文件生成等 11 种意图
+- **Plan-and-Execute Agent** -- LLM 驱动的意图识别 + 多步规划 + 工具执行，支持 7 种课堂场景核心意图
 - **四阶段混合检索** -- BM25 与 Embedding 并行检索，RRF 融合排序，BGE-reranker 精排，检索精度显著优于单一方法
+- **结构化课堂笔记** -- 一键生成四段式笔记：知识点提纲、重点概念/公式、课后疑问、复习卡片（Q&A）
 - **多轮对话记忆** -- SQLite 持久化会话历史，支持摘要压缩和过期清理
-- **纪要总结** -- 一键将转录文字生成会议纪要 / 课堂笔记 / 通用笔记，支持预览编辑后保存并自动索引
-- **文档管理** -- 支持上传 md / txt / pdf / docx，自动分块索引到向量库
-- **前端三合一** -- 纯 HTML/CSS/JS 单页应用，问题检索 + 纪要总结 + 文档管理三个页面
+- **知识库沉淀** -- 课堂笔记自动索引到 ChromaDB + BM25，支持长期积累和检索
+- **复习问答** -- Agent 驱动的知识库问答，支持检索、笔记 CRUD、摘要总结等
 
 ---
 
 ## 系统架构
 
 ```
-用户语音/文本
+学生语音/文本
       |
       v
   FastAPI 后端 (端口 8337)
       |
       +-- 音频模块: ffmpeg 转码 -> Whisper/DashScope ASR -> 转录文本
       |
+      +-- 笔记模块: LLM 生成四段式课堂笔记 -> 预览 -> 保存 -> 自动索引
+      |
       +-- Agent 模块: Planner(LLM 意图识别) -> Executor(工具调度) -> Responder(答案生成)
       |       |
       |       +-- 混合检索: BM25(jieba分词) + Embedding(BGE) + RRF融合 + Reranker(BGE-reranker-v2-m3)
       |       |
-      |       +-- 笔记工具: 创建/更新/删除/列出/详情 (Markdown 文件)
+      |       +-- 笔记工具: 创建/更新/删除/列出 (Markdown 文件)
       |       |
-      |       +-- 时间查询 / 摘要总结
-      |
-      +-- 纪要模块: LLM 生成纪要 -> 预览 -> 保存到 data/docs/ -> 自动索引
-      |
-      +-- 文档模块: 上传/删除文档 -> 分块 -> ChromaDB + BM25 双索引
+      |       +-- 摘要总结 / 复习卡片生成
       |
       +-- 记忆模块: SQLite 会话表 + 消息历史 + 摘要压缩 + 过期清理
       |
       v
-  纯前端 (HTML/CSS/JS) -- 问题检索 / 纪要总结 / 文档管理
+  纯前端 (HTML/CSS/JS) -- 课堂录制+笔记 / 复习问答
 ```
 
 ---
@@ -185,10 +183,10 @@ docker run -p 8337:8337 --env-file .env -v ./data:/app/data zhiyu-assistant
 │       │   ├── audio.py             # 音频上传 / 转录 / 润色
 │       │   ├── notes.py             # 笔记 CRUD（md 文件）
 │       │   ├── docs.py              # 文档管理（上传 / 索引）
-│       │   ├── summary.py           # 纪要生成 / 保存
+│       │   ├── summary.py           # 课堂笔记生成 / 保存
 │       │   └── health.py            # 健康检查
 │       ├── agent/
-│       │   ├── models.py            # Agent 数据模型（意图、工具、计划、响应）
+│       │   ├── models.py            # Agent 数据模型（7种意图、工具、计划、响应）
 │       │   ├── planner.py           # Plan-and-Execute 规划器
 │       │   ├── executor.py          # 工具执行器
 │       │   ├── responder.py         # 响应生成器
@@ -211,9 +209,9 @@ docker run -p 8337:8337 --env-file .env -v ./data:/app/data zhiyu-assistant
 │           └── audio.py             # Audio 表模型
 │
 ├── frontend/
-│   ├── index.html                   # 问题检索页
-│   ├── summary.html                 # 纪要总结页
-│   ├── docs.html                    # 文档管理页
+│   ├── summary.html                 # 课堂录制+笔记生成页（主入口）
+│   ├── index.html                   # 复习问答页
+│   ├── docs.html                    # 知识库管理页
 │   └── style.css                    # 全局样式
 │
 ├── data/                            # 运行时数据（已 gitignore）
@@ -230,9 +228,47 @@ docker run -p 8337:8337 --env-file .env -v ./data:/app/data zhiyu-assistant
 
 ---
 
+## 核心功能
+
+### 课堂笔记生成
+
+支持录音或上传音频，自动转写后生成四段式结构化课堂笔记：
+
+1. **📚 知识点提纲** -- 按授课顺序列出主要知识点
+2. **⭐ 重点概念与公式** -- 提取关键概念、定理、公式
+3. **❓ 课后疑问** -- 列出学生可能存在的疑问点
+4. **🎴 复习卡片（Q&A）** -- 生成 5-10 张复习卡片
+
+### Agent 智能问答（7种核心意图）
+
+| 意图 | 示例 |
+|------|------|
+| 检索问答 | "查找关于 RAG 的笔记"、"什么是向量数据库" |
+| 创建笔记 | "创建笔记标题是XXX内容是YYY" |
+| 更新笔记 | "更新笔记xxx的内容" |
+| 删除笔记 | "删除笔记xxx" |
+| 列出笔记 | "显示所有笔记"、"列出本周的笔记" |
+| 时间查询 | "现在几点"、"今天星期几" |
+| 摘要总结 | "总结关于RAG的内容"、"生成复习卡片" |
+
+### 混合检索（四阶段）
+
+```
+用户查询 → BM25(jieba) ‖ Embedding(BGE) → RRF融合 → BGE-reranker精排 → 结果
+```
+
+---
+
 ## API 端点概览
 
 所有端点的请求/响应 schema 可在 `http://localhost:8337/api/docs` (Swagger UI) 中查看。
+
+### 课堂笔记 (`/summary`)
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/summary/generate` | 生成课堂笔记（四段式，仅预览） |
+| POST | `/summary/save` | 保存笔记到知识库并自动索引 |
 
 ### Agent 智能助手 (`/agent`)
 
@@ -266,13 +302,6 @@ docker run -p 8337:8337 --env-file .env -v ./data:/app/data zhiyu-assistant
 | PUT | `/notes/{filename}` | 编辑笔记 |
 | DELETE | `/notes/{filename}` | 删除笔记 |
 | GET | `/notes/search/?query=xxx` | 检索相关笔记 |
-
-### 纪要总结 (`/summary`)
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/summary/generate` | 生成纪要（仅预览，不存储） |
-| POST | `/summary/save` | 保存纪要到文档目录并自动索引 |
 
 ### 文档管理 (`/api/documents`)
 
@@ -359,9 +388,8 @@ Agent 支持自然语言交互，以下是一些示例：
 # 按日期搜索
 "查看上周的笔记"
 
-# 纪要操作
-"生成一份会议纪要"   -> 使用 /summary/generate
-"保存这份纪要"       -> 使用 /summary/save
+# 生成课堂笔记
+录音 → 转录 → 一键生成四段式课堂笔记
 ```
 
 ### 检索基准测试

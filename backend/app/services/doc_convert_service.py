@@ -7,6 +7,11 @@ import re
 import logging
 from typing import Optional
 
+try:
+    from docx.text.paragraph import Paragraph
+except ImportError:
+    Paragraph = None
+
 logger = logging.getLogger(__name__)
 
 

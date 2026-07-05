@@ -27,3 +27,6 @@ openai
 langgraph>=0.2.0,<0.3
 langchain-core>=0.2.0,<0.3
 langchain-openai>=0.1.0,<0.2
+langgraph>=0.2.0,<0.3
+langchain-core>=0.2.0,<0.3
+langchain-openai>=0.1.0,<0.2

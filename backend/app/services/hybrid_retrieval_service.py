@@ -5,6 +5,7 @@
 from typing import List, Dict, Optional, Any
 from concurrent.futures import ThreadPoolExecutor
 import logging
+from urllib.parse import quote
 
 from backend.app.core.config import settings
 from backend.app.services.chroma_service import get_chroma_service
@@ -58,6 +59,54 @@ class HybridRetrievalService:
         except Exception as e:
             logger.error(f"获取文档块失败: {e}")
             return {}
+
+    @staticmethod
+    def _normalize_tags(tags: Any) -> List[str]:
+        """将 ChromaDB 中的标签字符串转换为结构化列表。"""
+        if isinstance(tags, list):
+            return tags
+        if isinstance(tags, str):
+            return [tag.strip() for tag in tags.split(",") if tag.strip()]
+        return []
+
+    def _format_result(
+        self,
+        doc: Dict[str, Any],
+        metadata: Dict[str, Any],
+        rank: int,
+        score_name: str,
+        score: float,
+    ) -> Dict[str, Any]:
+        """统一返回可追溯的页面、版本、章节和原文片段。"""
+        page_id = metadata.get("page_id")
+        section_title = metadata.get("section_title", "")
+        page_title = metadata.get("page_title")
+        title = page_title or section_title or metadata.get("filename", doc.get("title", ""))
+        source_url = None
+        if page_id:
+            source_url = f"/api/pages/{page_id}"
+            if section_title:
+                source_url += f"#section={quote(section_title, safe='')}"
+        result = {
+            "id": doc["doc_id"],
+            "chunk_id": doc["doc_id"],
+            "page_id": page_id,
+            "page_revision": metadata.get("page_revision"),
+            "title": title,
+            "content": doc["content"],
+            "snippet": doc["content"][:300],
+            "summary": doc["content"][:200] + "..." if len(doc["content"]) > 200 else doc["content"],
+            "tags": self._normalize_tags(metadata.get("tags", [])),
+            "source_type": doc["source_type"],
+            "source_uri": metadata.get("source_uri", ""),
+            "source_url": source_url,
+            "filename": metadata.get("filename", ""),
+            "section_title": section_title,
+            "section_path": metadata.get("section_path", section_title),
+            score_name: score,
+            "rank": rank,
+        }
+        return result
 
     def search_hybrid(
         self,
@@ -155,7 +204,7 @@ class HybridRetrievalService:
                     candidate_docs.append({
                         "doc_id": doc_id,
                         "content": chunk["content"],
-                        "title": chunk["metadata"].get("section_title", ""),
+                        "title": chunk["metadata"].get("page_title", chunk["metadata"].get("section_title", "")),
                         "source_type": chunk["metadata"].get("source_type", "doc")
                     })
                 else:
@@ -189,18 +238,9 @@ class HybridRetrievalService:
                 chunk = chunks_dict.get(doc["doc_id"], {})
                 metadata = chunk.get("metadata", {})
 
-                final_results.append({
-                    "id": doc["doc_id"],
-                    "title": metadata.get("section_title", metadata.get("filename", doc["title"])),
-                    "content": doc["content"],
-                    "summary": doc["content"][:200] + "..." if len(doc["content"]) > 200 else doc["content"],
-                    "tags": metadata.get("tags", []),
-                    "source_type": doc["source_type"],
-                    "filename": metadata.get("filename", ""),
-                    "section_title": metadata.get("section_title", ""),
-                    "rerank_score": rerank_score,
-                    "rank": i + 1
-                })
+                final_results.append(
+                    self._format_result(doc, metadata, i + 1, "rerank_score", rerank_score)
+                )
 
             logger.info(f"混合检索完成，返回 {len(final_results)} 条结果")
             return final_results
@@ -230,19 +270,20 @@ class HybridRetrievalService:
             if not bm25_results:
                 return []
 
+            doc_ids = [doc_id for doc_id, _ in bm25_results]
+            chunks_dict = self._fetch_doc_chunks(doc_ids)
             results = []
             for i, (doc_id, score) in enumerate(bm25_results):
                 content = self.bm25_service.corpus.get(doc_id, "")
-                results.append({
-                    "id": doc_id,
-                    "title": doc_id,
-                    "content": content,
-                    "summary": content[:200] + "..." if len(content) > 200 else content,
-                    "tags": [],
-                    "source_type": "doc",
-                    "bm25_score": score,
-                    "rank": i + 1
-                })
+                chunk = chunks_dict.get(doc_id, {})
+                metadata = chunk.get("metadata", {})
+                doc = {
+                    "doc_id": doc_id,
+                    "title": metadata.get("page_title", metadata.get("section_title", doc_id)),
+                    "content": chunk.get("content", content),
+                    "source_type": metadata.get("source_type", "doc"),
+                }
+                results.append(self._format_result(doc, metadata, i + 1, "bm25_score", score))
 
             return results
 
@@ -281,17 +322,13 @@ class HybridRetrievalService:
                 metadata = chunk.get("metadata", {})
                 content = chunk.get("content", "")
 
-                results.append({
-                    "id": doc_id,
-                    "title": metadata.get("section_title", metadata.get("filename", doc_id)),
+                doc = {
+                    "doc_id": doc_id,
+                    "title": metadata.get("page_title", metadata.get("section_title", doc_id)),
                     "content": content,
-                    "summary": content[:200] + "..." if len(content) > 200 else content,
-                    "tags": metadata.get("tags", []),
                     "source_type": metadata.get("source_type", "doc"),
-                    "filename": metadata.get("filename", ""),
-                    "embedding_score": score,
-                    "rank": i + 1
-                })
+                }
+                results.append(self._format_result(doc, metadata, i + 1, "embedding_score", score))
 
             return results
 
@@ -356,7 +393,7 @@ class HybridRetrievalService:
                     candidate_docs.append({
                         "doc_id": doc_id,
                         "content": chunk["content"],
-                        "title": chunk["metadata"].get("section_title", ""),
+                        "title": chunk["metadata"].get("page_title", chunk["metadata"].get("section_title", "")),
                         "source_type": chunk["metadata"].get("source_type", "doc")
                     })
                 else:
@@ -387,17 +424,9 @@ class HybridRetrievalService:
                 chunk = chunks_dict.get(doc["doc_id"], {})
                 metadata = chunk.get("metadata", {})
 
-                final_results.append({
-                    "id": doc["doc_id"],
-                    "title": metadata.get("section_title", metadata.get("filename", doc["title"])),
-                    "content": doc["content"],
-                    "summary": doc["content"][:200] + "..." if len(doc["content"]) > 200 else doc["content"],
-                    "tags": metadata.get("tags", []),
-                    "source_type": doc["source_type"],
-                    "filename": metadata.get("filename", ""),
-                    "rerank_score": rerank_score,
-                    "rank": i + 1
-                })
+                final_results.append(
+                    self._format_result(doc, metadata, i + 1, "rerank_score", rerank_score)
+                )
 
             return final_results
 

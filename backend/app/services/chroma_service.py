@@ -163,8 +163,8 @@ class ChromaService:
                 for i, chroma_id in enumerate(ids):
                     # 使用 ChromaDB 的 doc_id（即存储时的 id）
                     source_type = metadatas[i].get("source_type", "note")
-                    if source_type == "doc":
-                        # 文档块：直接使用 chroma_id（如 "doc_xxx_0"）
+                    if source_type in {"doc", "wiki_page"}:
+                        # 文档块和 Wiki 页面块直接使用 ChromaDB 的稳定 ID
                         doc_id = chroma_id
                     else:
                         # 笔记：转换为 "note_{note_id}" 格式

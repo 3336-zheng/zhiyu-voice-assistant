@@ -77,7 +77,14 @@ class AgentResponse(BaseModel):
     plan: Optional[Plan] = None
     execution_result: Optional[ExecutionResult] = None
     sources: Optional[List[Dict]] = None  # 引用来源
+    confirmation_required: bool = False
+    pending_action_id: Optional[str] = None
+    action_preview: Optional[List[Dict[str, Any]]] = None
     confidence: float = 1.0  # 置信度
+    evidence_status: str = "not_applicable"
+    evidence_score: Optional[float] = None
+    evidence_source_count: int = 0
+    evidence_reason: Optional[str] = None
     timestamp: datetime
     execution_time_ms: Optional[int] = None
 
@@ -101,7 +108,7 @@ class CreateNoteParameters(BaseModel):
 
 
 class UpdateNoteParameters(BaseModel):
-    """更新笔记参数（基于文件名操作 data/notes/ 下的 md 文件）"""
+    """更新笔记参数（filename 兼容页面 UUID、标题或唯一别名）"""
     filename: str
     title: Optional[str] = None
     content: Optional[str] = None

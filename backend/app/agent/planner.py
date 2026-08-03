@@ -37,7 +37,7 @@ INTENT_RECOGNITION_PROMPT = """你是一个课堂学习助手的意图识别模�
 - time_query: 时间查询（如"现在几点"、"今天星期几"）
 - summarize: 摘要总结/生成复习卡片（如"总结关于RAG的内容"、"生成复习卡片"、"概括一下这节课的重点"）
 
-重要：笔记以 md 文件形式存储在 data/notes/ 目录下。更新、删除时，使用 filename（文件名）而非 note_id。
+重要：知识统一保存为 Wiki 页面。更新、删除时，filename 参数可以填写页面 UUID、标题或唯一别名；优先使用页面 UUID。
 
 请以JSON格式返回：
 {
@@ -48,7 +48,7 @@ INTENT_RECOGNITION_PROMPT = """你是一个课堂学习助手的意图识别模�
         "original_query_cleaned": "修正语音错误但保留完整语义的查询",
         "title": "笔记标题（如果是创建/更新）",
         "content": "笔记内容（如果是创建/更新）",
-        "filename": "文件名（更新/删除时必须，如'笔记_20260530'）",
+        "filename": "页面 UUID、标题或唯一别名（更新/删除时必须）",
         "tags": ["标签1", "标签2"]
     },
     "reasoning": "识别理由，说明做了哪些语音纠错"

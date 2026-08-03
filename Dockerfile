@@ -1,5 +1,14 @@
-# 智语端侧智能语音笔记助手 Docker 镜像
-# 基于 Python 3.11 精简版
+# 构建 React 前端
+FROM node:22-alpine AS frontend-builder
+
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/vite.config.js ./
+COPY frontend/app/ app/
+RUN npm run build
+
+# 智语端侧智能语音笔记助手运行镜像
 FROM python:3.11-slim
 
 # 设置工作目录
@@ -17,10 +26,11 @@ RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua
 # 复制项目代码
 COPY main.py .
 COPY backend/ backend/
-COPY frontend/ frontend/
+COPY frontend/index.html frontend/summary.html frontend/docs.html frontend/style.css frontend/
+COPY --from=frontend-builder /frontend/dist frontend/dist
 
 # 创建数据目录（运行时通过 volume 挂载）
-RUN mkdir -p data/database data/uploads data/chroma_db data/logs
+RUN mkdir -p data/database data/uploads data/wiki/pages data/wiki/attachments data/wiki/exports data/logs
 
 # 暴露端口
 EXPOSE 8337

@@ -10,7 +10,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/health")
+@router.get("")
+@router.get("/")
+@router.get("/health", include_in_schema=False)
 async def health_check():
     """健康检查"""
     return {

@@ -1,16 +1,16 @@
 """
 课堂笔记模块 API
-生成课堂笔记 → 预览 → 用户确认 → 保存到 data/docs/ + 索引到 ChromaDB + BM25
+生成课堂笔记 → 预览 → 用户确认 → 通过 PageService 保存为 Wiki 页面
 """
-import os
 import logging
-from datetime import datetime
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
+from ..core.database import get_db
 from ..services.llm_service import get_llm_service
-from ..services.doc_index_service import get_doc_index_service
+from ..services.page_service import PageValidationError, get_page_service
 
 logger = logging.getLogger(__name__)
 
@@ -90,9 +90,9 @@ async def generate_summary(req: SummaryGenerateRequest):
 
 
 @router.post("/save")
-async def save_summary(req: SummarySaveRequest):
+async def save_summary(req: SummarySaveRequest, db: Session = Depends(get_db)):
     """
-    保存纪要到 data/docs/ 并索引到 ChromaDB + BM25
+    用户确认后将课堂笔记保存为统一 Wiki 页面并建立索引
     """
     if not req.content or not req.content.strip():
         raise HTTPException(status_code=400, detail="纪要内容不能为空")
@@ -111,34 +111,29 @@ async def save_summary(req: SummarySaveRequest):
         for char in illegal_chars:
             filename = filename.replace(char, '_')
 
-        # 保存到 data/docs/
-        docs_dir = "data/docs"
-        os.makedirs(docs_dir, exist_ok=True)
-        file_path = os.path.join(docs_dir, filename)
-
-        # 构建文件内容
         title = req.title or Path(filename).stem
-        file_content = f"# {title}\n\n{req.content}"
-
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(file_content)
-
-        logger.info(f"纪要已保存: {file_path}")
-
-        # 立即索引到 ChromaDB + BM25
-        doc_index_service = get_doc_index_service()
-        index_result = doc_index_service.index_doc(file_path)
-
-        logger.info(f"纪要已索引: {index_result}")
+        page = get_page_service(db).upsert_page_by_source(
+            title=title,
+            content=req.content,
+            source_type="class_audio",
+            source_uri=f"summary:{filename}",
+            change_summary="用户确认并保存课堂笔记",
+        )
+        logger.info(f"课堂笔记已保存为 Wiki 页面: {page['id']}")
 
         return {
             "success": True,
-            "filename": filename,
-            "file_path": file_path,
-            "chunks": index_result.get("chunks", 0),
-            "status": index_result.get("status", "unknown")
+            "page_id": page["id"],
+            "revision": page["revision"],
+            "filename": page["filename"],
+            "file_path": page["file_path"],
+            "deduplicated": page["deduplicated"],
+            "status": page["index_status"],
+            "index_error": page["index_error"],
         }
 
+    except PageValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except Exception as e:
         logger.error(f"纪要保存失败: {e}")
         raise HTTPException(status_code=500, detail=f"纪要保存失败: {str(e)}")

@@ -453,6 +453,8 @@
                 const decoder = new TextDecoder();
                 let buffer = '';
                 let fullResponse = '';
+                let sourceItems = [];
+                let waitingForConfirmation = false;
 
                 resultArea.innerHTML = '';
 
@@ -485,7 +487,14 @@
                                         break;
 
                                     case 'sources':
+                                        sourceItems = data.items || [];
                                         resultArea.innerHTML += `<div class="result-sources">📚 找到 ${data.count} 条相关内容</div>`;
+                                        break;
+
+                                    case 'confirmation':
+                                        waitingForConfirmation = true;
+                                        fullResponse = data.message || '';
+                                        resultArea.innerHTML = renderConfirmation(data);
                                         break;
 
                                     case 'token':
@@ -502,6 +511,13 @@
                                         break;
 
                                     case 'done':
+                                        if (waitingForConfirmation) {
+                                            showToast('知识变更等待确认', 'success');
+                                            break;
+                                        }
+                                        if (sourceItems.length > 0) {
+                                            resultArea.innerHTML += renderSources(sourceItems);
+                                        }
                                         lastAnswer = fullResponse;
                                         document.getElementById('btnSaveAnswer').style.display = 'inline-block';
                                         showToast('检索完成', 'success');
@@ -523,6 +539,82 @@
                 resultArea.textContent = '处理失败: ' + err.message;
                 showToast('AI 处理失败', 'error');
             }
+        }
+
+        function renderConfirmation(data) {
+            const preview = (data.preview || []).map(item => `
+                <div class="confirmation-step">
+                    <strong>${escapeHtml(item.description || item.operation || '知识变更')}</strong>
+                    <pre>${escapeHtml(JSON.stringify(item.parameters || {}, null, 2))}</pre>
+                </div>
+            `).join('');
+            return `
+                <div class="confirmation-panel">
+                    <div class="confirmation-title">等待确认的知识变更</div>
+                    ${preview}
+                    <div class="confirmation-actions">
+                        <button class="btn btn-success" onclick="confirmPendingAction('${data.pending_action_id}', this)">✓ 确认执行</button>
+                        <button class="btn btn-outline" onclick="cancelPendingAction('${data.pending_action_id}', this)">× 取消</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function confirmPendingAction(actionId, button) {
+            const buttons = button.closest('.confirmation-actions').querySelectorAll('button');
+            buttons.forEach(item => item.disabled = true);
+            button.textContent = '执行中...';
+            try {
+                const res = await fetch(`${API_BASE}/agent/actions/${encodeURIComponent(actionId)}/confirm`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId })
+                });
+                const data = await res.json();
+                if (!res.ok || !data.success) {
+                    throw new Error(data.detail || data.response || '执行失败');
+                }
+                document.getElementById('resultArea').innerHTML = `<div class="result-content">${renderMarkdown(data.response)}</div>`;
+                lastAnswer = data.response || '';
+                showToast('知识变更已执行', 'success');
+            } catch (err) {
+                buttons.forEach(item => item.disabled = false);
+                button.textContent = '✓ 确认执行';
+                showToast('执行失败: ' + err.message, 'error');
+            }
+        }
+
+        async function cancelPendingAction(actionId, button) {
+            const buttons = button.closest('.confirmation-actions').querySelectorAll('button');
+            buttons.forEach(item => item.disabled = true);
+            try {
+                const res = await fetch(`${API_BASE}/agent/actions/${encodeURIComponent(actionId)}/cancel`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || '取消失败');
+                document.getElementById('resultArea').innerHTML = '<div class="result-content">知识变更已取消。</div>';
+                showToast('知识变更已取消', 'success');
+            } catch (err) {
+                buttons.forEach(item => item.disabled = false);
+                showToast('取消失败: ' + err.message, 'error');
+            }
+        }
+
+        function renderSources(sources) {
+            const items = sources.map(source => {
+                const title = escapeHtml(source.title || '未命名页面');
+                const section = source.section_path ? ` · ${escapeHtml(source.section_path)}` : '';
+                const revision = source.page_revision ? `v${source.page_revision}` : '';
+                const label = `${title}${section}`;
+                const link = source.source_url
+                    ? `<a href="${escapeHtml(source.source_url)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+                    : label;
+                return `<li>${link}<span>${escapeHtml(revision)}</span></li>`;
+            }).join('');
+            return `<div class="source-list"><div class="source-list-title">引用来源</div><ul>${items}</ul></div>`;
         }
 
         // 保存答案到 data/notes/（直接调用文件写入 API）
@@ -578,6 +670,15 @@
         }
 
         // 轻量 Markdown 渲染（不依赖外部库）
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
         function renderMarkdown(text) {
             if (!text) return '';
             let html = text

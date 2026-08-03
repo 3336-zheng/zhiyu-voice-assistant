@@ -6,6 +6,7 @@ __pycache__/
 dist/
 build/
 *.egg
+node_modules/
 
 # 环境变量（含密钥）
 .env
@@ -30,6 +31,7 @@ data/chroma_db/
 data/logs/
 data/docs/
 data/notes/
+data/wiki/
 
 # 模型文件
 *.bin

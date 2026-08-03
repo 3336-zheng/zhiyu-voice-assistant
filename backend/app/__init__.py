@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from .api import audio_router, notes_router, health_router, agent_router
+from .api import audio_router, notes_router, health_router, agent_router, pages_router
 from .api.docs import router as docs_router
 from .api.summary import router as summary_router
 from .core.config import settings
@@ -100,16 +100,11 @@ async def startup_event():
     db_dir = os.path.dirname(settings.database_url.replace("sqlite:///", ""))
     os.makedirs(db_dir, exist_ok=True)
     from .core.database import engine, Base
+    from . import models as _models  # 确保所有 SQLAlchemy 模型已注册
     Base.metadata.create_all(bind=engine)
-    # 清理已废弃的 notes 表（笔记已迁移到文件系统 data/notes/*.md）
-    with engine.connect() as conn:
-        try:
-            from sqlalchemy import text
-            conn.execute(text("DROP TABLE IF EXISTS notes"))
-            conn.commit()
-            logger.info("已移除废弃的 notes 表")
-        except Exception:
-            pass
+    from .core.schema import ensure_schema
+    schema_version = ensure_schema(engine)
+    logger.info(f"数据库 schema 已就绪，版本: {schema_version}")
     logger.info(f"数据库表已就绪: {db_dir}")
     # 确保上传目录是绝对路径
     upload_dir = settings.get_upload_dir()
@@ -124,6 +119,21 @@ async def startup_event():
         logger.info(f"文档增量同步完成: {result}")
     except Exception as e:
         logger.warning(f"文档同步失败（不影响启动）: {e}", exc_info=True)
+    # 恢复上次中断的 Wiki 索引任务，具体处理交给后台 worker。
+    try:
+        from .core.database import SessionLocal
+        from .services.page_service import get_page_service
+
+        db = SessionLocal()
+        try:
+            result = get_page_service(db).recover_index_tasks()
+            logger.info(f"Wiki 索引任务恢复完成: {result}")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Wiki 索引任务恢复失败（不影响启动）: {e}", exc_info=True)
+    from .services.wiki_index_worker import run_wiki_index_worker
+    asyncio.create_task(run_wiki_index_worker())
     # 启动过期会话定时清理任务
     asyncio.create_task(_periodic_cleanup())
     logger.info(f"过期会话清理任务已启动（间隔 {settings.cleanup_interval_minutes} 分钟，TTL {settings.session_ttl_hours} 小时）")
@@ -149,6 +159,9 @@ app.include_router(agent_router, prefix="/agent", tags=["智能助手"])
 app.include_router(health_router, prefix="/health", tags=["健康检查"])
 app.include_router(docs_router, prefix="/api/documents", tags=["文档管理"])
 app.include_router(summary_router, prefix="/summary", tags=["纪要总结"])
+app.include_router(pages_router, prefix="/api/pages", tags=["Wiki 页面"])
 
-# 挂载前端静态文件（必须放在最后）
-app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+# 挂载前端静态文件（必须放在最后）。构建后优先使用 React，未构建时回退旧页面。
+react_frontend = Path("frontend/dist")
+frontend_directory = react_frontend if react_frontend.exists() else Path("frontend")
+app.mount("/", StaticFiles(directory=str(frontend_directory), html=True), name="frontend")

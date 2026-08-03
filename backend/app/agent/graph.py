@@ -12,6 +12,7 @@ from backend.app.agent.executor import get_executor
 from backend.app.agent.responder import get_responder
 from backend.app.services.query_rewrite_service import get_query_rewrite_service, RewriteStrategy
 from backend.app.services.crag_grader_service import get_crag_grader_service, RelevanceGrade
+from backend.app.services.evidence_service import assess_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,10 @@ class AgentState(TypedDict):
     answer: Optional[str]
     sources: Optional[List[Dict]]
     confidence: float
+    evidence_status: str
+    evidence_score: Optional[float]
+    evidence_source_count: int
+    evidence_reason: Optional[str]
 
     # 控制
     iter_count: int
@@ -56,7 +61,7 @@ def route_node(state: AgentState) -> AgentState:
     planner = get_planner()
 
     try:
-        plan = planner.plan(state["query"], state.get("context"))
+        plan = state.get("plan") or planner.plan(state["query"], state.get("context"))
         logger.info(f"[graph] 意图识别完成：{plan.intent.value}, 步骤数={len(plan.steps)}")
         return {**state, "plan": plan, "iter_count": state.get("iter_count", 0) + 1}
     except Exception as e:
@@ -88,12 +93,20 @@ def query_rewrite_node(state: AgentState) -> AgentState:
         )
 
         logger.info(f"[graph] Query 改写完成: 原始='{query[:30]}...', 改写数={len(rewritten_queries)-1}")
-        return {**state, "rewritten_queries": rewritten_queries}
+        return {
+            **state,
+            "rewritten_queries": rewritten_queries,
+            "iter_count": state.get("iter_count", 0) + 1,
+        }
 
     except Exception as e:
         logger.error(f"[graph] Query 改写失败: {e}")
         # 失败时使用原始查询
-        return {**state, "rewritten_queries": [query]}
+        return {
+            **state,
+            "rewritten_queries": [query],
+            "iter_count": state.get("iter_count", 0) + 1,
+        }
 
 
 def retrieve_node(state: AgentState) -> AgentState:
@@ -201,6 +214,16 @@ def generate_node(state: AgentState) -> AgentState:
     search_results = state.get("search_results")
     refined_content = state.get("refined_content")
 
+    evidence = assess_evidence(search_results)
+    if evidence.status != "sufficient":
+        return {
+            **state,
+            "answer": "现有 Wiki 中没有足够证据支持这个问题，暂时不生成推测性答案。",
+            "sources": search_results or [],
+            "confidence": 0.0,
+            **evidence.as_dict(),
+        }
+
     if not plan:
         return {**state, "error": "没有执行计划", "answer": "抱歉，无法处理您的请求。"}
 
@@ -246,7 +269,8 @@ def generate_node(state: AgentState) -> AgentState:
             **state,
             "answer": response.response,
             "sources": response.sources,
-            "confidence": response.confidence
+            "confidence": response.confidence,
+            **evidence.as_dict(),
         }
 
     except Exception as e:

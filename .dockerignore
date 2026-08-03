@@ -13,6 +13,7 @@ __pycache__
 *.pyc
 *.pyo
 *.egg-info
+node_modules
 dist
 build
 .pytest_cache

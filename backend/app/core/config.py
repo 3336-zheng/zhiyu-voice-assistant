@@ -24,6 +24,10 @@ class Settings(BaseSettings):
 
     # 文件存储配置
     upload_dir: str = "data/uploads"
+    wiki_pages_dir: str = "data/wiki/pages"
+    wiki_attachments_dir: str = "data/wiki/attachments"
+    wiki_exports_dir: str = "data/wiki/exports"
+    backup_dir: str = "data/backups"
     max_file_size: int = 50 * 1024 * 1024  # 50MB
     allowed_extensions: str = ".wav,.mp3,.flac,.ogg,.webm"  # 从 .env 读取为字符串
 
@@ -78,6 +82,15 @@ class Settings(BaseSettings):
     # 性能配置
     max_concurrent_requests: int = 10
     timeout_seconds: int = 300
+
+    # Wiki 索引 worker 配置
+    wiki_index_poll_seconds: float = 5.0
+    wiki_index_batch_size: int = 5
+    wiki_index_max_backoff_seconds: int = 300
+
+    # 可信问答证据门禁
+    evidence_min_score: float = 0.35
+    evidence_min_sources: int = 1
 
     def get_cors_origins(self) -> list:
         """获取 CORS 允许的源列表"""

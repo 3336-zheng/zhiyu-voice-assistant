@@ -387,6 +387,71 @@ input[type="text"]:focus {
     font-weight: 600;
 }
 
+.confirmation-panel {
+    border-left: 3px solid #D9A514;
+    padding-left: 16px;
+}
+
+.confirmation-title,
+.source-list-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 10px;
+}
+
+.confirmation-step {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.confirmation-step pre {
+    margin-top: 8px;
+    padding: 10px 12px;
+    max-height: 220px;
+    overflow: auto;
+    background: #FFFFFF;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 12px;
+}
+
+.confirmation-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+}
+
+.source-list {
+    border-top: 1px solid var(--border);
+    margin-top: 18px;
+    padding-top: 14px;
+}
+
+.source-list ul {
+    list-style: none;
+}
+
+.source-list li {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 0;
+    color: var(--text-secondary);
+}
+
+.source-list a {
+    color: #176B58;
+    text-decoration: none;
+}
+
+.source-list a:hover {
+    text-decoration: underline;
+}
+
 /* ===== 文档列表 ===== */
 .doc-list {
     list-style: none;

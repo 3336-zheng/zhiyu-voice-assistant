@@ -5,19 +5,31 @@ Plan-and-Execute Agent 主类（LangGraph 版本）
 """
 import time
 import logging
-from typing import Optional, List, Dict
-from datetime import datetime
+from typing import Optional, List, Dict, Any
+from datetime import datetime, timedelta, timezone
 import uuid
 
 from sqlalchemy.orm import Session
 
-from backend.app.agent.models import AgentResponse
+from backend.app.agent.models import AgentResponse, IntentType, Plan
 from backend.app.agent.planner import get_planner
 from backend.app.agent.executor import get_executor
 from backend.app.agent.responder import get_responder
 from backend.app.core.database import SessionLocal
+from backend.app.core.config import settings
+from backend.app.models.wiki import AgentPendingAction
 
 logger = logging.getLogger(__name__)
+
+WRITE_INTENTS = {
+    IntentType.CREATE_NOTE,
+    IntentType.UPDATE_NOTE,
+    IntentType.DELETE_NOTE,
+}
+
+
+class AgentActionError(Exception):
+    """待确认操作不存在、已失效或不属于当前会话。"""
 
 
 class PlanExecuteAgent:
@@ -98,78 +110,37 @@ class PlanExecuteAgent:
                 except Exception as e:
                     logger.warning(f"获取对话历史失败: {e}")
 
-            # 使用 LangGraph 图状态机执行
-            from backend.app.agent.graph import get_agent_graph
-            graph = get_agent_graph()
+            plan = self.planner.plan(user_query, context)
+            if plan.intent in WRITE_INTENTS:
+                response = self._create_pending_response(
+                    user_query,
+                    session_id,
+                    plan,
+                    db,
+                    start_time,
+                )
+            elif plan.intent in {IntentType.SEARCH, IntentType.SUMMARIZE}:
+                response = self._run_retrieval_graph(
+                    user_query,
+                    session_id,
+                    context,
+                    plan,
+                    start_time,
+                )
+            else:
+                execution_result = await self.executor.execute(plan, db)
+                response = self.responder.generate_response(
+                    user_query,
+                    plan,
+                    execution_result,
+                    context,
+                )
+                response.session_id = session_id
+                response.execution_time_ms = int((time.time() - start_time) * 1000)
 
-            # 构建初始状态
-            initial_state = {
-                "query": user_query,
-                "session_id": session_id,
-                "context": context,
-                "plan": None,
-                "search_results": None,
-                "execution_results": None,
-                "answer": None,
-                "sources": None,
-                "confidence": 0.0,
-                "iter_count": 0,
-                "max_iterations": 5,
-                "error": None
-            }
+            self._save_conversation(user_query, response, db)
 
-            # 执行图
-            logger.info("执行 LangGraph 图状态机...")
-            final_state = graph.invoke(initial_state)
-
-            # 提取结果
-            answer = final_state.get("answer", "抱歉，无法生成答案。")
-            sources = final_state.get("sources", [])
-            confidence = final_state.get("confidence", 0.0)
-            error = final_state.get("error")
-
-            if error:
-                logger.warning(f"图执行过程中出现错误: {error}")
-
-            total_time = int((time.time() - start_time) * 1000)
-
-            # 构建响应
-            response = AgentResponse(
-                query=user_query,
-                response=answer,
-                session_id=session_id,
-                sources=sources,
-                confidence=confidence,
-                timestamp=datetime.now(),
-                execution_time_ms=total_time
-            )
-
-            # 保存对话历史
-            if self.memory_service:
-                try:
-                    # 保存用户消息
-                    self.memory_service.add_message(
-                        session_id=session_id,
-                        role="user",
-                        content=user_query,
-                        db=db
-                    )
-
-                    # 保存助手回复
-                    self.memory_service.add_message(
-                        session_id=session_id,
-                        role="assistant",
-                        content=answer,
-                        metadata={"sources": sources},
-                        db=db
-                    )
-
-                    # 检查是否需要摘要压缩
-                    self.memory_service.summarize_if_needed(session_id, db=db)
-                except Exception as e:
-                    logger.warning(f"保存对话历史失败: {e}")
-
-            logger.info(f"Agent 处理完成，总耗时 {total_time}ms")
+            logger.info(f"Agent 处理完成，总耗时 {response.execution_time_ms}ms")
             return response
 
         except Exception as e:
@@ -177,6 +148,7 @@ class PlanExecuteAgent:
             return AgentResponse(
                 query=user_query,
                 response=f"抱歉，处理您的请求时出现错误：{str(e)}",
+                session_id=session_id,
                 confidence=0.0,
                 timestamp=datetime.now(),
                 execution_time_ms=int((time.time() - start_time) * 1000)
@@ -185,6 +157,225 @@ class PlanExecuteAgent:
         finally:
             if should_close:
                 db.close()
+
+    def _run_retrieval_graph(
+        self,
+        user_query: str,
+        session_id: str,
+        context: List[Dict[str, str]],
+        plan: Plan,
+        start_time: float,
+    ) -> AgentResponse:
+        """执行只读的 Agentic RAG 图。"""
+        from backend.app.agent.graph import get_agent_graph
+        from backend.app.services.evidence_service import assess_evidence
+
+        initial_state = {
+            "query": user_query,
+            "session_id": session_id,
+            "context": context,
+            "plan": plan,
+            "rewritten_queries": [],
+            "search_results": None,
+            "execution_results": None,
+            "relevance_grade": None,
+            "refined_content": None,
+            "answer": None,
+            "sources": None,
+            "confidence": 0.0,
+            "evidence_status": "not_applicable",
+            "evidence_score": None,
+            "evidence_source_count": 0,
+            "evidence_reason": None,
+            "iter_count": 0,
+            "max_iterations": settings.agent_max_iterations,
+            "error": None,
+        }
+        final_state = get_agent_graph().invoke(initial_state)
+        evidence = assess_evidence(final_state.get("search_results"))
+        if final_state.get("error"):
+            logger.warning("图执行过程中出现错误: %s", final_state["error"])
+        answer = final_state.get("answer")
+        if not answer and final_state.get("relevance_grade") == "incorrect":
+            answer = "现有 Wiki 中没有找到足以支持回答的证据，请补充相关页面或缩小查询范围。"
+        return AgentResponse(
+            query=user_query,
+            response=answer or "现有 Wiki 证据不足，暂时无法回答该问题。",
+            session_id=session_id,
+            plan=plan,
+            sources=final_state.get("sources", []),
+            confidence=final_state.get("confidence", 0.0),
+            evidence_status=final_state.get("evidence_status", evidence.status),
+            evidence_score=final_state.get("evidence_score", evidence.score),
+            evidence_source_count=final_state.get("evidence_source_count", evidence.source_count),
+            evidence_reason=final_state.get("evidence_reason", evidence.reason),
+            timestamp=datetime.now(),
+            execution_time_ms=int((time.time() - start_time) * 1000),
+        )
+
+    def _create_pending_response(
+        self,
+        user_query: str,
+        session_id: str,
+        plan: Plan,
+        db: Session,
+        start_time: float,
+    ) -> AgentResponse:
+        """持久化写入计划，只返回预览而不执行工具。"""
+        preview = [
+            {
+                "step_id": step.step_id,
+                "operation": step.tool_name.value,
+                "description": step.description,
+                "parameters": step.parameters,
+            }
+            for step in plan.steps
+        ]
+        pending = AgentPendingAction(
+            id=str(uuid.uuid4()),
+            session_id=session_id,
+            query=user_query,
+            plan_data=plan.model_dump(mode="json"),
+            preview=preview,
+            status="pending",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        db.add(pending)
+        db.commit()
+        descriptions = "\n".join(f"- {item['description']}" for item in preview)
+        return AgentResponse(
+            query=user_query,
+            response=f"以下知识变更等待确认：\n\n{descriptions}",
+            session_id=session_id,
+            plan=plan,
+            confirmation_required=True,
+            pending_action_id=pending.id,
+            action_preview=preview,
+            confidence=1.0,
+            timestamp=datetime.now(),
+            execution_time_ms=int((time.time() - start_time) * 1000),
+        )
+
+    async def confirm_action(
+        self,
+        action_id: str,
+        session_id: str,
+        db: Session = None,
+    ) -> AgentResponse:
+        """执行已保存的写入计划；重复确认返回第一次的结果。"""
+        if db is None:
+            db = SessionLocal()
+            should_close = True
+        else:
+            should_close = False
+        try:
+            pending = db.get(AgentPendingAction, action_id)
+            self._validate_pending_action(pending, session_id, db)
+            if pending.status == "completed" and pending.result_data:
+                return AgentResponse.model_validate(pending.result_data)
+
+            plan = Plan.model_validate(pending.plan_data)
+            start_time = time.time()
+            execution_result = await self.executor.execute(plan, db)
+            response = self.responder.generate_response(
+                pending.query,
+                plan,
+                execution_result,
+                [],
+            )
+            response.session_id = session_id
+            response.execution_time_ms = int((time.time() - start_time) * 1000)
+            if execution_result.success:
+                pending.status = "completed"
+                pending.completed_at = datetime.now(timezone.utc)
+                pending.result_data = response.model_dump(mode="json")
+                pending.error = None
+            else:
+                pending.status = "failed"
+                pending.error = next(
+                    (
+                        result.error_message
+                        for result in execution_result.results
+                        if not result.success and result.error_message
+                    ),
+                    "写入计划执行失败",
+                )
+            db.commit()
+            if execution_result.success:
+                self._save_assistant_message(response, db)
+            return response
+        finally:
+            if should_close:
+                db.close()
+
+    def cancel_action(self, action_id: str, session_id: str, db: Session) -> Dict[str, Any]:
+        """取消仍在等待确认的写入计划。"""
+        pending = db.get(AgentPendingAction, action_id)
+        self._validate_pending_action(pending, session_id, db)
+        if pending.status == "completed":
+            raise AgentActionError("已完成的操作不能取消")
+        pending.status = "cancelled"
+        db.commit()
+        return {"action_id": action_id, "status": "cancelled"}
+
+    @staticmethod
+    def _validate_pending_action(
+        pending: Optional[AgentPendingAction],
+        session_id: str,
+        db: Session,
+    ) -> None:
+        if pending is None:
+            raise AgentActionError("待确认操作不存在")
+        if pending.session_id != session_id:
+            raise AgentActionError("待确认操作不属于当前会话")
+        if pending.status in {"cancelled", "failed", "expired"}:
+            raise AgentActionError(f"待确认操作当前状态不可执行: {pending.status}")
+        expires_at = pending.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if pending.status == "pending" and expires_at <= datetime.now(timezone.utc):
+            pending.status = "expired"
+            db.commit()
+            raise AgentActionError("待确认操作已过期")
+
+    def _save_conversation(
+        self,
+        user_query: str,
+        response: AgentResponse,
+        db: Session,
+    ) -> None:
+        """保存一轮对话及其结构化来源和确认状态。"""
+        if not self.memory_service:
+            return
+        try:
+            self.memory_service.add_message(
+                session_id=response.session_id,
+                role="user",
+                content=user_query,
+                db=db,
+            )
+            self._save_assistant_message(response, db)
+            self.memory_service.summarize_if_needed(response.session_id, db=db)
+        except Exception as exc:
+            logger.warning("保存对话历史失败: %s", exc)
+
+    def _save_assistant_message(self, response: AgentResponse, db: Session) -> None:
+        if not self.memory_service:
+            return
+        self.memory_service.add_message(
+            session_id=response.session_id,
+            role="assistant",
+            content=response.response,
+            metadata={
+                "sources": response.sources,
+                "confirmation_required": response.confirmation_required,
+                "pending_action_id": response.pending_action_id,
+                "evidence_status": response.evidence_status,
+                "evidence_score": response.evidence_score,
+                "evidence_source_count": response.evidence_source_count,
+            },
+            db=db,
+        )
 
     async def chat(
         self,

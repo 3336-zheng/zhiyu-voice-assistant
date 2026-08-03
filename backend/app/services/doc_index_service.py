@@ -472,18 +472,19 @@ class DocIndexService:
         # 收集所有待索引文档: [(doc_id, content, title)]
         entries: List[tuple] = []
 
-        # 从 ChromaDB 加载 doc chunks
+        # 从 ChromaDB 加载旧文档与统一 Wiki 页面分块
         try:
             results = self.chroma_service.collection.get(
-                where={"source_type": "doc"},
                 include=["documents", "metadatas"]
             )
             if results["ids"]:
                 for i, doc_id in enumerate(results["ids"]):
                     content = results["documents"][i] if results["documents"] else ""
                     metadata = results["metadatas"][i] if results["metadatas"] else {}
-                    section_title = metadata.get("section_title", "")
-                    entries.append((doc_id, content, section_title))
+                    if metadata.get("source_type") in {"doc", "wiki_page"}:
+                        section_title = metadata.get("section_title", "")
+                        page_title = metadata.get("page_title", "")
+                        entries.append((doc_id, content, f"{page_title} {section_title}".strip()))
         except Exception as e:
             logger.error(f"从 ChromaDB 加载 doc chunks 失败: {e}")
 
@@ -502,7 +503,7 @@ class DocIndexService:
                 b=bm25.b
             )
 
-        logger.info(f"BM25 索引重建完成，文档数: {bm25.get_document_count()}")
+        logger.info(f"BM25 索引重建完成，文档与 Wiki 分块数: {bm25.get_document_count()}")
 
     def _get_indexed_mtimes(self) -> Dict[str, float]:
         """

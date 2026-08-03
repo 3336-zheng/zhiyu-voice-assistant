@@ -2,7 +2,6 @@
 Plan-and-Execute Agent - Executor 执行器（课堂学习场景聚焦版）
 执行计划中的工具调用，支持无依赖步骤并行执行
 """
-import os
 import time
 import asyncio
 from typing import Dict, Any, List, Optional, Set
@@ -18,7 +17,7 @@ from backend.app.agent.models import (
     SearchParameters, CreateNoteParameters, UpdateNoteParameters
 )
 from backend.app.services.hybrid_retrieval_service import get_hybrid_retrieval_service
-from backend.app.agent.markdown_agent import get_markdown_agent
+from backend.app.services.page_service import get_page_service
 from backend.app.core.database import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -52,7 +51,6 @@ class Executor:
 
         # 初始化服务
         self.hybrid_retrieval = get_hybrid_retrieval_service()
-        self.markdown_agent = get_markdown_agent()
 
     def _build_waves(self, steps: List[PlanStep]) -> List[List[PlanStep]]:
         """
@@ -381,12 +379,6 @@ class Executor:
             final_data["updated_note"] = result
         elif tool_name == ToolName.DELETE_NOTE:
             final_data["deleted_note"] = result
-        elif tool_name == ToolName.GET_NOTE_DETAIL:
-            final_data["note_detail"] = result
-        elif tool_name == ToolName.CREATE_MD_FILE:
-            final_data["created_md"] = result
-        elif tool_name == ToolName.WRITE_MD_FILE:
-            final_data["written_md"] = result
         elif tool_name == ToolName.SUMMARIZE_TEXT:
             final_data["summarized_text"] = result
 
@@ -414,175 +406,60 @@ class Executor:
         return results
 
     def create_note(self, parameters: Dict, db: Session) -> Dict:
-        """
-        创建笔记（写入 data/notes/ 作为 md 文件，不写入 SQLite/ChromaDB/BM25）
-
-        Args:
-            parameters: 创建参数
-            db: 数据库会话（未使用）
-
-        Returns:
-            Dict: 创建的笔记信息
-        """
+        """通过 PageService 创建可版本化、可检索的 Wiki 页面。"""
         params = CreateNoteParameters(**parameters)
-
-        # 生成文件名：优先用 title，否则用时间戳
-        filename = params.title or f"笔记_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-        # 写入 data/notes/ 目录
-        result = self.markdown_agent.create_md_file(
-            filename=filename,
+        result = get_page_service(db).create_page(
             title=params.title,
             content=params.content,
-            directory="data/notes"
+            tags=params.tags,
+            source_type="agent_note",
+            change_summary="Agent 确认后创建页面",
         )
-
-        if result.get("success"):
-            # 同步索引到 ChromaDB + BM25（使笔记可被搜索）
-            try:
-                from backend.app.services.doc_index_service import get_doc_index_service
-                get_doc_index_service().index_doc(result.get("file_path"))
-            except Exception as e:
-                logger.warning(f"笔记 {result.get('filename')} 索引失败（不影响创建）: {e}")
-
-            return {
-                "id": None,
-                "title": params.title,
-                "content": params.content,
-                "file_path": result.get("file_path"),
-                "filename": result.get("filename"),
-                "created_at": result.get("created_at")
-            }
-        else:
-            raise ValueError(f"创建笔记文件失败: {result.get('error')}")
+        return result
 
     def update_note(self, parameters: Dict, db: Session) -> Dict:
-        """
-        更新笔记（覆写 data/notes/ 下的 md 文件）
-
-        Args:
-            parameters: 更新参数
-            db: 数据库会话（未使用）
-
-        Returns:
-            Dict: 更新后的笔记信息
-        """
+        """通过稳定 ID、标题或别名更新 Wiki 页面。"""
         params = UpdateNoteParameters(**parameters)
-
-        # 先读取原文件内容，确认文件存在
-        read_result = self.markdown_agent.read_md_file(params.filename, directory="data/notes")
-        if not read_result.get("success"):
-            raise ValueError(f"笔记文件不存在: {params.filename}")
-
-        # 构建新内容：保留原标题行，覆写正文
-        new_content = params.content or ""
-        if params.title:
-            new_content = f"# {params.title}\n\n{new_content}"
-
-        # 覆写文件
-        result = self.markdown_agent.write_md_file(
-            filename=params.filename,
-            content=new_content,
-            mode="overwrite",
-            directory="data/notes"
+        service = get_page_service(db)
+        current = service.find_page(params.filename)
+        return service.update_page(
+            current["id"],
+            expected_revision=current["revision"],
+            title=params.title,
+            content=params.content,
+            tags=params.tags,
+            change_summary="Agent 确认后更新页面",
         )
 
-        if result.get("success"):
-            # 同步更新索引
-            try:
-                from backend.app.services.doc_index_service import get_doc_index_service
-                get_doc_index_service().index_doc(result.get("file_path"))
-            except Exception as e:
-                logger.warning(f"笔记 {params.filename} 索引更新失败: {e}")
-
-            return {
-                "filename": params.filename,
-                "title": params.title,
-                "content": new_content,
-                "updated_at": result.get("written_at")
-            }
-        else:
-            raise ValueError(f"更新笔记文件失败: {result.get('error')}")
-
     def delete_note(self, parameters: Dict, db: Session) -> Dict:
-        """
-        删除笔记（删除 data/notes/ 下的 md 文件）
-
-        Args:
-            parameters: 删除参数（filename 字段）
-            db: 数据库会话（未使用）
-
-        Returns:
-            Dict: 删除结果
-        """
+        """通过 PageService 删除页面，历史版本继续保留。"""
         filename = parameters.get("filename")
         if not filename:
-            raise ValueError("必须提供文件名")
-
-        file_path = self.markdown_agent._get_file_path(filename, directory="data/notes")
-
-        if not os.path.exists(file_path):
-            raise ValueError(f"笔记文件不存在: {filename}")
-
-        os.remove(file_path)
-        logger.info(f"删除笔记文件: {file_path}")
-
-        # 清理索引
-        try:
-            from backend.app.services.doc_index_service import get_doc_index_service
-            get_doc_index_service().remove_doc(filename if filename.endswith(".md") else f"{filename}.md")
-        except Exception as e:
-            logger.warning(f"笔记 {filename} 索引清理失败: {e}")
-
-        return {
-            "deleted": True,
-            "filename": filename,
-            "file_path": file_path
-        }
+            raise ValueError("必须提供页面 ID、标题或别名")
+        service = get_page_service(db)
+        current = service.find_page(filename)
+        deleted = service.delete_page(
+            current["id"],
+            expected_revision=current["revision"],
+        )
+        deleted["deleted"] = True
+        return deleted
 
     def list_notes(self, parameters: Dict, db: Session) -> List[Dict]:
-        """
-        列出笔记（读取 data/notes/ 目录下的 md 文件）
-
-        Args:
-            parameters: 列表参数（limit, date_from, date_to）
-            db: 数据库会话（未使用）
-
-        Returns:
-            List[Dict]: 笔记列表
-        """
+        """列出统一 Wiki 中的活动页面。"""
         limit = parameters.get("limit", 20)
         date_from = parameters.get("date_from")
         date_to = parameters.get("date_to")
-
-        result = self.markdown_agent.list_md_files(directory="data/notes")
-        files = result.get("files", [])
-
-        # 按文件修改时间过滤
+        result = get_page_service(db).list_pages(offset=0, limit=1_000_000)
         filtered = []
-        for f in files:
-            mtime = f.get("modified_at", "")
+        for page in result["items"]:
+            mtime = page.get("updated_at", "")
             if date_from and mtime < date_from:
                 continue
             if date_to and mtime > date_to + "T23:59:59":
                 continue
-            filtered.append(f)
-
-        # 限制数量
-        filtered = filtered[:limit]
-
-        return [
-            {
-                "id": None,
-                "filename": f["filename"],
-                "title": f["filename"].replace(".md", ""),
-                "summary": "",
-                "tags": [],
-                "created_at": f.get("modified_at"),
-                "file_path": f.get("file_path")
-            }
-            for f in filtered
-        ]
+            filtered.append(page)
+        return filtered[:limit]
 
     def get_current_time(self, parameters: Dict, db: Session = None) -> Dict:
         """

@@ -15,15 +15,16 @@ from backend.app.agent.models import (
 logger = logging.getLogger(__name__)
 
 # LLM 回复生成的系统提示
-RESPONSE_GENERATION_PROMPT = """你是一个智能笔记助手的回复生成器。根据用户的查询和系统执行结果，生成自然、友好的回复。
+RESPONSE_GENERATION_PROMPT = """你是一个个人 Wiki 知识助手的回复生成器。根据用户的查询和系统执行结果生成回复。
 
 要求：
 1. 回复应该简洁、清晰、有条理
-2. 如果是检索结果，列出关键信息并标注相关度
+2. 如果是检索结果，只能使用执行结果中的证据，每个核心结论标注对应页面和章节
 3. 如果是操作结果，确认操作成功并提供关键信息
-4. 如果有错误，友好地解释问题并提供建议
+4. 证据不足或冲突时明确说明缺失或差异，不得自行补充结论
 5. 使用中文回复
-6. 适当使用 markdown 格式增强可读性"""
+6. 引用必须来自执行结果，不能编造页面、章节或链接
+7. 适当使用 markdown 格式增强可读性"""
 
 
 class Responder:
@@ -198,26 +199,6 @@ class Responder:
                 for i, item in enumerate(search_results[:5], 1):
                     lines.append(f"{i}. {item.get('title')}: {item.get('content', '')[:80]}...")
 
-        elif plan.intent == IntentType.CREATE_MD:
-            created_md = result.final_data.get("created_md")
-            if created_md:
-                if created_md.get("success"):
-                    lines.append(f"MD文件创建成功")
-                    lines.append(f"文件名: {created_md.get('filename')}")
-                    lines.append(f"路径: {created_md.get('file_path')}")
-                else:
-                    lines.append(f"MD文件创建失败: {created_md.get('error')}")
-
-        elif plan.intent == IntentType.WRITE_MD:
-            written_md = result.final_data.get("written_md")
-            if written_md:
-                if written_md.get("success"):
-                    lines.append(f"内容写入MD文件成功")
-                    lines.append(f"文件名: {written_md.get('filename')}")
-                    lines.append(f"模式: {written_md.get('mode')}")
-                else:
-                    lines.append(f"写入MD文件失败: {written_md.get('error')}")
-
         return "\n".join(lines) if lines else "执行完成。"
 
     def _get_polished_query(self, plan: Plan) -> str:
@@ -258,10 +239,6 @@ class Responder:
             return self._template_time_query_response(plan, result)
         elif plan.intent == IntentType.SUMMARIZE:
             return self._template_summarize_response(plan, result, user_query)
-        elif plan.intent == IntentType.CREATE_MD:
-            return self._template_create_md_response(plan, result)
-        elif plan.intent == IntentType.WRITE_MD:
-            return self._template_write_md_response(plan, result)
         else:
             return self._template_default_response(plan, result)
 
@@ -443,12 +420,19 @@ class Responder:
 
         return [
             {
-                "id": r.get("id"),
+                "id": r.get("chunk_id") or r.get("id"),
+                "chunk_id": r.get("chunk_id") or r.get("id"),
+                "page_id": r.get("page_id"),
+                "page_revision": r.get("page_revision"),
                 "title": r.get("title"),
                 "score": r.get("rerank_score"),
                 "source_type": r.get("source_type", "note"),
+                "source_uri": r.get("source_uri"),
+                "source_url": r.get("source_url"),
                 "filename": r.get("filename"),
                 "section_title": r.get("section_title"),
+                "section_path": r.get("section_path"),
+                "snippet": r.get("snippet"),
             }
             for r in search_results
         ]

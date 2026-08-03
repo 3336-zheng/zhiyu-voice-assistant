@@ -11,7 +11,7 @@ import logging
 import json
 
 from backend.app.core.database import get_db
-from backend.app.agent.agent import get_agent
+from backend.app.agent.agent import AgentActionError, get_agent
 from backend.app.agent.models import AgentResponse
 from backend.app.services.memory_service import get_memory_service
 from backend.app.services.llm_service import get_llm_service
@@ -35,8 +35,21 @@ class AgentChatResponse(BaseModel):
     intent: Optional[str] = None
     plan_summary: Optional[str] = None
     sources: Optional[List[Dict[str, Any]]] = None
+    confirmation_required: bool = False
+    pending_action_id: Optional[str] = None
+    action_preview: Optional[List[Dict[str, Any]]] = None
+    evidence_status: str = "not_applicable"
+    evidence_score: Optional[float] = None
+    evidence_source_count: int = 0
+    evidence_reason: Optional[str] = None
     execution_time_ms: Optional[int] = None
     success: bool = True
+
+
+class AgentActionRequest(BaseModel):
+    """确认或取消待处理 Agent 操作。"""
+
+    session_id: str
 
 
 class HybridSearchRequest(BaseModel):
@@ -112,6 +125,13 @@ async def agent_chat(
             intent=response.plan.intent.value if response.plan else None,
             plan_summary=plan_summary,
             sources=response.sources,
+            confirmation_required=response.confirmation_required,
+            pending_action_id=response.pending_action_id,
+            action_preview=response.action_preview,
+            evidence_status=response.evidence_status,
+            evidence_score=response.evidence_score,
+            evidence_source_count=response.evidence_source_count,
+            evidence_reason=response.evidence_reason,
             execution_time_ms=response.execution_time_ms,
             success=True
         )
@@ -163,7 +183,19 @@ async def agent_chat_stream(
 
             # 发送检索结果数量
             if response.sources:
-                yield f"data: {json.dumps({'type': 'sources', 'count': len(response.sources)})}\n\n"
+                yield f"data: {json.dumps({'type': 'sources', 'count': len(response.sources), 'items': response.sources, 'evidence_status': response.evidence_status}, ensure_ascii=False)}\n\n"
+
+            yield f"data: {json.dumps({'type': 'evidence', 'status': response.evidence_status, 'score': response.evidence_score, 'source_count': response.evidence_source_count, 'reason': response.evidence_reason}, ensure_ascii=False)}\n\n"
+
+            if response.confirmation_required:
+                yield f"data: {json.dumps({'type': 'confirmation', 'pending_action_id': response.pending_action_id, 'preview': response.action_preview, 'message': response.response}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'session_id': response.session_id, 'execution_time_ms': response.execution_time_ms})}\n\n"
+                return
+
+            if response.evidence_status == "insufficient":
+                yield f"data: {json.dumps({'type': 'token', 'content': response.response}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'session_id': response.session_id, 'execution_time_ms': response.execution_time_ms, 'evidence_status': response.evidence_status}, ensure_ascii=False)}\n\n"
+                return
 
             # 流式返回答案
             llm = get_llm_service()
@@ -193,6 +225,49 @@ async def agent_chat_stream(
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@router.post("/actions/{action_id}/confirm", response_model=AgentChatResponse)
+async def confirm_agent_action(
+    action_id: str,
+    request: AgentActionRequest,
+    db: Session = Depends(get_db),
+):
+    """确认并执行首次请求中持久化的写入计划。"""
+    try:
+        response = await get_agent().confirm_action(action_id, request.session_id, db)
+        plan_summary = None
+        if response.plan:
+            plan_summary = f"意图: {response.plan.intent.value}, 步骤: {len(response.plan.steps)}"
+        return AgentChatResponse(
+            query=response.query,
+            response=response.response,
+            session_id=response.session_id,
+            intent=response.plan.intent.value if response.plan else None,
+            plan_summary=plan_summary,
+            sources=response.sources,
+            evidence_status=response.evidence_status,
+            evidence_score=response.evidence_score,
+            evidence_source_count=response.evidence_source_count,
+            evidence_reason=response.evidence_reason,
+            execution_time_ms=response.execution_time_ms,
+            success=response.confidence >= 1.0,
+        )
+    except AgentActionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/actions/{action_id}/cancel")
+async def cancel_agent_action(
+    action_id: str,
+    request: AgentActionRequest,
+    db: Session = Depends(get_db),
+):
+    """取消尚未执行的写入计划。"""
+    try:
+        return get_agent().cancel_action(action_id, request.session_id, db)
+    except AgentActionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/sessions/", response_model=SessionListResponse)

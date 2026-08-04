@@ -1038,6 +1038,12 @@ textarea {
   text-transform: uppercase;
 }
 
+.citation-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
 .citation-list a {
   display: flex;
   justify-content: space-between;
@@ -1053,6 +1059,14 @@ textarea {
 .citation-list small {
   flex: 0 0 auto;
   color: #7c8782;
+}
+
+.citation-list .audio-citation {
+  align-items: center;
+  justify-content: center;
+  color: #3f5f74;
+  background: #f5f8fa;
+  white-space: nowrap;
 }
 
 .answer-loading {
@@ -1500,6 +1514,16 @@ textarea {
     align-items: flex-start;
     flex-direction: column;
     gap: 2px;
+  }
+
+  .citation-item {
+    grid-template-columns: 1fr;
+  }
+
+  .citation-list .audio-citation {
+    align-items: center;
+    flex-direction: row;
+    justify-content: flex-start;
   }
 
   .capture-grid,

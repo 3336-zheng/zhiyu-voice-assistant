@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..core.database import get_db
+from .legacy import mark_legacy_response
 from ..services.page_service import (
     AmbiguousPageError,
     PageConflictError,
@@ -16,7 +17,10 @@ from ..services.page_service import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(
+    deprecated=True,
+    dependencies=[Depends(mark_legacy_response)],
+)
 
 # ==================== 请求模型 ====================
 

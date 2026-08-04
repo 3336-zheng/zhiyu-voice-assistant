@@ -1,65 +1,97 @@
 """
 智语端侧智能语音笔记助手后端应用
 """
-import os
-import asyncio
+import json
 import logging
+import time
 from pathlib import Path
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
 from .api import audio_router, notes_router, health_router, agent_router, pages_router
 from .api.docs import router as docs_router
 from .api.summary import router as summary_router
 from .core.config import settings
+from .core.lifecycle import lifespan
+from .core.observability import (
+    build_server_timing,
+    get_stage_timings,
+    record_timing,
+    reset_request,
+    start_request,
+)
 
 logger = logging.getLogger(__name__)
 
 
-# 请求日志中间件
-class LoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        logger.debug(f"{request.method} {request.url.path}")
+# 请求追踪和异常边界中间件
+class RequestContextMiddleware:
+    """覆盖完整响应生命周期，流式接口也能记录最终阶段耗时。"""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = Headers(scope=scope)
+        request_id, request_token, timings_token = start_request(
+            headers.get("X-Request-ID")
+        )
+        started = time.perf_counter()
+        status_code = 500
+        response_started = False
+
+        async def send_with_context(message: Message) -> None:
+            nonlocal status_code, response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+                status_code = message["status"]
+                response_headers = MutableHeaders(scope=message)
+                response_headers["X-Request-ID"] = request_id
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                response_headers["Server-Timing"] = build_server_timing(elapsed_ms)
+            await send(message)
+
         try:
-            response = await call_next(request)
-            logger.debug(f"{request.method} {request.url.path} -> {response.status_code}")
-            return response
-        except Exception as e:
-            logger.error(f"{request.method} {request.url.path} -> {type(e).__name__}: {e}", exc_info=True)
-            return JSONResponse(
-                status_code=500,
-                content={"detail": f"服务器内部错误: {type(e).__name__}: {str(e)}"}
+            await self.app(scope, receive, send_with_context)
+        except Exception as exc:
+            logger.error(
+                "请求失败 request_id=%s method=%s path=%s error=%s",
+                request_id,
+                scope.get("method"),
+                scope.get("path"),
+                type(exc).__name__,
+                exc_info=True,
             )
-
-
-def migrate_relative_paths():
-    """迁移数据库中的相对路径为绝对路径"""
-    try:
-        from .core.database import SessionLocal
-        from .models import Audio
-
-        db = SessionLocal()
-        try:
-            audios = db.query(Audio).all()
-            updated_count = 0
-            for audio in audios:
-                if audio.file_path and not os.path.isabs(audio.file_path):
-                    old_path = audio.file_path
-                    new_path = os.path.abspath(old_path)
-                    audio.file_path = new_path
-                    updated_count += 1
-                    logger.info(f"路径迁移: {old_path} -> {new_path}")
-            if updated_count > 0:
-                db.commit()
-                logger.info(f"已迁移 {updated_count} 条记录的路径")
-            else:
-                logger.debug("无需迁移路径")
+            if response_started:
+                raise
+            response = JSONResponse(
+                status_code=500,
+                content={"detail": "服务器内部错误", "request_id": request_id},
+            )
+            await response(scope, receive, send_with_context)
         finally:
-            db.close()
-    except Exception as e:
-        logger.error(f"路径迁移失败: {e}", exc_info=True)
+            total_ms = (time.perf_counter() - started) * 1000
+            record_timing("http.total", total_ms)
+            timings = get_stage_timings()
+            logger.info(
+                "请求完成 request_id=%s method=%s path=%s status=%s total_ms=%.3f timings=%s",
+                request_id,
+                scope.get("method"),
+                scope.get("path"),
+                status_code,
+                total_ms,
+                json.dumps(timings, ensure_ascii=False, sort_keys=True),
+            )
+            reset_request(request_token, timings_token)
 
 
 # 创建应用
@@ -68,79 +100,12 @@ app = FastAPI(
     version=settings.app_version,
     description="智语端侧智能语音笔记助手API",
     docs_url="/api/docs",
-    redoc_url="/api/redoc"
+    redoc_url="/api/redoc",
+    lifespan=lifespan,
 )
 
-
-async def _periodic_cleanup():
-    """定时清理过期会话的后台任务"""
-    while True:
-        try:
-            await asyncio.sleep(settings.cleanup_interval_minutes * 60)
-            from .services.memory_service import get_memory_service
-            from .core.database import SessionLocal
-            db = SessionLocal()
-            try:
-                result = get_memory_service().cleanup_expired_sessions(db)
-                if result.get("cleaned_sessions", 0) > 0:
-                    logger.info(f"清理过期会话: {result}")
-            finally:
-                db.close()
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error(f"清理任务异常: {e}", exc_info=True)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时执行的初始化操作"""
-    logger.info("应用启动中...")
-    # 确保数据库目录存在并自动创建表
-    db_dir = os.path.dirname(settings.database_url.replace("sqlite:///", ""))
-    os.makedirs(db_dir, exist_ok=True)
-    from .core.database import engine, Base
-    from . import models as _models  # 确保所有 SQLAlchemy 模型已注册
-    Base.metadata.create_all(bind=engine)
-    from .core.schema import ensure_schema
-    schema_version = ensure_schema(engine)
-    logger.info(f"数据库 schema 已就绪，版本: {schema_version}")
-    logger.info(f"数据库表已就绪: {db_dir}")
-    # 确保上传目录是绝对路径
-    upload_dir = settings.get_upload_dir()
-    logger.info(f"上传目录: {upload_dir}")
-    # 迁移旧的相对路径记录
-    migrate_relative_paths()
-    # 增量同步文档索引（BM25 从持久化数据重建，ChromaDB 仅更新变化的文件）
-    try:
-        from .services.doc_index_service import get_doc_index_service
-        doc_index = get_doc_index_service()
-        result = doc_index.sync_docs()
-        logger.info(f"文档增量同步完成: {result}")
-    except Exception as e:
-        logger.warning(f"文档同步失败（不影响启动）: {e}", exc_info=True)
-    # 恢复上次中断的 Wiki 索引任务，具体处理交给后台 worker。
-    try:
-        from .core.database import SessionLocal
-        from .services.page_service import get_page_service
-
-        db = SessionLocal()
-        try:
-            result = get_page_service(db).recover_index_tasks()
-            logger.info(f"Wiki 索引任务恢复完成: {result}")
-        finally:
-            db.close()
-    except Exception as e:
-        logger.warning(f"Wiki 索引任务恢复失败（不影响启动）: {e}", exc_info=True)
-    from .services.wiki_index_worker import run_wiki_index_worker
-    asyncio.create_task(run_wiki_index_worker())
-    # 启动过期会话定时清理任务
-    asyncio.create_task(_periodic_cleanup())
-    logger.info(f"过期会话清理任务已启动（间隔 {settings.cleanup_interval_minutes} 分钟，TTL {settings.session_ttl_hours} 小时）")
-    logger.info("应用启动完成")
-
 # 添加请求日志中间件（最先添加，最后执行）
-app.add_middleware(LoggingMiddleware)
+app.add_middleware(RequestContextMiddleware)
 
 # 添加CORS中间件
 # 开源部署时建议将 allow_origins 限制为实际前端域名
@@ -154,10 +119,10 @@ app.add_middleware(
 
 # 注册 API 路由
 app.include_router(audio_router, prefix="/audio", tags=["音频管理"])
-app.include_router(notes_router, prefix="/notes", tags=["笔记管理"])
+app.include_router(notes_router, prefix="/notes", tags=["兼容 API：笔记"])
 app.include_router(agent_router, prefix="/agent", tags=["智能助手"])
 app.include_router(health_router, prefix="/health", tags=["健康检查"])
-app.include_router(docs_router, prefix="/api/documents", tags=["文档管理"])
+app.include_router(docs_router, prefix="/api/documents", tags=["兼容 API：文档"])
 app.include_router(summary_router, prefix="/summary", tags=["纪要总结"])
 app.include_router(pages_router, prefix="/api/pages", tags=["Wiki 页面"])
 

@@ -1,45 +1,27 @@
-"""统一的 Wiki 页面读写服务。"""
+"""统一的 Wiki 页面编排服务。"""
 
-import hashlib
-import logging
-import os
-import re
-import tempfile
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-import yaml
 from sqlalchemy.orm import Session
 
 from ..core.config import settings
-from ..models.wiki import WikiIndexTask, WikiPage, WikiPageLink, WikiPageRevision
+from ..models.wiki import WikiPage
+from .page_errors import (
+    AmbiguousPageError,
+    PageConflictError,
+    PageNotFoundError,
+    PageServiceError,
+    PageValidationError,
+)
+from .wiki_file_store import WikiFileStore
+from .wiki_index_task_service import WikiIndexTaskService
+from .wiki_link_service import WikiLinkService
+from .wiki_revision_service import WikiRevisionService
 
-logger = logging.getLogger(__name__)
-
-WIKI_LINK_PATTERN = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 ACTIVE_STATUS = "active"
-
-
-class PageServiceError(Exception):
-    """页面服务基础异常。"""
-
-
-class PageNotFoundError(PageServiceError):
-    """页面不存在。"""
-
-
-class PageConflictError(PageServiceError):
-    """页面版本冲突。"""
-
-
-class PageValidationError(PageServiceError):
-    """页面输入或 Front Matter 不合法。"""
-
-
-class AmbiguousPageError(PageServiceError):
-    """标题或别名匹配到多个页面。"""
 
 
 def utc_now() -> datetime:
@@ -47,16 +29,8 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _isoformat(value: Optional[datetime]) -> Optional[str]:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.isoformat()
-
-
 class PageService:
-    """管理 Wiki 主数据、历史版本、页面链接和派生索引。"""
+    """协调 Wiki 页面写入，并向 API 提供稳定门面。"""
 
     def __init__(
         self,
@@ -66,8 +40,15 @@ class PageService:
     ):
         self.db = db
         self.pages_dir = Path(pages_dir or settings.wiki_pages_dir).resolve()
-        self.pages_dir.mkdir(parents=True, exist_ok=True)
         self._index_service = index_service
+        self.file_store = WikiFileStore(self.pages_dir)
+        self.revisions = WikiRevisionService(db)
+        self.links = WikiLinkService(db, self.file_store)
+        self.index_tasks = WikiIndexTaskService(
+            db,
+            page_reader=self.get_page,
+            index_service_getter=lambda: self.index_service,
+        )
 
     @property
     def index_service(self):
@@ -389,44 +370,11 @@ class PageService:
 
     def list_revisions(self, page_id: str) -> List[Dict[str, Any]]:
         """列出页面历史版本，不返回大段正文。"""
-        self._get_page_row(page_id, include_deleted=True)
-        rows = (
-            self.db.query(WikiPageRevision)
-            .filter(WikiPageRevision.page_id == page_id)
-            .order_by(WikiPageRevision.revision.desc())
-            .all()
-        )
-        return [
-            {
-                "revision": row.revision,
-                "title": row.title,
-                "change_summary": row.change_summary,
-                "created_at": _isoformat(row.created_at),
-            }
-            for row in rows
-        ]
+        return self.revisions.list_revisions(page_id)
 
     def get_revision(self, page_id: str, revision: int) -> Dict[str, Any]:
         """读取指定历史版本的完整快照。"""
-        row = (
-            self.db.query(WikiPageRevision)
-            .filter(
-                WikiPageRevision.page_id == page_id,
-                WikiPageRevision.revision == revision,
-            )
-            .one_or_none()
-        )
-        if row is None:
-            raise PageNotFoundError(f"页面版本不存在: {page_id}@{revision}")
-        return {
-            "page_id": page_id,
-            "revision": row.revision,
-            "title": row.title,
-            "content": row.content,
-            "metadata": row.page_metadata,
-            "change_summary": row.change_summary,
-            "created_at": _isoformat(row.created_at),
-        }
+        return self.revisions.get_revision(page_id, revision)
 
     def rollback_page(
         self,
@@ -466,172 +414,27 @@ class PageService:
 
     def get_links(self, page_id: str) -> Dict[str, List[Dict[str, Any]]]:
         """返回出链和反向链接，未解析链接也会保留。"""
-        self._get_page_row(page_id, include_deleted=True)
-        outgoing_rows = (
-            self.db.query(WikiPageLink)
-            .filter(WikiPageLink.source_page_id == page_id)
-            .order_by(WikiPageLink.target_title)
-            .all()
-        )
-        backlink_rows = (
-            self.db.query(WikiPageLink)
-            .filter(WikiPageLink.target_page_id == page_id)
-            .order_by(WikiPageLink.source_page_id)
-            .all()
-        )
-        outgoing = [
-            {
-                "target_page_id": row.target_page_id,
-                "target_title": row.target_title,
-                "resolved": row.target_page_id is not None,
-            }
-            for row in outgoing_rows
-        ]
-        backlinks = []
-        for row in backlink_rows:
-            source = self.db.get(WikiPage, row.source_page_id)
-            if source and source.status != "deleted":
-                backlinks.append({"page_id": source.id, "title": source.title})
-        return {"outgoing": outgoing, "backlinks": backlinks}
+        return self.links.get_links(page_id)
 
     def process_index_task(self, task_id: str) -> Dict[str, Any]:
         """执行一条持久化索引任务并记录成功或失败状态。"""
-        task = self.db.get(WikiIndexTask, task_id)
-        if task is None:
-            raise PageNotFoundError(f"索引任务不存在: {task_id}")
-        page = self.db.get(WikiPage, task.page_id)
-        task.attempts += 1
-        task.status = "processing"
-        task.locked_at = utc_now()
-        task.updated_at = utc_now()
-        try:
-            if task.action == "delete" or page is None or page.status == "deleted":
-                self.index_service.remove_page(task.page_id)
-            else:
-                current = self.get_page(page.id)
-                self.index_service.index_page(current)
-            task.status = "completed"
-            task.error = None
-            task.next_attempt_at = None
-            task.locked_at = None
-            if page:
-                page.index_status = "ready" if page.status != "deleted" else "deleted"
-                page.index_error = None
-            self.db.commit()
-        except Exception as exc:
-            logger.error("页面索引任务失败: %s", exc, exc_info=True)
-            task.status = "failed"
-            task.error = str(exc)
-            backoff = min(
-                settings.wiki_index_max_backoff_seconds,
-                5 * (2 ** min(task.attempts - 1, 6)),
-            )
-            task.next_attempt_at = utc_now() + timedelta(seconds=backoff)
-            task.locked_at = None
-            if page:
-                page.index_status = "failed"
-                page.index_error = str(exc)
-            self.db.commit()
-        return {
-            "task_id": task.id,
-            "page_id": task.page_id,
-            "revision": task.revision,
-            "action": task.action,
-            "status": task.status,
-            "attempts": task.attempts,
-            "error": task.error,
-        }
+        return self.index_tasks.process(task_id)
 
     def retry_index_tasks(self, limit: int = 100) -> Dict[str, Any]:
         """人工立即重试待处理和失败任务。"""
-        tasks = (
-            self.db.query(WikiIndexTask)
-            .filter(WikiIndexTask.status.in_(["pending", "failed"]))
-            .order_by(WikiIndexTask.created_at)
-            .limit(limit)
-            .all()
-        )
-        for task in tasks:
-            task.next_attempt_at = None
-            task.status = "pending"
-        self.db.commit()
-        results = [self.process_index_task(task.id) for task in tasks]
-        return {
-            "total": len(results),
-            "completed": sum(item["status"] == "completed" for item in results),
-            "failed": sum(item["status"] == "failed" for item in results),
-            "results": results,
-        }
+        return self.index_tasks.retry(limit)
 
     def queue_reindex(self) -> Dict[str, Any]:
         """将全部页面加入索引队列，实际处理由后台 worker 完成。"""
-        pages = self.db.query(WikiPage).all()
-        queued = 0
-        for page in pages:
-            page.index_status = "pending"
-            page.index_error = None
-            existing = (
-                self.db.query(WikiIndexTask)
-                .filter(
-                    WikiIndexTask.page_id == page.id,
-                    WikiIndexTask.revision == page.revision,
-                    WikiIndexTask.action == ("delete" if page.status == "deleted" else "upsert"),
-                    WikiIndexTask.status.in_(["pending", "processing", "failed"]),
-                )
-                .first()
-            )
-            if existing:
-                existing.status = "pending"
-                existing.next_attempt_at = None
-                existing.locked_at = None
-                continue
-            self.db.add(
-                self._new_index_task(
-                    page.id,
-                    page.revision,
-                    "delete" if page.status == "deleted" else "upsert",
-                )
-            )
-            queued += 1
-        self.db.commit()
-        return {"queued": queued, "total": len(pages), "status": "queued"}
+        return self.index_tasks.queue_reindex()
 
     def recover_index_tasks(self) -> Dict[str, Any]:
         """将进程中断时遗留的 processing 任务恢复为 pending。"""
-        tasks = self.db.query(WikiIndexTask).filter(WikiIndexTask.status == "processing").all()
-        for task in tasks:
-            task.status = "pending"
-            task.locked_at = None
-            task.next_attempt_at = None
-        self.db.commit()
-        return {"recovered": len(tasks)}
+        return self.index_tasks.recover()
 
     def process_pending_index_tasks(self, limit: int = 5) -> Dict[str, Any]:
         """处理一批到期任务，供后台 worker 调用。"""
-        now = utc_now()
-        tasks = (
-            self.db.query(WikiIndexTask)
-            .filter(WikiIndexTask.status.in_(["pending", "failed"]))
-            .filter(
-                (WikiIndexTask.next_attempt_at.is_(None))
-                | (WikiIndexTask.next_attempt_at <= now)
-            )
-            .order_by(WikiIndexTask.created_at)
-            .limit(limit)
-            .all()
-        )
-        results = []
-        for task in tasks:
-            task.status = "processing"
-            task.locked_at = now
-            self.db.commit()
-            results.append(self.process_index_task(task.id))
-        return {
-            "total": len(results),
-            "completed": sum(item["status"] == "completed" for item in results),
-            "failed": sum(item["status"] == "failed" for item in results),
-            "results": results,
-        }
+        return self.index_tasks.process_pending(limit)
 
     def import_legacy_directory(
         self,
@@ -682,37 +485,12 @@ class PageService:
     @staticmethod
     def serialize_page(metadata: Dict[str, Any], content: str) -> str:
         """将页面序列化为 UTF-8 Markdown + YAML Front Matter。"""
-        frontmatter = yaml.safe_dump(
-            metadata,
-            allow_unicode=True,
-            sort_keys=False,
-            default_flow_style=False,
-        ).strip()
-        return f"---\n{frontmatter}\n---\n\n{content.rstrip()}\n"
+        return WikiFileStore.serialize_page(metadata, content)
 
     @staticmethod
     def parse_page(raw: str) -> tuple[Dict[str, Any], str]:
         """解析并校验 YAML Front Matter。"""
-        if not raw.startswith("---\n"):
-            raise PageValidationError("页面缺少 YAML Front Matter")
-        marker = raw.find("\n---\n", 4)
-        if marker == -1:
-            raise PageValidationError("页面 Front Matter 未闭合")
-        yaml_text = raw[4:marker]
-        try:
-            metadata = yaml.safe_load(yaml_text) or {}
-        except yaml.YAMLError as exc:
-            raise PageValidationError(f"页面 Front Matter 格式错误: {exc}") from exc
-        if not isinstance(metadata, dict):
-            raise PageValidationError("页面 Front Matter 必须是对象")
-        required = {"id", "title", "revision"}
-        missing = required - set(metadata)
-        if missing:
-            raise PageValidationError(f"页面 Front Matter 缺少字段: {', '.join(sorted(missing))}")
-        content = raw[marker + 5:].lstrip("\n")
-        if content.endswith("\n"):
-            content = content[:-1]
-        return metadata, content
+        return WikiFileStore.parse_page(raw)
 
     def _apply_update(
         self,
@@ -774,33 +552,7 @@ class PageService:
 
     def _rebuild_all_links(self) -> None:
         """重建页面关系，使新页面可解析之前的悬空链接。"""
-        pages = self.db.query(WikiPage).filter(WikiPage.status != "deleted").all()
-        title_map: Dict[str, List[str]] = {}
-        for page in pages:
-            for name in [page.title, *(page.aliases or [])]:
-                title_map.setdefault(str(name).casefold(), []).append(page.id)
-        self.db.query(WikiPageLink).delete(synchronize_session=False)
-        for page in pages:
-            path = Path(page.file_path)
-            if not path.exists():
-                continue
-            try:
-                _, content = self.parse_page(path.read_text(encoding="utf-8"))
-            except PageValidationError:
-                logger.warning("跳过 Front Matter 异常页面的链接解析: %s", path)
-                continue
-            targets = {match.strip() for match in WIKI_LINK_PATTERN.findall(content) if match.strip()}
-            for target_title in sorted(targets):
-                matches = title_map.get(target_title.casefold(), [])
-                target_page_id = matches[0] if len(matches) == 1 else None
-                self.db.add(
-                    WikiPageLink(
-                        source_page_id=page.id,
-                        target_page_id=target_page_id,
-                        target_title=target_title,
-                    )
-                )
-        self.db.commit()
+        self.links.rebuild_all()
 
     def _get_page_row(self, page_id: str, *, include_deleted: bool = False) -> WikiPage:
         page = self.db.get(WikiPage, page_id)
@@ -822,78 +574,31 @@ class PageService:
         content: str,
         metadata: Dict[str, Any],
         change_summary: Optional[str],
-    ) -> WikiPageRevision:
-        return WikiPageRevision(
-            page_id=page.id,
-            revision=page.revision,
-            title=page.title,
-            content=content,
-            page_metadata=metadata,
-            change_summary=change_summary,
-        )
+    ):
+        return WikiRevisionService.new_revision(page, content, metadata, change_summary)
 
     @staticmethod
-    def _new_index_task(page_id: str, revision: int, action: str) -> WikiIndexTask:
-        return WikiIndexTask(
-            id=str(uuid.uuid4()),
-            page_id=page_id,
-            revision=revision,
-            action=action,
-            status="pending",
-        )
+    def _new_index_task(page_id: str, revision: int, action: str):
+        return WikiIndexTaskService.new_task(page_id, revision, action)
 
     def _page_path(self, page_id: str) -> Path:
-        return self.pages_dir / f"{page_id}.md"
+        return self.file_store.page_path(page_id)
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                "w",
-                encoding="utf-8",
-                dir=path.parent,
-                prefix=f".{path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as handle:
-                temporary_path = Path(handle.name)
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_path, path)
-        finally:
-            if temporary_path and temporary_path.exists():
-                temporary_path.unlink(missing_ok=True)
+        WikiFileStore.atomic_write(path, content)
 
     @staticmethod
     def _validate_title(title: str) -> str:
-        title = (title or "").strip()
-        if not title:
-            raise PageValidationError("页面标题不能为空")
-        if len(title) > 255:
-            raise PageValidationError("页面标题不能超过 255 个字符")
-        if "\x00" in title:
-            raise PageValidationError("页面标题包含非法字符")
-        return title
+        return WikiFileStore.validate_title(title)
 
     @staticmethod
     def _validate_content(content: str) -> str:
-        if content is None:
-            raise PageValidationError("页面内容不能为空")
-        if not isinstance(content, str):
-            raise PageValidationError("页面内容必须是字符串")
-        return content.rstrip()
+        return WikiFileStore.validate_content(content)
 
     @staticmethod
     def _validate_page_id(page_id: str) -> None:
-        try:
-            parsed = uuid.UUID(page_id)
-        except (ValueError, AttributeError) as exc:
-            raise PageValidationError("页面 ID 必须是 UUID") from exc
-        if str(parsed) != page_id:
-            raise PageValidationError("页面 ID 必须使用标准 UUID 格式")
+        WikiFileStore.validate_page_id(page_id)
 
     @staticmethod
     def _normalize_strings(
@@ -901,19 +606,11 @@ class PageService:
         *,
         exclude: Optional[set[str]] = None,
     ) -> List[str]:
-        result = []
-        seen = {item.casefold() for item in (exclude or set())}
-        for value in values or []:
-            cleaned = str(value).strip()
-            key = cleaned.casefold()
-            if cleaned and key not in seen:
-                result.append(cleaned)
-                seen.add(key)
-        return result
+        return WikiFileStore.normalize_strings(values, exclude=exclude)
 
     @staticmethod
     def _content_hash(content: str) -> str:
-        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+        return WikiFileStore.content_hash(content)
 
     @staticmethod
     def _build_metadata(
@@ -930,34 +627,22 @@ class PageService:
         created_at: datetime,
         updated_at: datetime,
     ) -> Dict[str, Any]:
-        return {
-            "id": page_id,
-            "title": title,
-            "notebook": notebook,
-            "tags": tags,
-            "aliases": aliases,
-            "status": status,
-            "source_type": source_type,
-            "source_uri": source_uri,
-            "revision": revision,
-            "created_at": _isoformat(created_at),
-            "updated_at": _isoformat(updated_at),
-        }
+        return WikiFileStore.build_metadata(
+            page_id=page_id,
+            title=title,
+            notebook=notebook,
+            tags=tags,
+            aliases=aliases,
+            status=status,
+            source_type=source_type,
+            source_uri=source_uri,
+            revision=revision,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
 
     def _row_metadata(self, page: WikiPage) -> Dict[str, Any]:
-        return self._build_metadata(
-            page_id=page.id,
-            title=page.title,
-            notebook=page.notebook,
-            tags=list(page.tags or []),
-            aliases=list(page.aliases or []),
-            status=page.status,
-            source_type=page.source_type,
-            source_uri=page.source_uri,
-            revision=page.revision,
-            created_at=page.created_at,
-            updated_at=page.updated_at,
-        )
+        return self.file_store.row_metadata(page)
 
     def _page_to_dict(
         self,
@@ -965,64 +650,19 @@ class PageService:
         content: str,
         metadata: Dict[str, Any],
     ) -> Dict[str, Any]:
-        return {
-            "id": page.id,
-            "page_id": page.id,
-            "title": page.title,
-            "notebook": page.notebook,
-            "tags": list(page.tags or []),
-            "aliases": list(page.aliases or []),
-            "status": page.status,
-            "source_type": page.source_type,
-            "source_uri": page.source_uri,
-            "revision": page.revision,
-            "content": content,
-            "content_hash": page.content_hash,
-            "file_path": page.file_path,
-            "filename": f"{page.id}.md",
-            "index_status": page.index_status,
-            "index_error": page.index_error,
-            "created_at": _isoformat(page.created_at),
-            "updated_at": _isoformat(page.updated_at),
-            "deleted_at": _isoformat(page.deleted_at),
-            "metadata": metadata,
-        }
+        return self.file_store.page_to_dict(page, content, metadata)
 
     @staticmethod
     def _page_summary(page: WikiPage) -> Dict[str, Any]:
-        return {
-            "id": page.id,
-            "page_id": page.id,
-            "title": page.title,
-            "notebook": page.notebook,
-            "tags": list(page.tags or []),
-            "aliases": list(page.aliases or []),
-            "status": page.status,
-            "source_type": page.source_type,
-            "source_uri": page.source_uri,
-            "revision": page.revision,
-            "filename": f"{page.id}.md",
-            "index_status": page.index_status,
-            "index_error": page.index_error,
-            "created_at": _isoformat(page.created_at),
-            "updated_at": _isoformat(page.updated_at),
-        }
+        return WikiFileStore.page_summary(page)
 
     @staticmethod
     def _validate_file_identity(page: WikiPage, metadata: Dict[str, Any]) -> None:
-        if metadata.get("id") != page.id:
-            raise PageValidationError(f"页面文件 ID 与数据库不一致: {page.id}")
-        if int(metadata.get("revision", 0)) != page.revision:
-            raise PageValidationError(f"页面文件版本与数据库不一致: {page.id}")
+        WikiFileStore.validate_file_identity(page, metadata)
 
     @staticmethod
     def _legacy_title_content(path: Path, raw: str) -> tuple[str, str]:
-        lines = raw.splitlines()
-        if lines and lines[0].startswith("# "):
-            title = lines[0][2:].strip() or path.stem
-            content = "\n".join(lines[1:]).lstrip()
-            return title, content
-        return path.stem, raw
+        return WikiFileStore.legacy_title_content(path, raw)
 
 
 def get_page_service(db: Session, **kwargs) -> PageService:

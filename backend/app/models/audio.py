@@ -1,7 +1,7 @@
 """
 音频模型
 """
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text
+from sqlalchemy import JSON, Column, Integer, String, Float, DateTime, Text
 from sqlalchemy.sql import func
 from ..core.database import Base
 
@@ -16,6 +16,7 @@ class Audio(Base):
     duration = Column(Float)  # 音频时长（秒）
     language = Column(String(10))  # 识别语言
     transcription = Column(Text)  # 转录文本
+    transcription_segments = Column(JSON, nullable=False, default=list)  # 带时间戳的转录片段
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

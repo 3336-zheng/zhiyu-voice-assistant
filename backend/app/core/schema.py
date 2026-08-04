@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _has_column(engine: Engine, table: str, column: str) -> bool:
@@ -67,6 +67,25 @@ def ensure_schema(engine: Engine) -> int:
                 },
             )
             current = 2
+
+        # 版本 3 保存 ASR 分段时间戳，用于答案回溯到原音频。
+        if current < 3:
+            if not _has_column(engine, "audios", "transcription_segments"):
+                connection.execute(
+                    text("ALTER TABLE audios ADD COLUMN transcription_segments JSON")
+                )
+            connection.execute(
+                text(
+                    "INSERT INTO schema_migrations(version, description, applied_at) "
+                    "VALUES (:version, :description, :applied_at)"
+                ),
+                {
+                    "version": 3,
+                    "description": "增加音频转录分段时间戳",
+                    "applied_at": datetime.now(timezone.utc),
+                },
+            )
+            current = 3
 
     if current > SCHEMA_VERSION:
         raise RuntimeError(

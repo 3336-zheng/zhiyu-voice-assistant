@@ -3,6 +3,7 @@ import {
   ArrowUp,
   BookOpenCheck,
   Check,
+  Headphones,
   LoaderCircle,
   MessageSquareText,
   RotateCcw,
@@ -20,6 +21,13 @@ function getSessionId() {
     localStorage.setItem(key, value)
   }
   return value
+}
+
+function formatTime(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0))
+  const minutes = Math.floor(total / 60)
+  const remainder = total % 60
+  return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
 }
 
 export default function AskWorkspace({ notify }) {
@@ -140,10 +148,17 @@ export default function AskWorkspace({ notify }) {
                 <div className="citation-list">
                   <span>引用来源</span>
                   {message.sources.map((source) => (
-                    <a key={source.chunk_id || source.id} href={source.source_url || '#'} target="_blank" rel="noreferrer">
-                      <strong>{source.title}</strong>
-                      <small>{source.section_path || source.section_title || '页面正文'} · v{source.page_revision || '-'}</small>
-                    </a>
+                    <div className="citation-item" key={source.chunk_id || source.id}>
+                      <a href={source.source_url || '#'} target="_blank" rel="noreferrer">
+                        <strong>{source.title}</strong>
+                        <small>{source.section_path || source.section_title || '页面正文'} · v{source.page_revision || '-'}</small>
+                      </a>
+                      {source.audio_url && (
+                        <a className="audio-citation" href={source.audio_url} target="_blank" rel="noreferrer">
+                          <Headphones size={13} /> 原始录音 {formatTime(source.audio_start)}
+                        </a>
+                      )}
+                    </div>
                   ))}
                 </div>
               )}

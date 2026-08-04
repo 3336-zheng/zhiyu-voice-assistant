@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     wiki_index_batch_size: int = 5
     wiki_index_max_backoff_seconds: int = 300
 
+    # 旧 data/docs 兼容索引；新部署默认只使用 Wiki 主数据。
+    sync_legacy_docs_on_startup: bool = False
+
     # 可信问答证据门禁
     evidence_min_score: float = 0.35
     evidence_min_sources: int = 1

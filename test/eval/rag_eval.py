@@ -1,118 +1,85 @@
-"""
-RAG 评估脚本
-评估检索和生成质量
-"""
-import sys
-import os
+"""RAG 检索评估入口，运行真实算法而不是关键词 Mock。"""
+
+import argparse
 import json
-import logging
-from datetime import datetime
-from typing import Dict, List
+import os
+import statistics
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, Iterable
 
-# 添加项目根目录到路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from test.eval.retrieval_metrics import evaluate_retrieval, print_metrics
-from test.eval.dataset import get_golden_qa, get_evaluation_queries
+from test.eval.dataset import get_evaluation_corpus, get_golden_qa
+from test.eval.real_retriever import EvaluationRetriever
+from test.eval.retrieval_metrics import evaluate_retrieval
 
-logger = logging.getLogger(__name__)
 
+def evaluate_method(method: str, top_k: int = 10) -> Dict:
+    """评估一种真实检索方法，并统计端到端查询延迟。"""
+    retriever = EvaluationRetriever(get_evaluation_corpus(), method)
+    latencies = []
 
-def mock_retrieval_fn(query: str) -> List[str]:
-    """
-    Mock 检索函数（用于测试）
-    实际使用时替换为真实的检索函数
+    def retrieve(query: str):
+        started = time.perf_counter()
+        result = retriever.search(query, top_k=top_k)
+        latencies.append((time.perf_counter() - started) * 1000)
+        return result
 
-    Args:
-        query: 查询文本
-
-    Returns:
-        List[str]: 检索到的文档 ID 列表
-    """
-    # 简单的关键词匹配 mock
-    keyword_map = {
-        "RAG": ["rag_intro", "rag_architecture"],
-        "向量": ["vector_db_comparison", "chroma_intro"],
-        "BM25": ["bm25_algorithm", "bm25_implement"],
-        "Embedding": ["embedding_selection", "bge_model"],
-        "RRF": ["rrf_algorithm", "hybrid_retrieval"],
-        "Reranker": ["reranker_usage", "bge_reranker"],
-        "Agent": ["agent_intro", "plan_execute_agent"],
-        "LangGraph": ["langgraph_tutorial", "graph_state_machine"],
-        "CRAG": ["crag_intro", "crag_implement"],
-        "Query": ["query_rewrite", "hyde_rag_fusion"],
-        "笔记": ["note_taking", "lecture_notes"],
-        "语音": ["asr_accuracy", "whisper_improve"],
-        "FastAPI": ["fastapi_deploy", "docker_deploy"],
-        "SQLite": ["sqlite_comparison", "sqlite_usage"],
-        "Chroma": ["chroma_tutorial", "chroma_api"],
+    metrics = evaluate_retrieval(
+        queries=get_golden_qa(),
+        retrieval_fn=retrieve,
+        k_values=[1, 3, 5, 10],
+    )
+    ordered = sorted(latencies)
+    p95_index = max(0, min(len(ordered) - 1, int(len(ordered) * 0.95) - 1))
+    return {
+        "metrics": metrics,
+        "latency_ms": {
+            "mean": statistics.fmean(latencies) if latencies else 0.0,
+            "p95": ordered[p95_index] if ordered else 0.0,
+        },
     }
 
-    results = []
-    for keyword, doc_ids in keyword_map.items():
-        if keyword.lower() in query.lower():
-            results.extend(doc_ids)
 
-    # 去重
-    return list(dict.fromkeys(results))
+def run_evaluation(methods: Iterable[str], top_k: int = 10) -> Dict:
+    selected = list(dict.fromkeys(methods))
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "dataset_size": len(get_golden_qa()),
+        "corpus_size": len(get_evaluation_corpus()),
+        "top_k": top_k,
+        "methods": {method: evaluate_method(method, top_k) for method in selected},
+    }
 
 
-def run_evaluation(use_mock: bool = True):
-    """
-    运行评估
-
-    Args:
-        use_mock: 是否使用 mock 检索函数
-    """
-    print("=" * 60)
-    print("智语 RAG 评估系统")
-    print("=" * 60)
-
-    # 获取评估数据
-    qa_data = get_golden_qa()
-    print(f"评估数据集: {len(qa_data)} 条查询")
-
-    # 选择检索函数
-    if use_mock:
-        retrieval_fn = mock_retrieval_fn
-        print("使用 Mock 检索函数")
-    else:
-        # TODO: 接入真实检索函数
-        print("警告: 真实检索函数未实现，使用 Mock")
-        retrieval_fn = mock_retrieval_fn
-
-    # 运行评估
-    print("\n开始评估...")
-    results = evaluate_retrieval(
-        queries=qa_data,
-        retrieval_fn=retrieval_fn,
-        k_values=[1, 3, 5, 10]
+def main() -> int:
+    parser = argparse.ArgumentParser(description="运行智语真实 RAG 检索评估")
+    parser.add_argument(
+        "--methods",
+        default="bm25",
+        help="逗号分隔：bm25,embedding,hybrid,hybrid_reranker",
     )
+    parser.add_argument("--top-k", type=int, default=10)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    methods = [item.strip() for item in args.methods.split(",") if item.strip()]
+    unknown = set(methods) - EvaluationRetriever.SUPPORTED_METHODS
+    if unknown:
+        parser.error(f"不支持的方法: {', '.join(sorted(unknown))}")
 
-    # 打印结果
-    print_metrics(results)
-
-    # 保存结果
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    result_file = f"test/eval/eval_results_{timestamp}.json"
-
-    os.makedirs(os.path.dirname(result_file), exist_ok=True)
-    with open(result_file, "w", encoding="utf-8") as f:
-        json.dump({
-            "timestamp": timestamp,
-            "dataset_size": len(qa_data),
-            "use_mock": use_mock,
-            "metrics": results
-        }, f, ensure_ascii=False, indent=2)
-
-    print(f"\n评估结果已保存到: {result_file}")
-
-    return results
+    result = run_evaluation(methods, args.top_k)
+    output = json.dumps(result, ensure_ascii=False, indent=2)
+    print(output)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(output + os.linesep, encoding="utf-8")
+    return 0
 
 
 if __name__ == "__main__":
-    # 设置日志级别
-    logging.basicConfig(level=logging.WARNING)
-
-    # 运行评估
-    run_evaluation(use_mock=True)
+    raise SystemExit(main())

@@ -3,6 +3,7 @@ LangGraph 状态机 Agent（Agentic RAG 版本）
 集成 Query 改写（P1-5）和 CRAG 检索后纠错（P1-6）
 """
 import logging
+import time
 from typing import TypedDict, List, Dict, Any, Optional
 from langgraph.graph import StateGraph, END
 
@@ -13,6 +14,7 @@ from backend.app.agent.responder import get_responder
 from backend.app.services.query_rewrite_service import get_query_rewrite_service, RewriteStrategy
 from backend.app.services.crag_grader_service import get_crag_grader_service, RelevanceGrade
 from backend.app.services.evidence_service import assess_evidence
+from backend.app.core.observability import record_timing, timed_stage
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,7 @@ def route_node(state: AgentState) -> AgentState:
     logger.info("[graph] 路由节点：分析意图...")
     planner = get_planner()
 
+    started = time.perf_counter()
     try:
         plan = state.get("plan") or planner.plan(state["query"], state.get("context"))
         logger.info(f"[graph] 意图识别完成：{plan.intent.value}, 步骤数={len(plan.steps)}")
@@ -67,6 +70,8 @@ def route_node(state: AgentState) -> AgentState:
     except Exception as e:
         logger.error(f"[graph] 意图识别失败: {e}")
         return {**state, "error": str(e)}
+    finally:
+        record_timing("agent.route", (time.perf_counter() - started) * 1000)
 
 
 def query_rewrite_node(state: AgentState) -> AgentState:
@@ -84,6 +89,7 @@ def query_rewrite_node(state: AgentState) -> AgentState:
 
     query = state["query"]
 
+    started = time.perf_counter()
     try:
         # 使用 RAG-Fusion 策略
         rewritten_queries = rewrite_service.rewrite_query(
@@ -107,6 +113,8 @@ def query_rewrite_node(state: AgentState) -> AgentState:
             "rewritten_queries": [query],
             "iter_count": state.get("iter_count", 0) + 1,
         }
+    finally:
+        record_timing("agent.query_rewrite", (time.perf_counter() - started) * 1000)
 
 
 def retrieve_node(state: AgentState) -> AgentState:
@@ -124,6 +132,7 @@ def retrieve_node(state: AgentState) -> AgentState:
 
     rewritten_queries = state.get("rewritten_queries", [state["query"]])
 
+    started = time.perf_counter()
     try:
         all_results = []
 
@@ -152,6 +161,8 @@ def retrieve_node(state: AgentState) -> AgentState:
     except Exception as e:
         logger.error(f"[graph] 检索失败: {e}")
         return {**state, "error": str(e)}
+    finally:
+        record_timing("agent.retrieve", (time.perf_counter() - started) * 1000)
 
 
 def grade_node(state: AgentState) -> AgentState:
@@ -170,6 +181,7 @@ def grade_node(state: AgentState) -> AgentState:
     query = state["query"]
     search_results = state.get("search_results", [])
 
+    started = time.perf_counter()
     try:
         # 评估文档相关性
         grade_result = grader_service.grade_documents(query, search_results)
@@ -195,6 +207,8 @@ def grade_node(state: AgentState) -> AgentState:
         logger.error(f"[graph] CRAG 评分失败: {e}")
         # 失败时默认 ambiguous，触发重试
         return {**state, "relevance_grade": "ambiguous"}
+    finally:
+        record_timing("agent.crag_grade", (time.perf_counter() - started) * 1000)
 
 
 def generate_node(state: AgentState) -> AgentState:
@@ -214,7 +228,8 @@ def generate_node(state: AgentState) -> AgentState:
     search_results = state.get("search_results")
     refined_content = state.get("refined_content")
 
-    evidence = assess_evidence(search_results)
+    with timed_stage("agent.evidence"):
+        evidence = assess_evidence(search_results)
     if evidence.status != "sufficient":
         return {
             **state,
@@ -257,12 +272,13 @@ def generate_node(state: AgentState) -> AgentState:
         )
 
         # 生成回复
-        response = responder.generate_response(
-            state["query"],
-            plan,
-            execution_result,
-            state.get("context", [])
-        )
+        with timed_stage("agent.generation"):
+            response = responder.generate_response(
+                state["query"],
+                plan,
+                execution_result,
+                state.get("context", [])
+            )
 
         logger.info(f"[graph] 生成完成，答案长度: {len(response.response)}")
         return {

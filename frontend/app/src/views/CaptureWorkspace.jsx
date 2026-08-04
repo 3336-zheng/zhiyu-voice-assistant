@@ -18,6 +18,7 @@ export default function CaptureWorkspace({ notify, onSaved }) {
   const [title, setTitle] = useState('')
   const [audioId, setAudioId] = useState(null)
   const [transcript, setTranscript] = useState('')
+  const [segments, setSegments] = useState([])
   const [summary, setSummary] = useState('')
   const [provider, setProvider] = useState('whisper')
   const [stage, setStage] = useState('idle')
@@ -34,6 +35,9 @@ export default function CaptureWorkspace({ notify, onSaved }) {
     try {
       const result = await api('/audio/upload/', { method: 'POST', body: form })
       setAudioId(result.audio_id)
+      setTranscript('')
+      setSegments([])
+      setSummary('')
       setStage('uploaded')
       notify('音频已上传', 'success')
     } catch (error) {
@@ -73,6 +77,7 @@ export default function CaptureWorkspace({ notify, onSaved }) {
     try {
       const result = await api(`/audio/transcribe/${audioId}?provider=${provider}`, { method: 'POST' })
       setTranscript(result.transcription || '')
+      setSegments(result.segments || [])
       setStage('transcribed')
       notify('语音转写完成', 'success')
     } catch (error) {
@@ -87,7 +92,7 @@ export default function CaptureWorkspace({ notify, onSaved }) {
     try {
       const result = await api('/summary/generate', {
         method: 'POST',
-        body: JSON.stringify({ content: transcript, title: title || null }),
+        body: JSON.stringify({ content: transcript, title: title || null, segments }),
       })
       setSummary(result.summary)
       setStage('preview')
@@ -105,7 +110,12 @@ export default function CaptureWorkspace({ notify, onSaved }) {
     try {
       const result = await api('/summary/save', {
         method: 'POST',
-        body: JSON.stringify({ title: pageTitle, filename: pageTitle, content: summary }),
+        body: JSON.stringify({
+          title: pageTitle,
+          filename: pageTitle,
+          content: summary,
+          audio_id: audioId,
+        }),
       })
       setStage('saved')
       notify('课堂笔记已保存并建立索引', 'success')
@@ -154,7 +164,10 @@ export default function CaptureWorkspace({ notify, onSaved }) {
 
         <section className="capture-transcript">
           <div className="section-heading"><Pause size={17} /><h2>转写文本</h2><span>{transcript.length} 字</span></div>
-          <textarea value={transcript} onChange={(event) => setTranscript(event.target.value)} placeholder="转写内容会显示在这里，也可以直接粘贴课堂文字…" />
+          <textarea value={transcript} onChange={(event) => {
+            setTranscript(event.target.value)
+            setSegments([])
+          }} placeholder="转写内容会显示在这里，也可以直接粘贴课堂文字…" />
           <button className="primary-button align-end" type="button" disabled={!transcript.trim() || busy} onClick={generateSummary}>{stage === 'summarizing' ? <LoaderCircle size={16} className="spin" /> : <WandSparkles size={16} />} 整理为课堂笔记</button>
         </section>
       </div>

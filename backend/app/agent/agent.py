@@ -17,6 +17,7 @@ from backend.app.agent.executor import get_executor
 from backend.app.agent.responder import get_responder
 from backend.app.core.database import SessionLocal
 from backend.app.core.config import settings
+from backend.app.core.observability import timed_stage
 from backend.app.models.wiki import AgentPendingAction
 
 logger = logging.getLogger(__name__)
@@ -110,7 +111,8 @@ class PlanExecuteAgent:
                 except Exception as e:
                     logger.warning(f"获取对话历史失败: {e}")
 
-            plan = self.planner.plan(user_query, context)
+            with timed_stage("agent.plan"):
+                plan = self.planner.plan(user_query, context)
             if plan.intent in WRITE_INTENTS:
                 response = self._create_pending_response(
                     user_query,
@@ -129,12 +131,13 @@ class PlanExecuteAgent:
                 )
             else:
                 execution_result = await self.executor.execute(plan, db)
-                response = self.responder.generate_response(
-                    user_query,
-                    plan,
-                    execution_result,
-                    context,
-                )
+                with timed_stage("agent.generation"):
+                    response = self.responder.generate_response(
+                        user_query,
+                        plan,
+                        execution_result,
+                        context,
+                    )
                 response.session_id = session_id
                 response.execution_time_ms = int((time.time() - start_time) * 1000)
 
@@ -192,7 +195,8 @@ class PlanExecuteAgent:
             "error": None,
         }
         final_state = get_agent_graph().invoke(initial_state)
-        evidence = assess_evidence(final_state.get("search_results"))
+        with timed_stage("agent.evidence"):
+            evidence = assess_evidence(final_state.get("search_results"))
         if final_state.get("error"):
             logger.warning("图执行过程中出现错误: %s", final_state["error"])
         answer = final_state.get("answer")

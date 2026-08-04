@@ -5,6 +5,7 @@
 from typing import List, Dict, Optional, Any
 from concurrent.futures import ThreadPoolExecutor
 import logging
+import re
 from urllib.parse import quote
 
 from backend.app.core.config import settings
@@ -13,8 +14,40 @@ from backend.app.services.bm25_service import get_bm25_service
 from backend.app.services.rrf_service import get_rrf_service
 from backend.app.services.embedding_service import get_embedding_service
 from backend.app.services.reranker_service import get_reranker_service
+from backend.app.core.observability import timed_stage
 
 logger = logging.getLogger(__name__)
+AUDIO_SOURCE_PATTERN = re.compile(r"^audio:(\d+)")
+TIME_RANGE_PATTERN = re.compile(
+    r"\[(?P<start>\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*"
+    r"(?P<end>\d{1,2}:\d{2}(?::\d{2})?)\]"
+)
+
+
+def _timecode_seconds(value: str) -> float:
+    parts = [int(part) for part in value.split(":")]
+    if len(parts) == 2:
+        return float(parts[0] * 60 + parts[1])
+    return float(parts[0] * 3600 + parts[1] * 60 + parts[2])
+
+
+def _audio_provenance(source_uri: str, content: str) -> Dict[str, Any]:
+    source_match = AUDIO_SOURCE_PATTERN.match(source_uri or "")
+    if not source_match:
+        return {}
+    audio_id = int(source_match.group(1))
+    time_match = TIME_RANGE_PATTERN.search(content or "")
+    start = _timecode_seconds(time_match.group("start")) if time_match else 0.0
+    end = _timecode_seconds(time_match.group("end")) if time_match else None
+    fragment = f"#t={start:g}" + (f",{end:g}" if end is not None else "")
+    query = f"start={start:g}" + (f"&end={end:g}" if end is not None else "")
+    return {
+        "audio_id": audio_id,
+        "audio_start": start,
+        "audio_end": end,
+        "audio_url": f"/audio/{audio_id}/file{fragment}",
+        "transcript_url": f"/audio/{audio_id}/transcript?{query}",
+    }
 
 
 class HybridRetrievalService:
@@ -87,6 +120,7 @@ class HybridRetrievalService:
             source_url = f"/api/pages/{page_id}"
             if section_title:
                 source_url += f"#section={quote(section_title, safe='')}"
+        source_uri = metadata.get("source_uri", "")
         result = {
             "id": doc["doc_id"],
             "chunk_id": doc["doc_id"],
@@ -98,7 +132,7 @@ class HybridRetrievalService:
             "summary": doc["content"][:200] + "..." if len(doc["content"]) > 200 else doc["content"],
             "tags": self._normalize_tags(metadata.get("tags", [])),
             "source_type": doc["source_type"],
-            "source_uri": metadata.get("source_uri", ""),
+            "source_uri": source_uri,
             "source_url": source_url,
             "filename": metadata.get("filename", ""),
             "section_title": section_title,
@@ -106,6 +140,7 @@ class HybridRetrievalService:
             score_name: score,
             "rank": rank,
         }
+        result.update(_audio_provenance(source_uri, doc["content"]))
         return result
 
     def search_hybrid(
@@ -142,7 +177,8 @@ class HybridRetrievalService:
             logger.info(f"开始混合检索，查询: '{query[:50]}...'" if len(query) > 50 else f"开始混合检索，查询: '{query}'")
 
             # Step 1: 生成查询向量
-            query_embedding = self.embedding_service.encode(query)
+            with timed_stage("retrieval.embedding"):
+                query_embedding = self.embedding_service.encode(query)
 
             # Step 2: 并行执行 BM25 和 Embedding 检索
             def bm25_search():
@@ -164,12 +200,13 @@ class HybridRetrievalService:
                     return []
 
             # 并行执行
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_bm25 = executor.submit(bm25_search)
-                future_embedding = executor.submit(embedding_search)
+            with timed_stage("retrieval.recall"):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    future_bm25 = executor.submit(bm25_search)
+                    future_embedding = executor.submit(embedding_search)
 
-                bm25_results = future_bm25.result()
-                embedding_results = future_embedding.result()
+                    bm25_results = future_bm25.result()
+                    embedding_results = future_embedding.result()
 
             logger.info(f"BM25: {len(bm25_results)} 条, Embedding: {len(embedding_results)} 条")
 
@@ -186,7 +223,12 @@ class HybridRetrievalService:
                 rrf_results = bm25_results[:rrf_top_k]
             else:
                 # Step 3: RRF 融合
-                rrf_results = self.rrf_service.fuse(bm25_results, embedding_results, top_k=rrf_top_k)
+                with timed_stage("retrieval.fusion"):
+                    rrf_results = self.rrf_service.fuse(
+                        bm25_results,
+                        embedding_results,
+                        top_k=rrf_top_k,
+                    )
                 logger.info(f"RRF 融合完成: {len(rrf_results)} 条")
 
             # Step 4: 从 ChromaDB 获取所有候选文档块详情
@@ -194,7 +236,8 @@ class HybridRetrievalService:
             if not doc_ids:
                 return []
 
-            chunks_dict = self._fetch_doc_chunks(doc_ids)
+            with timed_stage("retrieval.fetch_chunks"):
+                chunks_dict = self._fetch_doc_chunks(doc_ids)
 
             # Step 5: 准备候选文档并执行 BGE-reranker 精排
             candidate_docs = []
@@ -223,11 +266,12 @@ class HybridRetrievalService:
                 return []
 
             # 执行重排序
-            rerank_results = self.reranker_service.rerank(
-                query=query,
-                documents=[doc["content"] for doc in candidate_docs],
-                top_k=min(top_k, len(candidate_docs))
-            )
+            with timed_stage("retrieval.rerank"):
+                rerank_results = self.reranker_service.rerank(
+                    query=query,
+                    documents=[doc["content"] for doc in candidate_docs],
+                    top_k=min(top_k, len(candidate_docs))
+                )
 
             # Step 6: 组装最终结果
             final_results = []

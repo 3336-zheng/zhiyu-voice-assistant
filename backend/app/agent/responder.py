@@ -433,6 +433,11 @@ class Responder:
                 "section_title": r.get("section_title"),
                 "section_path": r.get("section_path"),
                 "snippet": r.get("snippet"),
+                "audio_id": r.get("audio_id"),
+                "audio_start": r.get("audio_start"),
+                "audio_end": r.get("audio_end"),
+                "audio_url": r.get("audio_url"),
+                "transcript_url": r.get("transcript_url"),
             }
             for r in search_results
         ]

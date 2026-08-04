@@ -1,6 +1,6 @@
 # 智语
 
-智语是一个本地优先的个人 AI Wiki，面向课堂学习场景提供录音转写、结构化笔记、版本化页面、混合检索和可信问答。
+智语是一个本地优先的个人 AI Wiki，面向课堂学习场景提供录音转写、结构化笔记、版本化页面、混合检索和可信问答。完整设计见[架构说明](docs/architecture.md)。
 
 ## 能力边界
 
@@ -9,7 +9,8 @@
 - 异步索引：页面写入与 BM25/Embedding/ChromaDB 索引解耦，失败任务自动退避并可恢复。
 - Agent 确认式写入：创建、修改、删除等高影响操作先生成预览，确认后幂等执行。
 - 证据门禁：无召回或相关性不足时返回结构化“证据不足”，不调用模型生成推测性答案。
-- 课堂沉淀：录音或上传音频，经 Whisper/DashScope 转写后生成 Wiki 页面。
+- 课堂沉淀：Whisper/DashScope 分段转写，回答来源可回溯到原音频时间点。
+- 请求可观测：统一 `request_id`，记录查询改写、召回、精排、证据判断和生成耗时。
 - 数据安全：非破坏性 schema 迁移、数据库与 Wiki 文件备份、受保护恢复。
 
 ## 技术栈
@@ -17,11 +18,12 @@
 | 层 | 技术 |
 | --- | --- |
 | 前端 | React 19、Vite 6、React Markdown、Lucide React |
-| API | Python 3.11、FastAPI、Uvicorn |
+| API | Python 3.11、FastAPI、Uvicorn、Pydantic |
 | 数据 | SQLite、SQLAlchemy、UTF-8 Markdown |
 | 检索 | BM25、BGE Embedding、RRF、BGE Reranker、ChromaDB |
 | Agent | LangGraph、Plan-and-Execute、多轮会话 |
 | 语音 | faster-whisper 或 DashScope |
+| 可观测性 | Request ID、结构化阶段耗时、Server-Timing |
 | 部署 | Docker 多阶段构建、Docker Compose |
 
 ## 架构
@@ -32,8 +34,8 @@ React 工作台
     v
 FastAPI
     |
-    +-- PageService ---------- Markdown 主数据 + SQLite 元数据
-    |       |
+    +-- PageService ---------- 稳定编排门面
+    |       +-- WikiFileStore / Revision / Link
     |       +---------------- WikiIndexTask 持久化任务
     |                              |
     |                              v
@@ -86,6 +88,16 @@ LLM_API_URL=https://api.deepseek.com/v1
 LLM_MODEL=deepseek-chat
 ```
 
+### 面试演示
+
+以下命令幂等创建一段轻量 WAV、4 个转写时间片和 3 篇互相链接的 Wiki 页面，不需要模型：
+
+```bash
+python scripts/demo.py init
+```
+
+随后启动服务即可演示页面版本、反向链接、异步索引状态和音频来源。重复执行不会创建重复页面。
+
 ### 生产模式
 
 FastAPI 优先托管 `frontend/dist`：
@@ -116,6 +128,8 @@ npm run dev
 ```
 
 Vite 默认运行在 `http://127.0.0.1:5173`，并代理 `/api`、`/agent`、`/audio`、`/summary`、`/notes` 和 `/health`。
+
+`/notes` 与 `/api/documents` 仅作为旧客户端兼容层保留，OpenAPI 会将其标记为 deprecated，响应包含 `Deprecation` 和 successor `Link`。新功能统一使用 `/api/pages`。旧 `data/docs` 启动索引默认关闭；需要短期兼容时设置 `SYNC_LEGACY_DOCS_ON_STARTUP=true`，长期应使用显式导入接口迁移。
 
 ## Wiki API
 
@@ -199,9 +213,31 @@ curl -X POST http://127.0.0.1:8337/agent/actions/ACTION_ID/cancel \
 | `evidence_score` | 最高重排分数，可能为空 |
 | `evidence_source_count` | 去重后的来源数量 |
 | `evidence_reason` | 证据评估原因 |
-| `sources` | 页面、版本、章节、来源 URI 和稳定 chunk ID |
+| `sources` | 页面、版本、章节、稳定 Chunk ID，以及可选音频时间范围 |
 
 当 `evidence_status=insufficient` 时，系统不会继续调用 LLM 生成推测性答案。
+
+## 音频溯源 API
+
+转写结果包含 `segments`，每项提供 `start`、`end` 和 `text`。课堂笔记保存时传入 `audio_id`，系统会保留来源关系：
+
+```bash
+curl 'http://127.0.0.1:8337/audio/AUDIO_ID/transcript?start=12&end=20'
+curl 'http://127.0.0.1:8337/audio/AUDIO_ID/file'
+```
+
+第一个接口返回指定时间范围的转写片段；第二个接口返回浏览器可播放的音频。音频不存在返回 `404`，非法时间范围返回 `422`。
+
+## 请求追踪
+
+客户端可以传入合法的 `X-Request-ID`，未传入时服务自动生成 UUID。所有响应都会返回：
+
+```text
+X-Request-ID: 7f9097fd-5e67-4d9c-a5e2-9c3a63c167aa
+Server-Timing: total;dur=42.810, retrieval_recall;dur=8.420
+```
+
+请求完成日志同时记录 `agent.query_rewrite`、`retrieval.recall`、`retrieval.rerank`、`agent.evidence` 和 `agent.generation` 等阶段耗时。流式响应在发送完成后记录最终值。
 
 ## 备份与恢复
 
@@ -231,7 +267,7 @@ python scripts/backup.py restore data/backups/zhiyu-backup-*.zip \
 | 备份 | `data/backups/` |
 | 向量索引 | `data/database/chromadb/` |
 
-启动时只执行非破坏性 schema 迁移，当前 schema 版本为 `2`，迁移记录保存在 `schema_migrations`。应用不会自动删除旧表；历史目录需要通过 `/api/pages/import-legacy` 显式迁移。
+启动时只执行非破坏性 schema 迁移，当前 schema 版本为 `3`，迁移记录保存在 `schema_migrations`。应用不会自动删除旧表；历史目录需要通过 `/api/pages/import-legacy` 显式迁移。
 
 ## Docker
 
@@ -248,10 +284,20 @@ cd frontend && npm run build
 cd ..
 python -m compileall -q backend scripts main.py
 python -m unittest discover -s test -p 'test_*_unit.py' -v
+python -m unittest discover -s test -p 'test_*_integration.py' -v
+python test/eval/rag_eval.py --methods bm25
 git diff --check
 ```
 
-当前单元测试覆盖页面版本与冲突、Wiki 链接、索引任务、Agent 确认、异步入队、证据门禁、备份恢复和路径安全。
+需要本地 Embedding 和 Reranker 模型时，可运行完整对照：
+
+```bash
+python test/eval/rag_eval.py \
+  --methods bm25,embedding,hybrid,hybrid_reranker \
+  --output test/eval/latest_results.json
+```
+
+测试覆盖页面版本与冲突、Wiki 链接、索引失败重试、重启恢复、Agent 重复确认、证据门禁、备份恢复、演示初始化和音频溯源。CI 会执行后端测试、无模型评估、React 构建、依赖审计和 Docker 构建。
 
 ## 已知限制
 

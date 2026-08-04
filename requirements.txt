@@ -16,8 +16,8 @@ pydantic-settings
 requests
 jinja2
 markdown
-python-magic
-python-magic-bin
+python-magic; sys_platform != "win32"
+python-magic-bin; sys_platform == "win32"
 chromadb>=0.5.0
 rank-bm25>=0.2.2
 jieba>=0.42.1

@@ -1,6 +1,6 @@
-"""
-Markdown 文件管理 Agent
-负责创建和写入 .md 文件
+"""旧 Markdown 文件写入器，仅为历史代码兼容保留。
+
+新页面写入统一使用 PageService；本模块不再接入 API 或 Agent 执行器。
 """
 import os
 import logging

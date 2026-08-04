@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
+from fastapi.responses import FileResponse
 
 logger = logging.getLogger(__name__)
 from sqlalchemy.orm import Session
@@ -107,20 +108,25 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
         if not file.filename:
             log(f"[Upload] 文件名为空")
             raise HTTPException(status_code=400, detail="文件名为空，请确保文件有正确的扩展名")
+        original_name = Path(file.filename.replace("\\", "/")).name
+        if not original_name or original_name in {".", ".."}:
+            raise HTTPException(status_code=400, detail="文件名不合法")
 
         # 检查文件类型
         allowed_extensions = settings.get_allowed_extensions()
         log(f"[Upload] 允许的扩展名: {allowed_extensions}")
-        if not any(file.filename.lower().endswith(ext) for ext in allowed_extensions):
-            log(f"[Upload] 文件格式不支持: {file.filename}")
-            raise HTTPException(status_code=400, detail=f"不支持的文件格式: {file.filename}，允许: {settings.allowed_extensions}")
+        if not any(original_name.lower().endswith(ext) for ext in allowed_extensions):
+            log(f"[Upload] 文件格式不支持: {original_name}")
+            raise HTTPException(status_code=400, detail=f"不支持的文件格式: {original_name}，允许: {settings.allowed_extensions}")
 
         # 获取绝对路径（最终 WAV 路径，统一用 .wav 后缀）
         upload_dir = Path(settings.get_upload_dir())
-        stem = Path(file.filename).stem
+        stem = Path(original_name).stem
+        if not stem or stem in {".", ".."}:
+            raise HTTPException(status_code=400, detail="文件名不合法")
         final_path = str(upload_dir / f"{stem}.wav")
         # 原始文件路径（保留原始扩展名，用于保存未转换的文件）
-        raw_path = str(upload_dir / file.filename)
+        raw_path = str(upload_dir / original_name)
         log(f"[Upload] 最终路径: {final_path}")
 
         # 读取文件内容
@@ -188,10 +194,13 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
         if existing_audio:
             # 更新已有记录
             existing_audio.filename = final_filename
+            existing_audio.original_filename = original_name
             existing_audio.file_path = file_path
             existing_audio.file_size = len(content)
             existing_audio.transcription = None
+            existing_audio.transcription_segments = []
             existing_audio.language = None
+            existing_audio.duration = None
             log(f"[Upload] 更新记录 id={existing_audio.id}")
             db.commit()
             db.refresh(existing_audio)
@@ -201,7 +210,7 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
             # 创建新记录
             audio = Audio(
                 filename=final_filename,
-                original_filename=file.filename,
+                original_filename=original_name,
                 file_path=file_path,
                 file_size=len(content)
             )
@@ -289,7 +298,9 @@ async def transcribe_audio(
 
         # 更新音频记录
         audio.transcription = result["transcription"]
+        audio.transcription_segments = result.get("segments", [])
         audio.language = result["language"]
+        audio.duration = result.get("duration", audio.duration)
         db.commit()
         log(f"[Transcribe] 数据库已更新")
 
@@ -297,6 +308,8 @@ async def transcribe_audio(
             "message": "转录成功",
             "audio_id": audio.id,
             "transcription": result["transcription"],
+            "segments": result.get("segments", []),
+            "duration": result.get("duration"),
             "transcribe_time": result["transcribe_time"],
             "rtf": result["rtf"]
         }
@@ -308,6 +321,56 @@ async def transcribe_audio(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"转录失败: {str(e)}")
+
+
+@router.get("/{audio_id}/transcript")
+async def get_transcript(
+    audio_id: int,
+    start: float = Query(0, ge=0),
+    end: float = Query(None, gt=0),
+    db: Session = Depends(get_db),
+):
+    """返回带时间戳的转录片段，可按时间范围过滤。"""
+    audio = db.query(Audio).filter(Audio.id == audio_id).first()
+    if not audio:
+        raise HTTPException(status_code=404, detail="音频文件未找到")
+    segments = audio.transcription_segments or []
+    if end is not None and end < start:
+        raise HTTPException(status_code=422, detail="end 必须大于或等于 start")
+    filtered = [
+        segment
+        for segment in segments
+        if float(segment.get("end", 0)) >= start
+        and (end is None or float(segment.get("start", 0)) <= end)
+    ]
+    return {
+        "audio_id": audio.id,
+        "filename": audio.filename,
+        "duration": audio.duration,
+        "transcription": audio.transcription,
+        "segments": filtered,
+        "audio_url": f"/audio/{audio.id}/file",
+    }
+
+
+@router.get("/{audio_id}/file")
+async def stream_audio(audio_id: int, db: Session = Depends(get_db)):
+    """返回原始音频，支持浏览器媒体时间片定位。"""
+    audio = db.query(Audio).filter(Audio.id == audio_id).first()
+    if not audio:
+        raise HTTPException(status_code=404, detail="音频文件未找到")
+    upload_root = Path(settings.get_upload_dir()).resolve()
+    path = Path(audio.file_path or "").resolve()
+    if not path.is_relative_to(upload_root):
+        raise HTTPException(status_code=403, detail="音频路径不在允许目录内")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="音频文件不存在")
+    return FileResponse(
+        path=str(path),
+        media_type="audio/wav",
+        filename=audio.filename,
+        content_disposition_type="inline",
+    )
 
 
 @router.get("/asr-providers")

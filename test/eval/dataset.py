@@ -104,6 +104,25 @@ def get_evaluation_queries() -> List[Dict]:
     return get_golden_qa()[:5]
 
 
+def get_evaluation_corpus() -> Dict[str, str]:
+    """构建独立评估语料，不读取或修改用户知识库。"""
+    corpus = {}
+    for item in get_golden_qa():
+        document_ids = sorted(item["relevant_doc_ids"])
+        answer = item.get("reference_answer", "")
+        corpus[document_ids[0]] = answer
+        corpus[document_ids[1]] = f"课程补充材料：{answer} 应结合实际场景验证。"
+    corpus.update(
+        {
+            "distractor_frontend": "React 组件通过状态和属性构建浏览器交互界面。",
+            "distractor_network": "HTTP 缓存可以减少重复传输并降低服务端压力。",
+            "distractor_database": "关系数据库事务包含原子性、一致性、隔离性和持久性。",
+            "distractor_testing": "自动化测试应覆盖正常路径、异常路径和边缘条件。",
+        }
+    )
+    return corpus
+
+
 if __name__ == "__main__":
     # 测试数据集
     qa = get_golden_qa()

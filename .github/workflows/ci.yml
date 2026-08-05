@@ -71,7 +71,10 @@ jobs:
       - name: Audit Python dependencies
         run: |
           python -m pip install --upgrade pip pip-audit
-          pip-audit -r requirements.txt
+          # PYSEC-2026-311 affects Chroma's unauthenticated HTTP server API.
+          # Zhiyu only uses the embedded PersistentClient; remove this exception
+          # as soon as Chroma publishes a fixed release.
+          pip-audit -r requirements.txt --ignore-vuln PYSEC-2026-311
 
       - uses: actions/setup-node@v4
         with:

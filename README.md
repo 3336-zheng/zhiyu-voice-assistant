@@ -1,8 +1,15 @@
 # 智语
 
-智语是一个本地优先的个人 AI Wiki，面向课堂学习场景提供录音转写、结构化笔记、版本化页面、混合检索和可信问答。完整设计见[架构说明](docs/architecture.md)。
+智语是一个面向个人学习场景的本地优先 AI Wiki。系统将课堂录音和文档沉淀为可维护的长期知识，通过混合检索寻找证据，并由 Agent 完成知识整理、可信问答和确认式写入。
 
-## 能力边界
+项目重点不是增加一个聊天入口，而是建立完整的知识生命周期：
+
+```text
+语音与文档采集 -> Wiki 组织与版本管理 -> RAG 证据检索
+-> Agent 规划与执行 -> 来源追溯与持续复习
+```
+
+## 核心能力
 
 - React Wiki 工作台：Markdown 页面、笔记本、标签、别名、Wiki Link、反向链接和版本回滚。
 - 统一页面服务：Markdown 是主数据，SQLite 保存元数据、版本、链接和索引任务。
@@ -11,7 +18,26 @@
 - 证据门禁：无召回或相关性不足时返回结构化“证据不足”，不调用模型生成推测性答案。
 - 课堂沉淀：Whisper/DashScope 分段转写，回答来源可回溯到原音频时间点。
 - 请求可观测：统一 `request_id`，记录查询改写、召回、精排、证据判断和生成耗时。
-- 数据安全：非破坏性 schema 迁移、数据库与 Wiki 文件备份、受保护恢复。
+- 数据安全：非破坏性 schema 迁移、数据库与 Wiki 文件备份、路径校验和受保护恢复。
+
+## 核心设计
+
+### 主数据与派生索引
+
+Markdown 保存 Wiki 当前正文，SQLite 保存页面元数据、历史版本、链接和任务状态。ChromaDB 与 BM25 只承担检索职责，属于可以从主数据重建的派生索引。
+
+```text
+Markdown + SQLite = 需要保护和备份的知识状态
+ChromaDB + BM25   = 可以重建的检索索引
+```
+
+### 写入与最终一致性
+
+页面写入、版本快照和索引任务由统一页面服务编排。页面保存成功后立即返回，模型索引由后台 Worker 异步处理；索引失败不会删除知识正文，而是记录失败原因、指数退避并在服务重启后继续恢复。
+
+### 可信 Agent
+
+读取任务可以直接执行，创建、修改和删除等高影响操作先生成变更预览，用户确认后才调用确定性工具。执行结果持久化，重复确认不会产生重复副作用。问答在生成前检查证据，无召回或相关性不足时明确拒答。
 
 ## 技术栈
 
@@ -21,12 +47,12 @@
 | API | Python 3.11、FastAPI、Uvicorn、Pydantic |
 | 数据 | SQLite、SQLAlchemy、UTF-8 Markdown |
 | 检索 | BM25、BGE Embedding、RRF、BGE Reranker、ChromaDB |
-| Agent | LangGraph、Plan-and-Execute、多轮会话 |
+| Agent | LangGraph 1.x、Plan-and-Execute、多轮会话 |
 | 语音 | faster-whisper 或 DashScope |
 | 可观测性 | Request ID、结构化阶段耗时、Server-Timing |
 | 部署 | Docker 多阶段构建、Docker Compose |
 
-## 架构
+## 系统架构
 
 ```text
 React 工作台
@@ -52,12 +78,14 @@ FastAPI
 page:{page_id}:revision:{revision}:chunk:{index}
 ```
 
-## 安装与运行
+模块职责和关键决策见[架构说明](docs/architecture.md)与[架构决策记录](docs/adr/)。
+
+## 快速开始
 
 ### 环境要求
 
 - Python 3.11+
-- Node.js 20+
+- Node.js 22+
 - ffmpeg
 - 本地 Whisper、Embedding、Reranker 模型，或相应云端配置
 - OpenAI 兼容的 LLM API
@@ -88,7 +116,7 @@ LLM_API_URL=https://api.deepseek.com/v1
 LLM_MODEL=deepseek-chat
 ```
 
-### 面试演示
+### 初始化演示数据
 
 以下命令幂等创建一段轻量 WAV、4 个转写时间片和 3 篇互相链接的 Wiki 页面，不需要模型：
 
@@ -96,9 +124,9 @@ LLM_MODEL=deepseek-chat
 python scripts/demo.py init
 ```
 
-随后启动服务即可演示页面版本、反向链接、异步索引状态和音频来源。重复执行不会创建重复页面。
+该命令不依赖模型，重复执行不会创建重复页面。Embedding、Reranker 和 LLM 仍需要有效配置，才能完成语义索引和可信问答。
 
-### 生产模式
+### 构建并运行
 
 FastAPI 优先托管 `frontend/dist`：
 
@@ -108,12 +136,7 @@ cd ..
 python main.py
 ```
 
-访问：
-
-- 应用：`http://127.0.0.1:8337`
-- Swagger：`http://127.0.0.1:8337/api/docs`
-- 健康检查：`http://127.0.0.1:8337/health`
-- 模型状态：`http://127.0.0.1:8337/health/models`
+应用默认运行在 `http://127.0.0.1:8337`。
 
 ### 前端开发模式
 
@@ -127,117 +150,17 @@ python main.py
 npm run dev
 ```
 
-Vite 默认运行在 `http://127.0.0.1:5173`，并代理 `/api`、`/agent`、`/audio`、`/summary`、`/notes` 和 `/health`。
+Vite 默认运行在 `http://127.0.0.1:5173`，开发服务器将业务请求代理到 FastAPI。旧笔记和文档入口仅作为兼容层保留，新功能统一进入页面服务；旧目录自动索引默认关闭，避免继续扩大双写范围。
 
-`/notes` 与 `/api/documents` 仅作为旧客户端兼容层保留，OpenAPI 会将其标记为 deprecated，响应包含 `Deprecation` 和 successor `Link`。新功能统一使用 `/api/pages`。旧 `data/docs` 启动索引默认关闭；需要短期兼容时设置 `SYNC_LEGACY_DOCS_ON_STARTUP=true`，长期应使用显式导入接口迁移。
+## 可靠性与安全
 
-## Wiki API
-
-基础路径：`/api/pages`。
-
-| 方法 | 路径 | 用途 |
-| --- | --- | --- |
-| `POST` | `/api/pages` | 创建页面并加入索引队列 |
-| `GET` | `/api/pages` | 按标题、标签、笔记本分页查询 |
-| `GET` | `/api/pages/{page_id}` | 读取页面 |
-| `PUT` | `/api/pages/{page_id}` | 基于 `expected_revision` 更新页面 |
-| `DELETE` | `/api/pages/{page_id}` | 软删除页面，保留历史版本 |
-| `GET` | `/api/pages/{page_id}/links` | 出链和反向链接 |
-| `GET` | `/api/pages/{page_id}/revisions` | 版本列表 |
-| `GET` | `/api/pages/{page_id}/diff` | 两个版本的差异 |
-| `POST` | `/api/pages/{page_id}/rollback` | 从历史版本创建新版本 |
-| `POST` | `/api/pages/import-legacy` | 幂等导入旧笔记或文档 |
-| `GET` | `/api/pages/export` | 导出 Wiki ZIP |
-| `POST` | `/api/pages/reindex` | 全量生成索引任务 |
-| `POST` | `/api/pages/index-tasks/retry` | 立即重试失败任务 |
-
-创建页面：
-
-```bash
-curl -X POST http://127.0.0.1:8337/api/pages \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "title": "RAG 基础",
-    "content": "# RAG\n\n检索增强生成。",
-    "notebook": "AI",
-    "tags": ["RAG", "LLM"],
-    "aliases": ["检索增强生成"]
-  }'
-```
-
-写入接口立即返回页面，但 `index_status` 初始通常为 `pending`。后台 worker 默认每 5 秒轮询，每批处理 5 个任务。模型不可用时，页面仍然保存，任务进入 `failed` 并按指数退避重试。
-
-更新与回滚：
-
-```bash
-curl -X PUT http://127.0.0.1:8337/api/pages/PAGE_ID \
-  -H 'Content-Type: application/json' \
-  -d '{"expected_revision": 1, "content": "更新后的正文"}'
-
-curl 'http://127.0.0.1:8337/api/pages/PAGE_ID/diff?from_revision=1&to_revision=2'
-
-curl -X POST http://127.0.0.1:8337/api/pages/PAGE_ID/rollback \
-  -H 'Content-Type: application/json' \
-  -d '{"target_revision": 1, "expected_revision": 2}'
-```
-
-`expected_revision` 不匹配时返回 `409 Conflict`，调用方必须重新读取页面。非法参数返回 `422`，页面或版本不存在返回 `404`。
-
-## Agent 与证据门禁
-
-Agent 写入采用两阶段确认：
-
-```bash
-curl -X POST http://127.0.0.1:8337/agent/chat/ \
-  -H 'Content-Type: application/json' \
-  -d '{"query": "创建一篇标题为 RAG 复习提纲的笔记", "session_id": "demo"}'
-```
-
-写入请求返回 `confirmation_required=true`、`pending_action_id` 和 `action_preview`，确认或取消：
-
-```bash
-curl -X POST http://127.0.0.1:8337/agent/actions/ACTION_ID/confirm \
-  -H 'Content-Type: application/json' \
-  -d '{"session_id": "demo"}'
-
-curl -X POST http://127.0.0.1:8337/agent/actions/ACTION_ID/cancel \
-  -H 'Content-Type: application/json' \
-  -d '{"session_id": "demo"}'
-```
-
-问答响应新增字段：
-
-| 字段 | 含义 |
-| --- | --- |
-| `evidence_status` | `sufficient`、`insufficient` 或 `not_applicable` |
-| `evidence_score` | 最高重排分数，可能为空 |
-| `evidence_source_count` | 去重后的来源数量 |
-| `evidence_reason` | 证据评估原因 |
-| `sources` | 页面、版本、章节、稳定 Chunk ID，以及可选音频时间范围 |
-
-当 `evidence_status=insufficient` 时，系统不会继续调用 LLM 生成推测性答案。
-
-## 音频溯源 API
-
-转写结果包含 `segments`，每项提供 `start`、`end` 和 `text`。课堂笔记保存时传入 `audio_id`，系统会保留来源关系：
-
-```bash
-curl 'http://127.0.0.1:8337/audio/AUDIO_ID/transcript?start=12&end=20'
-curl 'http://127.0.0.1:8337/audio/AUDIO_ID/file'
-```
-
-第一个接口返回指定时间范围的转写片段；第二个接口返回浏览器可播放的音频。音频不存在返回 `404`，非法时间范围返回 `422`。
-
-## 请求追踪
-
-客户端可以传入合法的 `X-Request-ID`，未传入时服务自动生成 UUID。所有响应都会返回：
-
-```text
-X-Request-ID: 7f9097fd-5e67-4d9c-a5e2-9c3a63c167aa
-Server-Timing: total;dur=42.810, retrieval_recall;dur=8.420
-```
-
-请求完成日志同时记录 `agent.query_rewrite`、`retrieval.recall`、`retrieval.rerank`、`agent.evidence` 和 `agent.generation` 等阶段耗时。流式响应在发送完成后记录最终值。
+- 页面更新使用版本号进行乐观并发控制，防止覆盖用户刚刚完成的修改。
+- 索引任务持久化保存状态、尝试次数、错误和下次执行时间。
+- FastAPI `lifespan` 统一执行 schema 迁移、任务恢复、Worker 启停和退出清理。
+- 每次请求生成或继承 Request ID，并记录查询改写、召回、融合、精排、证据判断和生成耗时。
+- 上传文件名、音频访问路径和备份恢复路径均进行边界校验。
+- ChromaDB 以嵌入式 `PersistentClient` 运行，不对外暴露独立的未认证服务端口。
+- 配置模板只保留占位符，真实模型路径和密钥不进入版本库。
 
 ## 备份与恢复
 
@@ -267,7 +190,7 @@ python scripts/backup.py restore data/backups/zhiyu-backup-*.zip \
 | 备份 | `data/backups/` |
 | 向量索引 | `data/database/chromadb/` |
 
-启动时只执行非破坏性 schema 迁移，当前 schema 版本为 `3`，迁移记录保存在 `schema_migrations`。应用不会自动删除旧表；历史目录需要通过 `/api/pages/import-legacy` 显式迁移。
+启动时只执行非破坏性 schema 迁移，当前 schema 版本为 `3`，迁移记录保存在 `schema_migrations`。应用不会自动删除旧表；历史目录通过显式兼容导入流程迁移。
 
 ## Docker
 
@@ -277,7 +200,7 @@ docker compose up --build
 
 容器通过 `./data` 持久化数据库、页面、上传文件、索引和日志；模型目录由 `.env` 配置并以只读方式挂载。
 
-## 验证
+## 工程验证
 
 ```bash
 cd frontend && npm run build
@@ -297,13 +220,47 @@ python test/eval/rag_eval.py \
   --output test/eval/latest_results.json
 ```
 
-测试覆盖页面版本与冲突、Wiki 链接、索引失败重试、重启恢复、Agent 重复确认、证据门禁、备份恢复、演示初始化和音频溯源。CI 会执行后端测试、无模型评估、React 构建、依赖审计和 Docker 构建。
+测试覆盖页面版本与冲突、Wiki 链接、索引失败重试、重启恢复、Agent 重复确认、证据门禁、备份恢复、演示初始化和音频溯源。CI 会执行后端测试、无模型评估、React 构建、Python 与 Node 依赖审计以及 Docker 构建。
+
+当前无模型 BM25 基线：
+
+| 指标 | 结果 |
+| --- | ---: |
+| Hit@1 | 0.80 |
+| Hit@3 | 1.00 |
+| MRR | 0.8889 |
+| NDCG@5 | 0.9230 |
+
+## 项目结构
+
+```text
+backend/app/
+├── api/                 FastAPI 业务入口与兼容层
+├── agent/               LangGraph 状态图、规划、执行和响应
+├── core/                配置、数据库、生命周期、迁移和可观测性
+├── models/              SQLAlchemy 数据模型
+└── services/            页面、检索、语音、索引和备份服务
+
+frontend/app/            React Wiki 工作台
+docs/                    架构说明与 ADR
+scripts/                 演示数据、备份和恢复脚本
+test/                    单元测试、API 集成测试和检索评估
+data/                    本地运行数据，不进入版本库
+```
 
 ## 已知限制
 
 - Embedding、Reranker 和本地 Whisper 需要有效的本地模型目录；缺失时页面 CRUD 仍可用，相关索引或转写功能降级。
 - 当前服务面向单用户本机部署；若暴露到局域网，应配置受限 CORS、API Key 和反向代理限流。
-- `data/database/chromadb` 是派生数据，可以通过 `/api/pages/reindex` 从 Wiki 主数据重建。
+- ChromaDB 当前上游版本存在仅影响未认证 HTTP 服务模式的安全公告；本项目只使用嵌入式客户端，并在 CI 中保留单项、可追踪的临时例外。
+- `data/database/chromadb` 是派生数据，可以从 Wiki 主数据重新生成。
+
+## 设计文档
+
+- [系统架构](docs/architecture.md)
+- [ADR-0001：Markdown 作为知识主数据](docs/adr/0001-markdown-source-of-truth.md)
+- [ADR-0002：持久化异步索引任务](docs/adr/0002-persistent-index-tasks.md)
+- [ADR-0003：可信问答与确认式 Agent](docs/adr/0003-trusted-agent.md)
 
 ## License
 

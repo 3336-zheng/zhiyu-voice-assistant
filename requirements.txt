@@ -1,30 +1,39 @@
+# Web 与数据层
 fastapi
 uvicorn
 sqlalchemy
 pydantic
-python-multipart
-faster-whisper
-transformers
-torch
-librosa
-numpy
-python-dotenv
-dashscope>=1.20.0
-psutil
-tqdm
 pydantic-settings
+python-multipart
+python-dotenv
 requests
 jinja2
 markdown
 python-magic; sys_platform != "win32"
 python-magic-bin; sys_platform == "win32"
+
+# 语音与模型运行时
+faster-whisper
+dashscope>=1.20.0
+transformers
+torch
+librosa
+numpy
+
+# 检索与知识库
 chromadb>=0.5.0
 rank-bm25>=0.2.2
 jieba>=0.42.1
+PyYAML>=6.0
+
+# 文档解析
 pdfplumber>=0.11.0
 python-docx>=1.1.0
-PyYAML>=6.0
+
+# Agent 与 LLM
 openai
-langgraph>=0.2.0,<0.3
-langchain-core>=0.2.0,<0.3
-langchain-openai>=0.1.0,<0.2
+langgraph>=1.2.10,<2.0
+
+# 运行辅助
+psutil
+tqdm

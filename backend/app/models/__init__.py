@@ -4,7 +4,16 @@
 from .audio import Audio
 from .retrieval import Retrieval
 from .conversation import Conversation, ConversationMessage
-from .wiki import AgentPendingAction, WikiIndexTask, WikiPage, WikiPageLink, WikiPageRevision
+from .wiki import (
+    AgentPendingAction,
+    ExternalResearchRun,
+    ExternalResearchSource,
+    WikiIndexTask,
+    WikiPage,
+    WikiPageLink,
+    WikiPageRevision,
+    WikiPageSource,
+)
 
 __all__ = [
     "Audio",
@@ -16,4 +25,7 @@ __all__ = [
     "WikiPageLink",
     "WikiIndexTask",
     "AgentPendingAction",
+    "ExternalResearchRun",
+    "ExternalResearchSource",
+    "WikiPageSource",
 ]

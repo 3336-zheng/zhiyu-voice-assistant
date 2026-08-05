@@ -140,3 +140,86 @@ class AgentPendingAction(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
     expires_at = Column(DateTime(timezone=True), nullable=False)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class ExternalResearchRun(Base):
+    """一次由本地证据不足触发的受控外部研究。"""
+
+    __tablename__ = "external_research_runs"
+
+    id = Column(String(36), primary_key=True)
+    session_id = Column(String(64), nullable=False, index=True)
+    query = Column(Text, nullable=False)
+    status = Column(String(16), nullable=False, default="running", index=True)
+    search_queries = Column(JSON, nullable=False, default=list)
+    answer = Column(Text, nullable=True)
+    draft_title = Column(String(255), nullable=True)
+    draft_content = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    page_id = Column(
+        String(36),
+        ForeignKey("wiki_pages.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    sources = relationship(
+        "ExternalResearchSource",
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="ExternalResearchSource.created_at",
+    )
+
+
+class ExternalResearchSource(Base):
+    """外部研究使用的可追溯来源快照。"""
+
+    __tablename__ = "external_research_sources"
+    __table_args__ = (
+        UniqueConstraint("run_id", "url", name="uq_external_research_source_url"),
+    )
+
+    id = Column(String(36), primary_key=True)
+    run_id = Column(
+        String(36),
+        ForeignKey("external_research_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title = Column(String(500), nullable=False)
+    url = Column(String(2048), nullable=False)
+    snippet = Column(Text, nullable=True)
+    content = Column(Text, nullable=True)
+    content_hash = Column(String(64), nullable=False, index=True)
+    provider = Column(String(255), nullable=False)
+    tool_name = Column(String(255), nullable=False)
+    retrieved_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    run = relationship("ExternalResearchRun", back_populates="sources")
+
+
+class WikiPageSource(Base):
+    """将确认写入的 Wiki 页面关联到外部来源。"""
+
+    __tablename__ = "wiki_page_sources"
+    __table_args__ = (
+        UniqueConstraint("page_id", "research_source_id", name="uq_wiki_page_source"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    page_id = Column(
+        String(36),
+        ForeignKey("wiki_pages.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    research_source_id = Column(
+        String(36),
+        ForeignKey("external_research_sources.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)

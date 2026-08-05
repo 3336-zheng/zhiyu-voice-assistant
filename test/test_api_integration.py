@@ -3,6 +3,7 @@
 import tempfile
 import time
 import unittest
+import wave
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -30,8 +31,19 @@ from backend.app.core.config import settings
 from backend.app.core.database import Base, get_db
 from backend.app.models import Audio
 from backend.app.models.wiki import WikiIndexTask
-from backend.app.services.demo_service import initialize_demo_data
+from backend.app.services.hybrid_retrieval_service import _audio_provenance
 from backend.app.services.page_service import PageService
+
+
+def write_test_wav(path: Path, duration_seconds: int = 4) -> None:
+    """写入一个轻量静音 WAV，供音频接口集成测试使用。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sample_rate = 8_000
+    with wave.open(str(path), "wb") as audio_file:
+        audio_file.setnchannels(1)
+        audio_file.setsampwidth(2)
+        audio_file.setframerate(sample_rate)
+        audio_file.writeframes(b"\x00\x00" * sample_rate * duration_seconds)
 
 
 class FlakyIndexer:
@@ -234,25 +246,45 @@ class APIIntegrationTestCase(unittest.TestCase):
         self.assertEqual(first.json()["response"], second.json()["response"])
         self.assertEqual(agent.executor.call_count, 1)
 
-    def test_demo_data_and_audio_provenance_are_idempotent(self):
+    def test_audio_provenance_and_path_safety(self):
+        audio_path = Path(settings.upload_dir) / "lecture.wav"
+        write_test_wav(audio_path)
         db = self.session_factory()
         try:
-            first = initialize_demo_data(
-                db,
-                pages_dir=str(self.root / "pages"),
-                upload_dir=str(self.root / "uploads"),
+            audio_record = Audio(
+                filename=audio_path.name,
+                original_filename=audio_path.name,
+                file_path=str(audio_path),
+                file_size=audio_path.stat().st_size,
+                duration=4.0,
+                language="zh",
+                transcription="混合检索结合关键词与语义召回。",
+                transcription_segments=[
+                    {"start": 2.0, "end": 4.0, "text": "混合检索结合关键词与语义召回。"},
+                ],
             )
-            second = initialize_demo_data(
+            db.add(audio_record)
+            db.commit()
+            db.refresh(audio_record)
+            audio_id = audio_record.id
+            page = PageService(
                 db,
                 pages_dir=str(self.root / "pages"),
-                upload_dir=str(self.root / "uploads"),
+                index_service=self.indexer,
+            ).create_page(
+                title="课堂检索笔记",
+                content="# 课堂检索笔记\n\n[00:02-00:04] 混合检索结合关键词与语义召回。",
+                source_type="class_audio",
+                source_uri=f"audio:{audio_id}",
             )
         finally:
             db.close()
 
-        self.assertEqual(first["created_pages"], 3)
-        self.assertEqual(second["created_pages"], 0)
-        audio_id = first["audio"]["id"]
+        provenance = _audio_provenance(page["source_uri"], page["content"])
+        self.assertEqual(provenance["audio_id"], audio_id)
+        self.assertEqual(provenance["audio_start"], 2.0)
+        self.assertEqual(provenance["audio_end"], 4.0)
+
         transcript = self.client.get(f"/audio/{audio_id}/transcript?start=2&end=4")
         self.assertEqual(transcript.status_code, 200)
         self.assertGreaterEqual(len(transcript.json()["segments"]), 1)
@@ -260,10 +292,9 @@ class APIIntegrationTestCase(unittest.TestCase):
         self.assertEqual(audio.status_code, 200)
         self.assertEqual(audio.headers["content-type"], "audio/wav")
 
-        demo_audio = Path(settings.upload_dir) / "zhiyu-demo-lesson.wav"
         traversal = self.client.post(
             "/audio/upload/",
-            files={"file": ("../../escape.wav", demo_audio.read_bytes(), "audio/wav")},
+            files={"file": ("../../escape.wav", audio_path.read_bytes(), "audio/wav")},
         )
         self.assertEqual(traversal.status_code, 200)
         db = self.session_factory()
@@ -271,7 +302,7 @@ class APIIntegrationTestCase(unittest.TestCase):
             uploaded = db.query(Audio).filter(Audio.filename == "escape.wav").one()
             self.assertEqual(Path(uploaded.file_path).resolve().parent, Path(settings.upload_dir).resolve())
             outside_path = self.root / "outside.wav"
-            outside_path.write_bytes(demo_audio.read_bytes())
+            outside_path.write_bytes(audio_path.read_bytes())
             outside = Audio(
                 filename="outside.wav",
                 original_filename="outside.wav",

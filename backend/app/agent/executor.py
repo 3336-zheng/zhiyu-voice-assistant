@@ -18,6 +18,7 @@ from backend.app.agent.models import (
 )
 from backend.app.services.hybrid_retrieval_service import get_hybrid_retrieval_service
 from backend.app.services.page_service import get_page_service
+from backend.app.models.wiki import ExternalResearchRun, WikiPageSource
 from backend.app.core.database import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -408,13 +409,49 @@ class Executor:
     def create_note(self, parameters: Dict, db: Session) -> Dict:
         """通过 PageService 创建可版本化、可检索的 Wiki 页面。"""
         params = CreateNoteParameters(**parameters)
-        result = get_page_service(db).create_page(
-            title=params.title,
-            content=params.content,
-            tags=params.tags,
-            source_type="agent_note",
-            change_summary="Agent 确认后创建页面",
-        )
+        service = get_page_service(db)
+        if params.research_run_id:
+            run = db.get(ExternalResearchRun, params.research_run_id)
+            if run is None or run.status not in {"completed", "save_pending", "saved"}:
+                raise ValueError("外部研究任务不存在或状态不可保存")
+            result = service.upsert_page_by_source(
+                title=params.title,
+                content=params.content,
+                notebook=params.notebook,
+                tags=params.tags,
+                source_type="external_research",
+                source_uri=f"external-research:{run.id}",
+                change_summary="确认后保存外部研究草稿",
+            )
+            for source in run.sources:
+                exists = (
+                    db.query(WikiPageSource)
+                    .filter(
+                        WikiPageSource.page_id == result["id"],
+                        WikiPageSource.research_source_id == source.id,
+                    )
+                    .first()
+                )
+                if not exists:
+                    db.add(
+                        WikiPageSource(
+                            page_id=result["id"],
+                            research_source_id=source.id,
+                        )
+                    )
+            run.page_id = result["id"]
+            run.status = "saved"
+            db.commit()
+            result["research_run_id"] = run.id
+        else:
+            result = service.create_page(
+                title=params.title,
+                content=params.content,
+                notebook=params.notebook,
+                tags=params.tags,
+                source_type="agent_note",
+                change_summary="Agent 确认后创建页面",
+            )
         return result
 
     def update_note(self, parameters: Dict, db: Session) -> Dict:

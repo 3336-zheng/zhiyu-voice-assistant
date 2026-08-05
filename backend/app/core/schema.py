@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _has_column(engine: Engine, table: str, column: str) -> bool:
@@ -86,6 +86,78 @@ def ensure_schema(engine: Engine) -> int:
                 },
             )
             current = 3
+
+        # 版本 4 保存 MCP 外部研究、来源快照及页面来源关系。
+        if current < 4:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS external_research_runs (
+                        id VARCHAR(36) PRIMARY KEY,
+                        session_id VARCHAR(64) NOT NULL,
+                        query TEXT NOT NULL,
+                        status VARCHAR(16) NOT NULL,
+                        search_queries JSON NOT NULL,
+                        answer TEXT,
+                        draft_title VARCHAR(255),
+                        draft_content TEXT,
+                        error TEXT,
+                        page_id VARCHAR(36),
+                        created_at DATETIME NOT NULL,
+                        completed_at DATETIME,
+                        FOREIGN KEY(page_id) REFERENCES wiki_pages(id) ON DELETE SET NULL
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS external_research_sources (
+                        id VARCHAR(36) PRIMARY KEY,
+                        run_id VARCHAR(36) NOT NULL,
+                        title VARCHAR(500) NOT NULL,
+                        url VARCHAR(2048) NOT NULL,
+                        snippet TEXT,
+                        content TEXT,
+                        content_hash VARCHAR(64) NOT NULL,
+                        provider VARCHAR(255) NOT NULL,
+                        tool_name VARCHAR(255) NOT NULL,
+                        retrieved_at DATETIME NOT NULL,
+                        created_at DATETIME NOT NULL,
+                        CONSTRAINT uq_external_research_source_url UNIQUE(run_id, url),
+                        FOREIGN KEY(run_id) REFERENCES external_research_runs(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS wiki_page_sources (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        page_id VARCHAR(36) NOT NULL,
+                        research_source_id VARCHAR(36) NOT NULL,
+                        created_at DATETIME NOT NULL,
+                        CONSTRAINT uq_wiki_page_source UNIQUE(page_id, research_source_id),
+                        FOREIGN KEY(page_id) REFERENCES wiki_pages(id) ON DELETE CASCADE,
+                        FOREIGN KEY(research_source_id) REFERENCES external_research_sources(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO schema_migrations(version, description, applied_at) "
+                    "VALUES (:version, :description, :applied_at)"
+                ),
+                {
+                    "version": 4,
+                    "description": "增加 MCP 外部研究和来源追溯",
+                    "applied_at": datetime.now(timezone.utc),
+                },
+            )
+            current = 4
 
     if current > SCHEMA_VERSION:
         raise RuntimeError(

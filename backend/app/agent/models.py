@@ -85,6 +85,7 @@ class AgentResponse(BaseModel):
     evidence_score: Optional[float] = None
     evidence_source_count: int = 0
     evidence_reason: Optional[str] = None
+    external_research_available: bool = False
     timestamp: datetime
     execution_time_ms: Optional[int] = None
 
@@ -105,6 +106,8 @@ class CreateNoteParameters(BaseModel):
     tags: Optional[List[str]] = None
     summary: Optional[str] = None
     audio_id: Optional[int] = None
+    notebook: Optional[str] = None
+    research_run_id: Optional[str] = None
 
 
 class UpdateNoteParameters(BaseModel):

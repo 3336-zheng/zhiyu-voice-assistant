@@ -7,7 +7,6 @@ import {
   Edit3,
   FilePlus2,
   FileText,
-  History,
   Link2,
   LoaderCircle,
   MoreHorizontal,
@@ -49,7 +48,6 @@ export default function WikiWorkspace({ searchQuery, setSearchQuery, notify }) {
   const [selectedId, setSelectedId] = useState(null)
   const [current, setCurrent] = useState(null)
   const [links, setLinks] = useState({ outgoing: [], backlinks: [] })
-  const [revisions, setRevisions] = useState([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -85,14 +83,12 @@ export default function WikiWorkspace({ searchQuery, setSearchQuery, notify }) {
       return
     }
     try {
-      const [page, linkData, revisionData] = await Promise.all([
+      const [page, linkData] = await Promise.all([
         api(`/api/pages/${pageId}`),
         api(`/api/pages/${pageId}/links`),
-        api(`/api/pages/${pageId}/revisions`),
       ])
       setCurrent(page)
       setLinks(linkData)
-      setRevisions(revisionData.revisions || [])
       setDraft({
         title: page.title,
         notebook: page.notebook || '',
@@ -187,26 +183,7 @@ export default function WikiWorkspace({ searchQuery, setSearchQuery, notify }) {
       setCurrent(null)
       setSelectedId(null)
       await loadPages()
-      notify('页面已删除，历史版本仍然保留', 'success')
-    } catch (error) {
-      notify(error.message, 'error')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function rollback(revision) {
-    if (!current) return
-    setSaving(true)
-    try {
-      const restored = await api(`/api/pages/${current.id}/rollback`, {
-        method: 'POST',
-        body: JSON.stringify({ target_revision: revision, expected_revision: current.revision }),
-      })
-      setModal(null)
-      await loadPage(restored.id)
-      await loadPages()
-      notify(`已恢复版本 ${revision}`, 'success')
+      notify('页面已删除', 'success')
     } catch (error) {
       notify(error.message, 'error')
     } finally {
@@ -326,7 +303,7 @@ export default function WikiWorkspace({ searchQuery, setSearchQuery, notify }) {
         {current && (
           <>
             <header className="page-header">
-              <div className="breadcrumbs"><span>{current.notebook || '未分类'}</span><span>/</span><span>v{current.revision}</span></div>
+              <div className="breadcrumbs"><span>{current.notebook || '未分类'}</span></div>
               <div className="page-actions">
                 {editing ? (
                   <>
@@ -382,16 +359,8 @@ export default function WikiWorkspace({ searchQuery, setSearchQuery, notify }) {
         </section>
         <section>
           <h3><Network size={15} /> 页面链接 <span>{links.outgoing.length}</span></h3>
-          {links.outgoing.map((item) => (
+          {links.outgoing.length === 0 ? <span className="muted">暂无页面链接</span> : links.outgoing.map((item) => (
             <button className={item.resolved ? 'context-link' : 'context-link unresolved'} type="button" key={item.target_title} onClick={() => item.target_page_id && setSelectedId(item.target_page_id)}>{item.target_title}</button>
-          ))}
-        </section>
-        <section>
-          <h3><History size={15} /> 历史版本 <span>{revisions.length}</span></h3>
-          {revisions.slice(0, 8).map((revision) => (
-            <button className="revision-row" type="button" key={revision.revision} onClick={() => revision.revision !== current?.revision && setModal({ type: 'rollback', revision: revision.revision })}>
-              <span>v{revision.revision}</span><small>{formatDate(revision.created_at)}</small>
-            </button>
           ))}
         </section>
       </aside>
@@ -412,12 +381,7 @@ export default function WikiWorkspace({ searchQuery, setSearchQuery, notify }) {
       )}
       {modal === 'delete' && (
         <Modal title="删除页面" onClose={() => setModal(null)} actions={<><button className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="danger-button" disabled={saving} onClick={deletePage}><Trash2 size={16} /> 删除</button></>}>
-          <p>将删除“{current?.title}”的当前页面和检索索引，历史版本仍可用于恢复。</p>
-        </Modal>
-      )}
-      {modal?.type === 'rollback' && (
-        <Modal title={`恢复版本 ${modal.revision}`} onClose={() => setModal(null)} actions={<><button className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" disabled={saving} onClick={() => rollback(modal.revision)}><ArchiveRestore size={16} /> 恢复</button></>}>
-          <p>历史内容会作为新版本保存，不会覆盖或删除当前版本记录。</p>
+          <p>将删除“{current?.title}”及其检索索引。</p>
         </Modal>
       )}
     </div>

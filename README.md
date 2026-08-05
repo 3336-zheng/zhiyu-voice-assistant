@@ -11,11 +11,12 @@
 
 ## 核心能力
 
-- React Wiki 工作台：Markdown 页面、笔记本、标签、别名、Wiki Link、反向链接和版本回滚。
-- 统一页面服务：Markdown 是主数据，SQLite 保存元数据、版本、链接和索引任务。
+- React Wiki 工作台：Markdown 页面、笔记本、标签、别名、Wiki Link 和反向链接。
+- 统一页面服务：Markdown 是主数据，SQLite 保存元数据、历史版本、链接和索引任务。
 - 异步索引：页面写入与 BM25/Embedding/ChromaDB 索引解耦，失败任务自动退避并可恢复。
 - Agent 确认式写入：创建、修改、删除等高影响操作先生成预览，确认后幂等执行。
 - 证据门禁：无召回或相关性不足时返回结构化“证据不足”，不调用模型生成推测性答案。
+- 受控外部研究：本地证据不足时可显式调用白名单 MCP 搜索与抓取工具，保留来源快照，确认后再沉淀为 Wiki。
 - 课堂沉淀：Whisper/DashScope 分段转写，回答来源可回溯到原音频时间点。
 - 请求可观测：统一 `request_id`，记录查询改写、召回、精排、证据判断和生成耗时。
 - 数据安全：非破坏性 schema 迁移、数据库与 Wiki 文件备份、路径校验和受保护恢复。
@@ -39,6 +40,8 @@ ChromaDB + BM25   = 可以重建的检索索引
 
 读取任务可以直接执行，创建、修改和删除等高影响操作先生成变更预览，用户确认后才调用确定性工具。执行结果持久化，重复确认不会产生重复副作用。问答在生成前检查证据，无召回或相关性不足时明确拒答。
 
+本地证据不足时，系统只向用户提供外部研究入口，不会自动联网。外部研究由模型生成检索词，但只能调用配置白名单中的 MCP 搜索和抓取工具；结果经过公网 URL 校验、去重、长度限制和提示注入隔离后形成带引用草稿。草稿必须再次确认才会写入 Wiki，页面同时关联研究来源快照。
+
 ## 技术栈
 
 | 层 | 技术 |
@@ -47,7 +50,7 @@ ChromaDB + BM25   = 可以重建的检索索引
 | API | Python 3.11、FastAPI、Uvicorn、Pydantic |
 | 数据 | SQLite、SQLAlchemy、UTF-8 Markdown |
 | 检索 | BM25、BGE Embedding、RRF、BGE Reranker、ChromaDB |
-| Agent | LangGraph 1.x、Plan-and-Execute、多轮会话 |
+| Agent | LangGraph 1.x、Plan-and-Execute、MCP Python SDK、多轮会话 |
 | 语音 | faster-whisper 或 DashScope |
 | 可观测性 | Request ID、结构化阶段耗时、Server-Timing |
 | 部署 | Docker 多阶段构建、Docker Compose |
@@ -69,6 +72,7 @@ FastAPI
     |                       BM25 / Embedding / ChromaDB
     |
     +-- Agent Runtime -------- 检索、证据门禁、确认式写入
+    |       +---------------- 受限 MCP 外部研究与来源追溯
     +-- Audio / Summary ------- 转写、课堂笔记预览和保存
 ```
 
@@ -116,15 +120,7 @@ LLM_API_URL=https://api.deepseek.com/v1
 LLM_MODEL=deepseek-chat
 ```
 
-### 初始化演示数据
-
-以下命令幂等创建一段轻量 WAV、4 个转写时间片和 3 篇互相链接的 Wiki 页面，不需要模型：
-
-```bash
-python scripts/demo.py init
-```
-
-该命令不依赖模型，重复执行不会创建重复页面。Embedding、Reranker 和 LLM 仍需要有效配置，才能完成语义索引和可信问答。
+外部研究默认关闭。启用时只配置可信的 stdio MCP Server，并明确指定只读搜索、抓取工具及其参数名；完整配置项见 `.env.example`。MCP 子进程只接收 `MCP_SERVER_ENV_JSON` 中显式声明的环境变量，不继承应用的完整配置。
 
 ### 构建并运行
 
@@ -161,6 +157,8 @@ Vite 默认运行在 `http://127.0.0.1:5173`，开发服务器将业务请求代
 - 上传文件名、音频访问路径和备份恢复路径均进行边界校验。
 - ChromaDB 以嵌入式 `PersistentClient` 运行，不对外暴露独立的未认证服务端口。
 - 配置模板只保留占位符，真实模型路径和密钥不进入版本库。
+- MCP 默认关闭且不接受动态工具名；外部 URL 会拒绝本机、私网、保留地址、嵌入凭证和非 HTTP(S) 协议。
+- 外部正文按不可信数据处理，进入模型前执行总量截断和边界转义；模型输出不会绕过用户确认直接写入知识库。
 
 ## 备份与恢复
 
@@ -190,7 +188,7 @@ python scripts/backup.py restore data/backups/zhiyu-backup-*.zip \
 | 备份 | `data/backups/` |
 | 向量索引 | `data/database/chromadb/` |
 
-启动时只执行非破坏性 schema 迁移，当前 schema 版本为 `3`，迁移记录保存在 `schema_migrations`。应用不会自动删除旧表；历史目录通过显式兼容导入流程迁移。
+启动时只执行非破坏性 schema 迁移，当前 schema 版本为 `4`，迁移记录保存在 `schema_migrations`。应用不会自动删除旧表；历史目录通过显式兼容导入流程迁移。外部研究任务、来源快照及页面来源关系保存在 SQLite 中，正文仍由 Markdown 承担主数据角色。
 
 ## Docker
 
@@ -220,7 +218,7 @@ python test/eval/rag_eval.py \
   --output test/eval/latest_results.json
 ```
 
-测试覆盖页面版本与冲突、Wiki 链接、索引失败重试、重启恢复、Agent 重复确认、证据门禁、备份恢复、演示初始化和音频溯源。CI 会执行后端测试、无模型评估、React 构建、Python 与 Node 依赖审计以及 Docker 构建。
+测试覆盖页面版本与冲突、Wiki 链接、索引失败重试、重启恢复、Agent 重复确认、证据门禁、MCP 超时与私网拦截、外部来源确认入库、备份恢复、音频溯源和路径安全。CI 会执行后端测试、无模型评估、React 构建、Python 与 Node 依赖审计以及 Docker 构建。
 
 当前无模型 BM25 基线：
 
@@ -243,7 +241,7 @@ backend/app/
 
 frontend/app/            React Wiki 工作台
 docs/                    架构说明与 ADR
-scripts/                 演示数据、备份和恢复脚本
+scripts/                 备份和恢复脚本
 test/                    单元测试、API 集成测试和检索评估
 data/                    本地运行数据，不进入版本库
 ```
@@ -254,6 +252,7 @@ data/                    本地运行数据，不进入版本库
 - 当前服务面向单用户本机部署；若暴露到局域网，应配置受限 CORS、API Key 和反向代理限流。
 - ChromaDB 当前上游版本存在仅影响未认证 HTTP 服务模式的安全公告；本项目只使用嵌入式客户端，并在 CI 中保留单项、可追踪的临时例外。
 - `data/database/chromadb` 是派生数据，可以从 Wiki 主数据重新生成。
+- MCP Server 属于部署时信任边界，必须由使用者审查并限制其网络权限；应用会校验请求 URL，但无法替代 Server 对重定向和 DNS 重绑定的防护。
 
 ## 设计文档
 
@@ -261,6 +260,7 @@ data/                    本地运行数据，不进入版本库
 - [ADR-0001：Markdown 作为知识主数据](docs/adr/0001-markdown-source-of-truth.md)
 - [ADR-0002：持久化异步索引任务](docs/adr/0002-persistent-index-tasks.md)
 - [ADR-0003：可信问答与确认式 Agent](docs/adr/0003-trusted-agent.md)
+- [ADR-0004：受控 MCP 外部研究](docs/adr/0004-controlled-mcp-research.md)
 
 ## License
 

@@ -1,6 +1,7 @@
 """
 应用配置管理
 """
+import json
 import os
 from pydantic_settings import BaseSettings
 from pathlib import Path
@@ -95,6 +96,23 @@ class Settings(BaseSettings):
     evidence_min_score: float = 0.35
     evidence_min_sources: int = 1
 
+    # MCP 外部研究。默认关闭，仅允许显式配置的 stdio Server 与两个只读工具。
+    mcp_research_enabled: bool = False
+    mcp_server_label: str = "external-research"
+    mcp_server_command: str = ""
+    mcp_server_args_json: str = "[]"
+    mcp_server_env_json: str = "{}"
+    mcp_search_tool: str = "web_search"
+    mcp_fetch_tool: str = "fetch_page"
+    mcp_search_query_arg: str = "query"
+    mcp_search_limit_arg: str = "count"
+    mcp_fetch_url_arg: str = "url"
+    mcp_max_queries: int = 2
+    mcp_max_sources: int = 5
+    mcp_max_content_chars: int = 12_000
+    mcp_timeout_seconds: float = 30.0
+    mcp_total_timeout_seconds: float = 90.0
+
     def get_cors_origins(self) -> list:
         """获取 CORS 允许的源列表"""
         if self.cors_origins == "*":
@@ -108,6 +126,32 @@ class Settings(BaseSettings):
     def get_allowed_extensions(self) -> list:
         """获取允许的文件扩展名列表"""
         return [ext.strip() for ext in self.allowed_extensions.split(",")]
+
+    def get_mcp_server_args(self) -> list[str]:
+        """解析 MCP Server 参数，并拒绝非字符串值。"""
+        values = json.loads(self.mcp_server_args_json or "[]")
+        if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+            raise ValueError("MCP_SERVER_ARGS_JSON 必须是字符串数组")
+        return values
+
+    def get_mcp_server_env(self) -> dict[str, str]:
+        """只向 MCP 子进程传递显式配置的环境变量。"""
+        values = json.loads(self.mcp_server_env_json or "{}")
+        if not isinstance(values, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in values.items()
+        ):
+            raise ValueError("MCP_SERVER_ENV_JSON 必须是字符串键值对象")
+        return values
+
+    def mcp_research_available(self) -> bool:
+        """只有开关、命令和两个工具名齐全时才向用户提供外部研究。"""
+        return bool(
+            self.mcp_research_enabled
+            and self.mcp_server_command.strip()
+            and self.mcp_search_tool.strip()
+            and self.mcp_fetch_tool.strip()
+        )
 
     def get_upload_dir(self) -> str:
         """获取上传目录的绝对路径"""

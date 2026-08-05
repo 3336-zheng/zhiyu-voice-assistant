@@ -3,10 +3,13 @@ import {
   ArrowUp,
   BookOpenCheck,
   Check,
+  ExternalLink,
+  Globe2,
   Headphones,
   LoaderCircle,
   MessageSquareText,
   RotateCcw,
+  Save,
   Sparkles,
   X,
 } from 'lucide-react'
@@ -60,6 +63,8 @@ export default function AskWorkspace({ notify }) {
         evidenceScore: data.evidence_score,
         evidenceSourceCount: data.evidence_source_count,
         evidenceReason: data.evidence_reason,
+        externalResearchAvailable: data.external_research_available,
+        originalQuery: text,
         confirmationRequired: data.confirmation_required,
         pendingActionId: data.pending_action_id,
         preview: data.action_preview || [],
@@ -69,6 +74,56 @@ export default function AskWorkspace({ notify }) {
       notify(error.message, 'error')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function runExternalResearch(messageId, messageQuery) {
+    setMessages((previous) => previous.map((message) => (
+      message.id === messageId ? { ...message, researchStatus: 'loading' } : message
+    )))
+    try {
+      const data = await api('/agent/research/', {
+        method: 'POST',
+        body: JSON.stringify({ query: messageQuery, session_id: sessionId }),
+      })
+      setMessages((previous) => previous.map((message) => (
+        message.id === messageId
+          ? { ...message, researchStatus: 'complete', externalResearch: data }
+          : message
+      )))
+    } catch (error) {
+      setMessages((previous) => previous.map((message) => (
+        message.id === messageId ? { ...message, researchStatus: 'failed' } : message
+      )))
+      notify(error.message, 'error')
+    }
+  }
+
+  async function prepareResearchSave(messageId, runId) {
+    setMessages((previous) => previous.map((message) => (
+      message.id === messageId ? { ...message, researchSaveStatus: 'loading' } : message
+    )))
+    try {
+      const data = await api(`/agent/research/${runId}/prepare-save`, {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId }),
+      })
+      setMessages((previous) => previous.map((message) => {
+        if (message.id !== messageId) return message
+        return {
+          ...message,
+          researchSaveStatus: 'pending',
+          confirmationRequired: data.confirmation_required,
+          pendingActionId: data.pending_action_id,
+          preview: data.action_preview || [],
+          status: 'pending',
+        }
+      }))
+    } catch (error) {
+      setMessages((previous) => previous.map((message) => (
+        message.id === messageId ? { ...message, researchSaveStatus: 'failed' } : message
+      )))
+      notify(error.message, 'error')
     }
   }
 
@@ -85,6 +140,7 @@ export default function AskWorkspace({ notify }) {
           status: action === 'confirm' ? 'complete' : 'cancelled',
           content: action === 'confirm' ? data.response : '知识变更已取消。',
           confirmationRequired: false,
+          researchSaveStatus: action === 'confirm' ? 'saved' : 'cancelled',
         }
       }))
       notify(action === 'confirm' ? '知识变更已执行' : '知识变更已取消', 'success')
@@ -127,7 +183,46 @@ export default function AskWorkspace({ notify }) {
                 <div className="evidence-warning" role="status">
                   <strong>证据不足，未生成推测性答案</strong>
                   <span>{message.evidenceReason || '请补充 Wiki 页面或缩小查询范围。'}</span>
+                  {message.externalResearchAvailable && !message.externalResearch && (
+                    <button
+                      className="research-button"
+                      type="button"
+                      disabled={message.researchStatus === 'loading'}
+                      onClick={() => runExternalResearch(message.id, message.originalQuery)}
+                    >
+                      {message.researchStatus === 'loading'
+                        ? <><LoaderCircle size={15} className="spin" /> 正在查找</>
+                        : <><Globe2 size={15} /> 查找外部资料</>}
+                    </button>
+                  )}
                 </div>
+              )}
+              {message.externalResearch && (
+                <section className="external-research" aria-label="外部研究结果">
+                  <div className="external-research-heading">
+                    <div><Globe2 size={16} /><strong>外部研究</strong></div>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={['loading', 'pending', 'saved'].includes(message.researchSaveStatus)}
+                      onClick={() => prepareResearchSave(message.id, message.externalResearch.run_id)}
+                    >
+                      {message.researchSaveStatus === 'loading'
+                        ? <LoaderCircle size={15} className="spin" />
+                        : <Save size={15} />}
+                      {message.researchSaveStatus === 'saved' ? '已保存' : '保存为 Wiki'}
+                    </button>
+                  </div>
+                  <MarkdownView content={message.externalResearch.answer || ''} />
+                  <div className="external-source-list">
+                    {message.externalResearch.sources.map((source, index) => (
+                      <a key={source.id} href={source.url} target="_blank" rel="noreferrer">
+                        <span>[{index + 1}] {source.title}</span>
+                        <ExternalLink size={13} />
+                      </a>
+                    ))}
+                  </div>
+                </section>
               )}
               {message.confirmationRequired && (
                 <div className="action-preview">
@@ -151,7 +246,7 @@ export default function AskWorkspace({ notify }) {
                     <div className="citation-item" key={source.chunk_id || source.id}>
                       <a href={source.source_url || '#'} target="_blank" rel="noreferrer">
                         <strong>{source.title}</strong>
-                        <small>{source.section_path || source.section_title || '页面正文'} · v{source.page_revision || '-'}</small>
+                        <small>{source.section_path || source.section_title || '页面正文'}</small>
                       </a>
                       {source.audio_url && (
                         <a className="audio-citation" href={source.audio_url} target="_blank" rel="noreferrer">

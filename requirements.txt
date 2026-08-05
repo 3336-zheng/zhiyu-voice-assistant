@@ -33,6 +33,7 @@ python-docx>=1.1.0
 # Agent 与 LLM
 openai
 langgraph>=1.2.10,<2.0
+mcp>=2.0,<3.0
 
 # 运行辅助
 psutil

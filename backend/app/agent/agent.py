@@ -202,6 +202,7 @@ class PlanExecuteAgent:
         answer = final_state.get("answer")
         if not answer and final_state.get("relevance_grade") == "incorrect":
             answer = "现有 Wiki 中没有找到足以支持回答的证据，请补充相关页面或缩小查询范围。"
+        evidence_status = final_state.get("evidence_status", evidence.status)
         return AgentResponse(
             query=user_query,
             response=answer or "现有 Wiki 证据不足，暂时无法回答该问题。",
@@ -209,10 +210,13 @@ class PlanExecuteAgent:
             plan=plan,
             sources=final_state.get("sources", []),
             confidence=final_state.get("confidence", 0.0),
-            evidence_status=final_state.get("evidence_status", evidence.status),
+            evidence_status=evidence_status,
             evidence_score=final_state.get("evidence_score", evidence.score),
             evidence_source_count=final_state.get("evidence_source_count", evidence.source_count),
             evidence_reason=final_state.get("evidence_reason", evidence.reason),
+            external_research_available=(
+                evidence_status == "insufficient" and settings.mcp_research_available()
+            ),
             timestamp=datetime.now(),
             execution_time_ms=int((time.time() - start_time) * 1000),
         )
@@ -304,6 +308,7 @@ class PlanExecuteAgent:
                     ),
                     "写入计划执行失败",
                 )
+                self._reset_research_save_state(pending, db)
             db.commit()
             if execution_result.success:
                 self._save_assistant_message(response, db)
@@ -319,8 +324,26 @@ class PlanExecuteAgent:
         if pending.status == "completed":
             raise AgentActionError("已完成的操作不能取消")
         pending.status = "cancelled"
+        self._reset_research_save_state(pending, db)
         db.commit()
         return {"action_id": action_id, "status": "cancelled"}
+
+    @staticmethod
+    def _reset_research_save_state(pending: AgentPendingAction, db: Session) -> None:
+        """取消或失败后允许同一研究草稿重新发起保存确认。"""
+        from backend.app.models.wiki import ExternalResearchRun
+
+        try:
+            plan = Plan.model_validate(pending.plan_data)
+        except Exception:
+            return
+        for step in plan.steps:
+            run_id = step.parameters.get("research_run_id")
+            if not run_id:
+                continue
+            run = db.get(ExternalResearchRun, run_id)
+            if run is not None and run.status == "save_pending":
+                run.status = "completed"
 
     @staticmethod
     def _validate_pending_action(
@@ -339,6 +362,7 @@ class PlanExecuteAgent:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         if pending.status == "pending" and expires_at <= datetime.now(timezone.utc):
             pending.status = "expired"
+            PlanExecuteAgent._reset_research_save_state(pending, db)
             db.commit()
             raise AgentActionError("待确认操作已过期")
 
@@ -377,6 +401,7 @@ class PlanExecuteAgent:
                 "evidence_status": response.evidence_status,
                 "evidence_score": response.evidence_score,
                 "evidence_source_count": response.evidence_source_count,
+                "external_research_available": response.external_research_available,
             },
             db=db,
         )

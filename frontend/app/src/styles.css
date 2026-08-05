@@ -249,7 +249,7 @@ a:focus-visible {
 
 .wiki-layout {
   display: grid;
-  grid-template-columns: 274px minmax(360px, 1fr) 254px;
+  grid-template-columns: 232px minmax(0, 1fr) 210px;
   width: 100%;
   height: 100%;
   background: var(--surface);
@@ -574,7 +574,7 @@ button.tag {
 
 .page-document,
 .page-editor {
-  width: min(820px, calc(100% - 48px));
+  width: min(1040px, calc(100% - 64px));
   margin: 0 auto;
   padding: 46px 0 90px;
 }
@@ -766,8 +766,7 @@ textarea {
   white-space: nowrap;
 }
 
-.context-link,
-.revision-row {
+.context-link {
   display: flex;
   align-items: center;
   width: 100%;
@@ -784,8 +783,7 @@ textarea {
   cursor: pointer;
 }
 
-.context-link:hover,
-.revision-row:hover {
+.context-link:hover {
   background: #e7ece9;
 }
 
@@ -794,11 +792,6 @@ textarea {
   text-decoration: line-through;
 }
 
-.revision-row {
-  justify-content: space-between;
-}
-
-.revision-row small,
 .muted {
   color: #929b97;
   font-size: 10px;
@@ -1029,6 +1022,73 @@ textarea {
 .evidence-warning span {
   color: #8b7341;
   font-size: 11px;
+}
+
+.research-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: fit-content;
+  min-height: 32px;
+  margin-top: 6px;
+  padding: 0 10px;
+  color: #315b4a;
+  background: #ffffff;
+  border: 1px solid #aebfb7;
+  border-radius: 5px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.research-button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.external-research {
+  margin-top: 18px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.external-research-heading,
+.external-research-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.external-research-heading {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.external-source-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 14px;
+}
+
+.external-source-list a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 0;
+  color: var(--green);
+  border-top: 1px solid #e7ece9;
+  text-decoration: none;
+}
+
+.external-source-list span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .citation-list > span {
@@ -1349,9 +1409,9 @@ textarea {
   display: none;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1280px) {
   .wiki-layout {
-    grid-template-columns: 260px minmax(360px, 1fr);
+    grid-template-columns: 238px minmax(0, 1fr);
   }
 
   .context-panel {

@@ -5,8 +5,9 @@ Agent 对话 API 接口
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
+from datetime import datetime
 import logging
 import json
 
@@ -15,6 +16,13 @@ from backend.app.agent.agent import AgentActionError, get_agent
 from backend.app.agent.models import AgentResponse
 from backend.app.services.memory_service import get_memory_service
 from backend.app.services.llm_service import get_llm_service
+from backend.app.services.external_research_service import (
+    ExternalResearchConflict,
+    ExternalResearchError,
+    ExternalResearchNotFound,
+    ExternalResearchUnavailable,
+    get_external_research_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +50,7 @@ class AgentChatResponse(BaseModel):
     evidence_score: Optional[float] = None
     evidence_source_count: int = 0
     evidence_reason: Optional[str] = None
+    external_research_available: bool = False
     execution_time_ms: Optional[int] = None
     success: bool = True
 
@@ -50,6 +59,45 @@ class AgentActionRequest(BaseModel):
     """确认或取消待处理 Agent 操作。"""
 
     session_id: str
+
+
+class ExternalResearchRequest(BaseModel):
+    """显式触发外部研究。"""
+
+    query: str = Field(min_length=1, max_length=2000)
+    session_id: str = Field(min_length=1, max_length=64)
+
+
+class ExternalResearchSaveRequest(BaseModel):
+    """将研究草稿转换为待确认 Wiki 写入。"""
+
+    session_id: str = Field(min_length=1, max_length=64)
+    notebook: Optional[str] = Field(default=None, max_length=255)
+
+
+class ExternalResearchSourceResponse(BaseModel):
+    id: str
+    title: str
+    url: str
+    snippet: Optional[str] = None
+    provider: str
+    retrieved_at: datetime
+
+
+class ExternalResearchResponse(BaseModel):
+    run_id: str
+    session_id: str
+    query: str
+    status: str
+    search_queries: List[str]
+    answer: Optional[str] = None
+    draft_title: Optional[str] = None
+    draft_content: Optional[str] = None
+    page_id: Optional[str] = None
+    error: Optional[str] = None
+    sources: List[ExternalResearchSourceResponse]
+    created_at: datetime
+    completed_at: Optional[datetime] = None
 
 
 class HybridSearchRequest(BaseModel):
@@ -132,6 +180,7 @@ async def agent_chat(
             evidence_score=response.evidence_score,
             evidence_source_count=response.evidence_source_count,
             evidence_reason=response.evidence_reason,
+            external_research_available=response.external_research_available,
             execution_time_ms=response.execution_time_ms,
             success=True
         )
@@ -185,7 +234,7 @@ async def agent_chat_stream(
             if response.sources:
                 yield f"data: {json.dumps({'type': 'sources', 'count': len(response.sources), 'items': response.sources, 'evidence_status': response.evidence_status}, ensure_ascii=False)}\n\n"
 
-            yield f"data: {json.dumps({'type': 'evidence', 'status': response.evidence_status, 'score': response.evidence_score, 'source_count': response.evidence_source_count, 'reason': response.evidence_reason}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'evidence', 'status': response.evidence_status, 'score': response.evidence_score, 'source_count': response.evidence_source_count, 'reason': response.evidence_reason, 'external_research_available': response.external_research_available}, ensure_ascii=False)}\n\n"
 
             if response.confirmation_required:
                 yield f"data: {json.dumps({'type': 'confirmation', 'pending_action_id': response.pending_action_id, 'preview': response.action_preview, 'message': response.response}, ensure_ascii=False)}\n\n"
@@ -250,10 +299,82 @@ async def confirm_agent_action(
             evidence_score=response.evidence_score,
             evidence_source_count=response.evidence_source_count,
             evidence_reason=response.evidence_reason,
+            external_research_available=response.external_research_available,
             execution_time_ms=response.execution_time_ms,
             success=response.confidence >= 1.0,
         )
     except AgentActionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/research/", response_model=ExternalResearchResponse)
+async def run_external_research(
+    request: ExternalResearchRequest,
+    db: Session = Depends(get_db),
+):
+    """通过配置的只读 MCP 工具研究公开资料，不自动写入 Wiki。"""
+    try:
+        return await get_external_research_service().research(
+            request.query,
+            request.session_id,
+            db,
+        )
+    except ExternalResearchUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ExternalResearchError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/research/{run_id}", response_model=ExternalResearchResponse)
+async def get_external_research(
+    run_id: str,
+    session_id: str,
+    db: Session = Depends(get_db),
+):
+    """读取当前会话中的研究状态和可追溯来源。"""
+    try:
+        return get_external_research_service().get_run(run_id, session_id, db)
+    except ExternalResearchNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post(
+    "/research/{run_id}/prepare-save",
+    response_model=AgentChatResponse,
+)
+async def prepare_external_research_save(
+    run_id: str,
+    request: ExternalResearchSaveRequest,
+    db: Session = Depends(get_db),
+):
+    """生成 Wiki 页面预览；页面仍需通过现有确认接口写入。"""
+    try:
+        response = get_external_research_service().prepare_save(
+            run_id,
+            request.session_id,
+            db,
+            get_agent(),
+            request.notebook,
+        )
+        return AgentChatResponse(
+            query=response.query,
+            response=response.response,
+            session_id=response.session_id,
+            intent=response.plan.intent.value if response.plan else None,
+            plan_summary=(
+                f"意图: {response.plan.intent.value}, 步骤: {len(response.plan.steps)}"
+                if response.plan
+                else None
+            ),
+            sources=response.sources,
+            confirmation_required=response.confirmation_required,
+            pending_action_id=response.pending_action_id,
+            action_preview=response.action_preview,
+            success=True,
+        )
+    except ExternalResearchNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ExternalResearchConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 

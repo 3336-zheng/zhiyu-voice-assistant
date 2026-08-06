@@ -4,12 +4,14 @@ Plan-and-Execute Agent - Responder 回复生成器
 """
 import time
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Callable, Dict, Any, List, Optional
 from datetime import datetime
 
 from backend.app.agent.models import (
     Plan, ExecutionResult, AgentResponse, IntentType
 )
+from backend.app.core.config import settings
+from backend.app.services.token_budget_service import limit_context
 
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,8 @@ class Responder:
         user_query: str,
         plan: Plan,
         execution_result: ExecutionResult,
-        context: List[Dict[str, str]] = None
+        context: List[Dict[str, str]] = None,
+        token_callback: Optional[Callable[[str], None]] = None,
     ) -> AgentResponse:
         """
         生成 Agent 最终回复
@@ -69,15 +72,34 @@ class Responder:
         """
         start_time = time.time()
 
+        emitted = False
+
+        def emit_token(chunk: str) -> None:
+            nonlocal emitted
+            emitted = True
+            if token_callback:
+                token_callback(chunk)
+
         # 优先使用 LLM 生成回复
         if self.llm_service:
             try:
-                response_text = self._generate_with_llm(user_query, plan, execution_result, context)
+                response_text = self._generate_with_llm(
+                    user_query,
+                    plan,
+                    execution_result,
+                    context,
+                    emit_token if token_callback else None,
+                )
             except Exception as e:
+                if emitted:
+                    raise
                 logger.warning(f"LLM 回复生成失败，降级到模板: {e}")
                 response_text = self._generate_with_template(plan, execution_result, user_query)
         else:
             response_text = self._generate_with_template(plan, execution_result, user_query)
+
+        if token_callback and not emitted and response_text:
+            emit_token(response_text)
 
         execution_time = int((time.time() - start_time) * 1000)
         sources = self._extract_sources(execution_result)
@@ -98,7 +120,8 @@ class Responder:
         user_query: str,
         plan: Plan,
         result: ExecutionResult,
-        context: List[Dict[str, str]] = None
+        context: List[Dict[str, str]] = None,
+        token_callback: Optional[Callable[[str], None]] = None,
     ) -> str:
         """
         使用 LLM 生成回复
@@ -139,7 +162,18 @@ class Responder:
 注意：如果原始查询和润色后的查询不同，请在回复开头简要说明您理解的查询意图（如"您想查询的是XXX"）。"""
         })
 
-        return self.llm_service.chat(messages=messages, temperature=0.7, max_tokens=1000)
+        if token_callback is None:
+            return self.llm_service.chat(messages=messages, temperature=0.7, max_tokens=1000)
+
+        chunks = []
+        for chunk in self.llm_service.stream_chat(
+            messages=messages,
+            temperature=0.7,
+            max_tokens=1000,
+        ):
+            chunks.append(chunk)
+            token_callback(chunk)
+        return "".join(chunks)
 
     def _build_result_summary(self, plan: Plan, result: ExecutionResult) -> str:
         """构建执行结果摘要"""
@@ -199,7 +233,21 @@ class Responder:
                 for i, item in enumerate(search_results[:5], 1):
                     lines.append(f"{i}. {item.get('title')}: {item.get('content', '')[:80]}...")
 
-        return "\n".join(lines) if lines else "执行完成。"
+        summary = "\n".join(lines) if lines else "执行完成。"
+        limited = limit_context(summary, settings.agent_tool_context_token_budget)
+        result.context_stats = {
+            "estimated_tokens": limited.estimated_tokens,
+            "used_tokens": limited.used_tokens,
+            "token_budget": limited.token_budget,
+            "truncated": limited.truncated,
+        }
+        if limited.truncated:
+            logger.warning(
+                "工具结果上下文已截断: estimated=%s budget=%s",
+                limited.estimated_tokens,
+                limited.token_budget,
+            )
+        return limited.text
 
     def _get_polished_query(self, plan: Plan) -> str:
         """从 plan 的 SearchParameters 中提取润色后的查询"""

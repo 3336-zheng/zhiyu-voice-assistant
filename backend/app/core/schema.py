@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 
 def _has_column(engine: Engine, table: str, column: str) -> bool:
@@ -158,6 +158,71 @@ def ensure_schema(engine: Engine) -> int:
                 },
             )
             current = 4
+
+        # 版本 5 增加增量会话摘要游标和 Agent 请求运行记录。
+        if current < 5:
+            if not _has_column(engine, "conversations", "summary_message_id"):
+                connection.execute(
+                    text("ALTER TABLE conversations ADD COLUMN summary_message_id INTEGER")
+                )
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_runs (
+                        request_id VARCHAR(128) PRIMARY KEY,
+                        session_id VARCHAR(64),
+                        query TEXT NOT NULL,
+                        intent VARCHAR(50),
+                        status VARCHAR(20) NOT NULL,
+                        execution_time_ms INTEGER,
+                        timeline JSON,
+                        retrieval_stats JSON,
+                        model_usage JSON,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO schema_migrations(version, description, applied_at) "
+                    "VALUES (:version, :description, :applied_at)"
+                ),
+                {
+                    "version": 5,
+                    "description": "增加增量会话摘要和 Agent 运行统计",
+                    "applied_at": datetime.now(timezone.utc),
+                },
+            )
+            current = 5
+
+        # 版本 6 增加可恢复的 Agent 运行状态和终态事件快照。
+        if current < 6:
+            agent_run_columns = {
+                "response": "TEXT",
+                "error": "TEXT",
+                "events": "JSON",
+                "runtime_snapshot": "JSON",
+                "updated_at": "DATETIME",
+                "completed_at": "DATETIME",
+            }
+            for column, column_type in agent_run_columns.items():
+                if not _has_column(engine, "agent_runs", column):
+                    connection.execute(
+                        text(f"ALTER TABLE agent_runs ADD COLUMN {column} {column_type}")
+                    )
+            connection.execute(
+                text(
+                    "INSERT INTO schema_migrations(version, description, applied_at) "
+                    "VALUES (:version, :description, :applied_at)"
+                ),
+                {
+                    "version": 6,
+                    "description": "增加 Agent 运行状态、事件和终态快照",
+                    "applied_at": datetime.now(timezone.utc),
+                },
+            )
+            current = 6
 
     if current > SCHEMA_VERSION:
         raise RuntimeError(

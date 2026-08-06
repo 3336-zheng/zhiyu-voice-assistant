@@ -15,6 +15,51 @@ export async function api(path, options = {}) {
   return payload
 }
 
+export async function streamSse(path, options = {}, onEvent = () => {}, onOpen = () => {}) {
+  const headers = { ...(options.headers || {}) }
+  if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json'
+  const response = await fetch(path, { ...options, headers })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    throw new Error(payload?.detail || `请求失败（${response.status}）`)
+  }
+  if (!response.body) throw new Error('浏览器不支持流式响应')
+  onOpen(response)
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  function processBlock(rawBlock) {
+    const block = rawBlock.replaceAll('\r', '')
+    if (!block || block.startsWith(':')) return
+    const dataLines = []
+    let eventType = 'message'
+    let eventId = ''
+    block.split('\n').forEach((line) => {
+      if (line.startsWith('event:')) eventType = line.slice(6).trim()
+      if (line.startsWith('id:')) eventId = line.slice(3).trim()
+      if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+    })
+    if (!dataLines.length) return
+    const payload = JSON.parse(dataLines.join('\n'))
+    onEvent(payload, { eventType, eventId })
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+    let boundary = buffer.indexOf('\n\n')
+    while (boundary >= 0) {
+      processBlock(buffer.slice(0, boundary))
+      buffer = buffer.slice(boundary + 2)
+      boundary = buffer.indexOf('\n\n')
+    }
+    if (done) break
+  }
+  if (buffer.trim()) processBlock(buffer)
+}
+
 export async function download(path, filename) {
   const response = await fetch(path)
   if (!response.ok) {

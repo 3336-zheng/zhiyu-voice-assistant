@@ -873,6 +873,82 @@ textarea {
   line-height: 1.2;
 }
 
+.ask-title-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.mcp-status-panel {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto 34px;
+  align-items: center;
+  gap: 20px;
+  min-height: 58px;
+  padding: 9px 28px;
+  background: #ffffff;
+  border-bottom: 1px solid var(--line);
+}
+
+.mcp-status-main,
+.mcp-status-main > div,
+.mcp-tool-map {
+  display: flex;
+  align-items: center;
+}
+
+.mcp-status-main {
+  gap: 9px;
+}
+
+.mcp-status-main > div {
+  align-items: flex-start;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.mcp-status-main strong,
+.mcp-tool-map strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-status-main small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  background: #a3ada8;
+  border-radius: 50%;
+}
+
+.status-dot.healthy {
+  background: #2f9b72;
+}
+
+.mcp-tool-map {
+  gap: 14px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.mcp-tool-map span {
+  display: grid;
+  gap: 1px;
+  max-width: 180px;
+}
+
+.mcp-tool-map strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+
 .ask-workspace,
 .capture-workspace {
   height: 100%;
@@ -1129,6 +1205,125 @@ textarea {
   white-space: nowrap;
 }
 
+.run-details {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.run-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 38px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.run-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.run-details summary > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.run-details[open] summary > span:last-child svg {
+  transform: rotate(180deg);
+}
+
+.run-detail-body {
+  padding: 8px 0 12px;
+}
+
+.retrieval-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.retrieval-metrics > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-right: 1px solid var(--line);
+}
+
+.retrieval-metrics > span:last-child {
+  border-right: 0;
+}
+
+.retrieval-metrics small,
+.run-footnote {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.retrieval-metrics strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.execution-timeline {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.execution-timeline > div {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  color: #56635d;
+  font-size: 11px;
+}
+
+.execution-timeline i {
+  width: 6px;
+  height: 6px;
+  background: #7eaa9a;
+  border-radius: 50%;
+}
+
+.execution-timeline i.failed {
+  background: var(--red);
+}
+
+.execution-timeline strong {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-footnote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  margin-top: 11px;
+  padding-top: 8px;
+  border-top: 1px solid #e7ece9;
+}
+
+.run-footnote strong {
+  color: #8a641f;
+}
+
+.run-footnote code {
+  max-width: 100%;
+  margin-left: auto;
+  overflow: hidden;
+  color: #7b8681;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .answer-loading {
   display: flex;
   align-items: center;
@@ -1174,6 +1369,11 @@ textarea {
   border: 0;
   border-radius: 6px;
   cursor: pointer;
+}
+
+.send-button.stop-button {
+  color: #ffffff;
+  background: #a33d36;
 }
 
 .session-code {
@@ -1551,6 +1751,23 @@ textarea {
     font-size: 22px;
   }
 
+  .ask-title-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .mcp-status-panel {
+    grid-template-columns: minmax(0, 1fr) 34px;
+    gap: 10px;
+    padding: 10px 16px;
+  }
+
+  .mcp-tool-map {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    flex-wrap: wrap;
+  }
+
   .conversation {
     width: calc(100% - 28px);
     padding-top: 20px;
@@ -1578,6 +1795,16 @@ textarea {
 
   .citation-item {
     grid-template-columns: 1fr;
+  }
+
+  .retrieval-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .retrieval-metrics > span,
+  .retrieval-metrics > span:last-child {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
   }
 
   .citation-list .audio-citation {

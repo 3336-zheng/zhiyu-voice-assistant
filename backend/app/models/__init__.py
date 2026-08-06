@@ -4,6 +4,7 @@
 from .audio import Audio
 from .retrieval import Retrieval
 from .conversation import Conversation, ConversationMessage
+from .observability import AgentRun
 from .wiki import (
     AgentPendingAction,
     ExternalResearchRun,
@@ -20,6 +21,7 @@ __all__ = [
     "Retrieval",
     "Conversation",
     "ConversationMessage",
+    "AgentRun",
     "WikiPage",
     "WikiPageRevision",
     "WikiPageLink",

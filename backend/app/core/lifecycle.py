@@ -89,7 +89,19 @@ async def _periodic_cleanup() -> None:
 async def lifespan(app: FastAPI):
     """初始化持久化资源，并统一管理后台任务的启停。"""
     logger.info("应用启动中...")
+    from .telemetry import configure_telemetry
+
+    configure_telemetry()
     _initialize_database()
+    from ..services.agent_runtime_service import get_agent_runtime_service
+
+    agent_runtime = get_agent_runtime_service()
+    try:
+        interrupted_runs = agent_runtime.recover_interrupted_runs()
+        if interrupted_runs:
+            logger.warning("已将 %s 个中断的 Agent 运行标记为失败", interrupted_runs)
+    except Exception as exc:
+        logger.warning("Agent 运行恢复失败（不影响启动）: %s", exc, exc_info=True)
     settings.get_upload_dir()
     _migrate_relative_paths()
 
@@ -118,6 +130,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("应用关闭中...")
+        await agent_runtime.shutdown()
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

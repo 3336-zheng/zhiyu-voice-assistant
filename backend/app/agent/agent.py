@@ -3,9 +3,10 @@ Plan-and-Execute Agent 主类（LangGraph 版本）
 整合 Planner、Executor、Responder，支持多轮对话记忆
 使用 LangGraph 状态机替代手写 if-else 编排
 """
+import asyncio
 import time
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Callable, Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone
 import uuid
 
@@ -17,8 +18,16 @@ from backend.app.agent.executor import get_executor
 from backend.app.agent.responder import get_responder
 from backend.app.core.database import SessionLocal
 from backend.app.core.config import settings
-from backend.app.core.observability import timed_stage
+from backend.app.core.observability import (
+    get_execution_timeline,
+    get_model_usage,
+    get_request_id,
+    record_timing,
+    timed_stage,
+)
+from backend.app.models.observability import AgentRun
 from backend.app.models.wiki import AgentPendingAction
+from backend.app.agent.events import AgentEventType, AgentRunCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +85,10 @@ class PlanExecuteAgent:
         self,
         user_query: str,
         session_id: Optional[str] = None,
-        db: Session = None
+        db: Session = None,
+        event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        raise_errors: bool = False,
     ) -> AgentResponse:
         """
         执行 Agent 主流程（使用 LangGraph 图状态机）
@@ -111,8 +123,29 @@ class PlanExecuteAgent:
                 except Exception as e:
                     logger.warning(f"获取对话历史失败: {e}")
 
-            with timed_stage("agent.plan"):
-                plan = self.planner.plan(user_query, context)
+            self._raise_if_cancelled(cancel_check)
+            self._emit_event(
+                event_callback,
+                AgentEventType.STAGE_STARTED,
+                {"stage": "agent.plan"},
+            )
+            plan_status = "completed"
+            try:
+                with timed_stage("agent.plan"):
+                    plan = await asyncio.to_thread(self.planner.plan, user_query, context)
+            except AgentRunCancelled:
+                plan_status = "cancelled"
+                raise
+            except Exception:
+                plan_status = "failed"
+                raise
+            finally:
+                self._emit_event(
+                    event_callback,
+                    AgentEventType.STAGE_COMPLETED,
+                    {"stage": "agent.plan", "status": plan_status},
+                )
+            self._raise_if_cancelled(cancel_check)
             if plan.intent in WRITE_INTENTS:
                 response = self._create_pending_response(
                     user_query,
@@ -122,33 +155,81 @@ class PlanExecuteAgent:
                     start_time,
                 )
             elif plan.intent in {IntentType.SEARCH, IntentType.SUMMARIZE}:
-                response = self._run_retrieval_graph(
+                response = await asyncio.to_thread(
+                    self._run_retrieval_graph,
                     user_query,
                     session_id,
                     context,
                     plan,
                     start_time,
+                    event_callback,
+                    cancel_check,
                 )
             else:
-                execution_result = await self.executor.execute(plan, db)
+                execution_result = await self.executor.execute(
+                    plan,
+                    db,
+                    event_callback=event_callback,
+                    cancel_check=cancel_check,
+                )
+                self._raise_if_cancelled(cancel_check)
+                self._emit_event(
+                    event_callback,
+                    AgentEventType.STAGE_STARTED,
+                    {"stage": "agent.generation"},
+                )
+                generation_status = "completed"
                 with timed_stage("agent.generation"):
-                    response = self.responder.generate_response(
-                        user_query,
-                        plan,
-                        execution_result,
-                        context,
-                    )
+                    try:
+                        response_kwargs = {}
+                        token_callback = self._token_callback(event_callback)
+                        if token_callback:
+                            response_kwargs["token_callback"] = token_callback
+                        response = await asyncio.to_thread(
+                            self.responder.generate_response,
+                            user_query,
+                            plan,
+                            execution_result,
+                            context,
+                            **response_kwargs,
+                        )
+                    except AgentRunCancelled:
+                        generation_status = "cancelled"
+                        raise
+                    except Exception:
+                        generation_status = "failed"
+                        raise
+                    finally:
+                        self._emit_event(
+                            event_callback,
+                            AgentEventType.STAGE_COMPLETED,
+                            {
+                                "stage": "agent.generation",
+                                "status": generation_status,
+                            },
+                        )
                 response.session_id = session_id
                 response.execution_time_ms = int((time.time() - start_time) * 1000)
 
+            self._raise_if_cancelled(cancel_check)
             self._save_conversation(user_query, response, db)
+            response.execution_time_ms = int((time.time() - start_time) * 1000)
+            record_timing("agent.total", response.execution_time_ms)
+            self._attach_observability(response)
+            self._save_agent_run(response, db)
 
             logger.info(f"Agent 处理完成，总耗时 {response.execution_time_ms}ms")
             return response
 
+        except AgentRunCancelled:
+            db.rollback()
+            raise
         except Exception as e:
+            if raise_errors:
+                db.rollback()
+                raise
             logger.error(f"Agent 执行失败: {e}", exc_info=True)
-            return AgentResponse(
+            response = AgentResponse(
                 query=user_query,
                 response=f"抱歉，处理您的请求时出现错误：{str(e)}",
                 session_id=session_id,
@@ -156,6 +237,10 @@ class PlanExecuteAgent:
                 timestamp=datetime.now(),
                 execution_time_ms=int((time.time() - start_time) * 1000)
             )
+            record_timing("agent.total", response.execution_time_ms or 0)
+            self._attach_observability(response)
+            self._save_agent_run(response, db)
+            return response
 
         finally:
             if should_close:
@@ -168,6 +253,8 @@ class PlanExecuteAgent:
         context: List[Dict[str, str]],
         plan: Plan,
         start_time: float,
+        event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> AgentResponse:
         """执行只读的 Agentic RAG 图。"""
         from backend.app.agent.graph import get_agent_graph
@@ -183,6 +270,7 @@ class PlanExecuteAgent:
             "execution_results": None,
             "relevance_grade": None,
             "refined_content": None,
+            "retrieval_stats": None,
             "answer": None,
             "sources": None,
             "confidence": 0.0,
@@ -193,6 +281,9 @@ class PlanExecuteAgent:
             "iter_count": 0,
             "max_iterations": settings.agent_max_iterations,
             "error": None,
+            "event_callback": event_callback,
+            "cancel_check": cancel_check,
+            "token_callback": self._token_callback(event_callback),
         }
         final_state = get_agent_graph().invoke(initial_state)
         with timed_stage("agent.evidence"):
@@ -217,9 +308,41 @@ class PlanExecuteAgent:
             external_research_available=(
                 evidence_status == "insufficient" and settings.mcp_research_available()
             ),
+            retrieval_stats=final_state.get("retrieval_stats"),
             timestamp=datetime.now(),
             execution_time_ms=int((time.time() - start_time) * 1000),
         )
+
+    @staticmethod
+    def _attach_observability(response: AgentResponse) -> None:
+        """把请求级追踪快照附加到响应，供前端和持久化使用。"""
+        response.request_id = get_request_id()
+        if settings.observability_enabled:
+            response.timeline = get_execution_timeline()
+            response.model_usage = get_model_usage()
+
+    @staticmethod
+    def _save_agent_run(response: AgentResponse, db: Session) -> None:
+        """持久化运行统计；失败不影响主请求。"""
+        if not settings.observability_enabled or not response.request_id:
+            return
+        try:
+            run = db.get(AgentRun, response.request_id)
+            if run is None:
+                run = AgentRun(request_id=response.request_id, query=response.query)
+                db.add(run)
+            run.session_id = response.session_id
+            run.query = response.query
+            run.intent = response.plan.intent.value if response.plan else None
+            run.status = "success" if response.confidence > 0 else "failed"
+            run.execution_time_ms = response.execution_time_ms
+            run.timeline = response.timeline
+            run.retrieval_stats = response.retrieval_stats
+            run.model_usage = response.model_usage
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.warning("保存 Agent 运行统计失败: %s", exc)
 
     def _create_pending_response(
         self,
@@ -371,6 +494,7 @@ class PlanExecuteAgent:
         user_query: str,
         response: AgentResponse,
         db: Session,
+        summarize: bool = True,
     ) -> None:
         """保存一轮对话及其结构化来源和确认状态。"""
         if not self.memory_service:
@@ -383,9 +507,38 @@ class PlanExecuteAgent:
                 db=db,
             )
             self._save_assistant_message(response, db)
-            self.memory_service.summarize_if_needed(response.session_id, db=db)
+            if summarize:
+                self.memory_service.summarize_if_needed(response.session_id, db=db)
         except Exception as exc:
             logger.warning("保存对话历史失败: %s", exc)
+
+    @staticmethod
+    def _emit_event(
+        event_callback: Optional[Callable[[str, Dict[str, Any]], None]],
+        event_type: AgentEventType,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if event_callback:
+            event_callback(event_type.value, data or {})
+
+    @staticmethod
+    def _token_callback(
+        event_callback: Optional[Callable[[str, Dict[str, Any]], None]],
+    ) -> Optional[Callable[[str], None]]:
+        if event_callback is None:
+            return None
+
+        def emit(chunk: str) -> None:
+            event_callback(AgentEventType.TOKEN.value, {"content": chunk})
+
+        return emit
+
+    @staticmethod
+    def _raise_if_cancelled(
+        cancel_check: Optional[Callable[[], bool]],
+    ) -> None:
+        if cancel_check and cancel_check():
+            raise AgentRunCancelled("Agent 运行已取消")
 
     def _save_assistant_message(self, response: AgentResponse, db: Session) -> None:
         if not self.memory_service:

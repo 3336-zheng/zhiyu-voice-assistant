@@ -13,6 +13,7 @@ class Conversation(Base):
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String(64), unique=True, index=True, nullable=False)
     summary = Column(Text)  # 会话摘要（用于长对话压缩）
+    summary_message_id = Column(Integer)  # 摘要已覆盖到的原始消息 ID
     message_count = Column(Integer, default=0)  # 消息计数
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

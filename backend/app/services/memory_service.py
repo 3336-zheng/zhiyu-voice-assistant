@@ -154,9 +154,14 @@ class MemoryService:
                 })
 
             # 获取最近的消息
-            db_messages = db.query(ConversationMessage).filter(
+            history_query = db.query(ConversationMessage).filter(
                 ConversationMessage.session_id == session_id
-            ).order_by(
+            )
+            if conversation and conversation.summary_message_id:
+                history_query = history_query.filter(
+                    ConversationMessage.id > conversation.summary_message_id
+                )
+            db_messages = history_query.order_by(
                 ConversationMessage.created_at.desc()
             ).limit(limit).all()
 
@@ -219,15 +224,21 @@ class MemoryService:
             if not conversation:
                 return
 
-            if (conversation.message_count or 0) < self.summary_threshold:
-                return
-
-            # 获取所有消息
-            messages = db.query(ConversationMessage).filter(
+            # 只读取尚未纳入摘要的原始消息。
+            message_query = db.query(ConversationMessage).filter(
                 ConversationMessage.session_id == session_id
-            ).order_by(ConversationMessage.created_at).all()
+            )
+            if conversation.summary_message_id:
+                message_query = message_query.filter(
+                    ConversationMessage.id > conversation.summary_message_id
+                )
+            messages = message_query.order_by(ConversationMessage.id).all()
 
             if len(messages) < self.summary_threshold:
+                return
+
+            messages_to_summarize = messages[:-5]
+            if not messages_to_summarize:
                 return
 
             # 生成摘要
@@ -238,31 +249,33 @@ class MemoryService:
                 # 构建待摘要的对话文本
                 conversation_text = "\n".join([
                     f"{msg.role}: {msg.content}"
-                    for msg in messages[:-5]  # 保留最近 5 条消息
+                    for msg in messages_to_summarize
                 ])
+                previous_summary = conversation.summary or "（无）"
 
                 summary_messages = [
                     {
                         "role": "system",
-                        "content": "请对以下对话历史生成简洁的摘要，保留关键信息和上下文。"
+                        "content": (
+                            "请增量更新对话摘要，保留用户目标、已确认事实、关键结论和未完成事项。"
+                            "不要虚构内容。"
+                        )
                     },
                     {
                         "role": "user",
-                        "content": conversation_text
+                        "content": f"已有摘要：\n{previous_summary}\n\n新增对话：\n{conversation_text}"
                     }
                 ]
 
                 summary = llm_service.chat(summary_messages, max_tokens=300)
                 conversation.summary = summary
-
-                # 删除已摘要的旧消息（保留最近 5 条）
-                old_messages = messages[:-5]
-                for msg in old_messages:
-                    db.delete(msg)
-
-                conversation.message_count = len(messages) - len(old_messages) + 1
+                conversation.summary_message_id = messages_to_summarize[-1].id
                 db.commit()
-                logger.info(f"会话 {session_id} 已进行摘要压缩，保留 {conversation.message_count} 条消息")
+                logger.info(
+                    "会话 %s 已增量摘要到消息 %s，原始消息完整保留",
+                    session_id,
+                    conversation.summary_message_id,
+                )
 
             except Exception as e:
                 logger.error(f"摘要压缩失败: {e}")

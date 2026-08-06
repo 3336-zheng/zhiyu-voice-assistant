@@ -2,7 +2,7 @@
 
 import unittest
 
-from backend.app.services.page_index_service import PageIndexService
+from backend.app.services.page_index_service import PageIndexService, split_parent_into_children
 
 
 class FakeCollection:
@@ -64,17 +64,19 @@ class PageIndexServiceTestCase(unittest.TestCase):
         result = self.service.index_page(page)
         self.assertEqual(result["status"], "indexed")
         add_call = self.service.chroma_service.collection.add_calls[-1]
-        self.assertTrue(add_call["ids"])
-        for index, chunk_id in enumerate(add_call["ids"]):
-            self.assertEqual(
-                chunk_id,
-                f"page:{page['id']}:revision:3:chunk:{index}",
-            )
+        parent_ids = [
+            chunk_id for chunk_id in add_call["ids"]
+            if ":child:" not in chunk_id
+        ]
+        self.assertTrue(parent_ids)
+        for index, chunk_id in enumerate(parent_ids):
+            self.assertEqual(chunk_id, f"page:{page['id']}:revision:3:chunk:{index}")
         metadata = add_call["metadatas"][0]
         self.assertEqual(metadata["page_id"], page["id"])
         self.assertEqual(metadata["page_revision"], 3)
         self.assertEqual(metadata["page_title"], "RAG 基础")
         self.assertIn("section_path", metadata)
+        self.assertEqual(metadata["chunk_level"], "parent")
 
         old_ids = set(self.service.bm25_service.corpus)
         page["revision"] = 4
@@ -88,7 +90,13 @@ class PageIndexServiceTestCase(unittest.TestCase):
             {"page_id": page["id"]},
         )
 
+    def test_parent_child_split_respects_window_and_overlap(self):
+        text = "第一段。" * 80
+        children = split_parent_into_children(text, max_chars=120, overlap_chars=20)
+        self.assertGreater(len(children), 1)
+        self.assertTrue(all(0 < len(child) <= 120 for child in children))
+        self.assertEqual(split_parent_into_children("短内容", 120, 20), [])
+
 
 if __name__ == "__main__":
     unittest.main()
-

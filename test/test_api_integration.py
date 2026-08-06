@@ -237,7 +237,7 @@ class APIIntegrationTestCase(unittest.TestCase):
 
         payload = {"session_id": "integration-session"}
         endpoint = f"/agent/actions/{pending.pending_action_id}/confirm"
-        with patch("backend.app.api.agent.get_agent", return_value=agent):
+        with patch("backend.app.api.agent_actions.get_agent", return_value=agent):
             first = self.client.post(endpoint, json=payload)
             second = self.client.post(endpoint, json=payload)
 

@@ -3,7 +3,7 @@ Agent 数据模型定义（课堂学习场景聚焦版）
 """
 from enum import Enum
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 
@@ -56,6 +56,8 @@ class ToolResult(BaseModel):
     result: Any
     error_message: Optional[str] = None
     execution_time_ms: Optional[int] = None
+    context_tokens: int = 0
+    context_truncated: bool = False
 
 
 class ExecutionResult(BaseModel):
@@ -67,6 +69,7 @@ class ExecutionResult(BaseModel):
     success: bool
     execution_log: List[str]
     final_data: Dict[str, Any]  # 聚合的数据
+    context_stats: Dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentResponse(BaseModel):
@@ -86,6 +89,10 @@ class AgentResponse(BaseModel):
     evidence_source_count: int = 0
     evidence_reason: Optional[str] = None
     external_research_available: bool = False
+    request_id: Optional[str] = None
+    timeline: List[Dict[str, Any]] = Field(default_factory=list)
+    retrieval_stats: Optional[Dict[str, Any]] = None
+    model_usage: Optional[Dict[str, Any]] = None
     timestamp: datetime
     execution_time_ms: Optional[int] = None
 

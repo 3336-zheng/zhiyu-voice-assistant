@@ -3,11 +3,13 @@
 """
 import json
 import os
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
     # 应用配置
     app_name: str = "智语端侧智能语音笔记助手"
     app_version: str = "1.0.0"
@@ -42,8 +44,20 @@ class Settings(BaseSettings):
     bm25_top_k: int = 20  # BM25 检索数量
     embedding_top_k: int = 20  # Embedding 检索数量
 
+    # RAG v2 配置。关闭后继续使用原有的逐查询完整检索链路。
+    rag_v2_enabled: bool = True
+    rag_parent_child_enabled: bool = True
+    rag_child_chunk_chars: int = 360
+    rag_child_chunk_overlap_chars: int = 60
+    rag_context_token_budget: int = 3000
+    rag_final_top_k: int = 8
+
     # Agent 配置（新增）
     agent_max_iterations: int = 5  # Agent 最大执行轮数
+    agent_run_timeout_seconds: float = 180.0
+    agent_event_buffer_size: int = 2000
+    agent_run_retention_seconds: int = 3600
+    agent_tool_context_token_budget: int = 4000
 
     # ASR 引擎配置（whisper=本地, dashscope=百炼API）
     asr_provider: str = "whisper"  # 默认使用本地 Whisper
@@ -59,6 +73,15 @@ class Settings(BaseSettings):
     llm_model: str = "deepseek-chat"
     llm_max_tokens: int = 2048
     llm_temperature: float = 0.7
+    llm_timeout_seconds: float = 60.0
+    llm_fallback_enabled: bool = False
+    llm_fallback_api_key: str = ""
+    llm_fallback_api_url: str = ""
+    llm_fallback_model: str = ""
+    llm_input_cost_per_million: float = 0.0
+    llm_output_cost_per_million: float = 0.0
+    llm_fallback_input_cost_per_million: float = 0.0
+    llm_fallback_output_cost_per_million: float = 0.0
 
     # 对话记忆配置（新增）
     memory_max_history: int = 20  # 最大保留对话轮数
@@ -76,6 +99,11 @@ class Settings(BaseSettings):
     langfuse_host: str = ""  # Langfuse 服务地址
     langfuse_public_key: str = ""  # Langfuse 公钥
     langfuse_secret_key: str = ""  # Langfuse 私钥
+    observability_enabled: bool = True
+    observability_capture_content: bool = False
+    otel_enabled: bool = False
+    otel_service_name: str = "zhiyu-wiki"
+    otel_exporter_endpoint: str = ""
 
     # CORS 配置
     cors_origins: str = "*"  # 逗号分隔的域名列表，如 "https://example.com,https://app.example.com"
@@ -118,10 +146,6 @@ class Settings(BaseSettings):
         if self.cors_origins == "*":
             return ["*"]
         return [o.strip() for o in self.cors_origins.split(",")]
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
     def get_allowed_extensions(self) -> list:
         """获取允许的文件扩展名列表"""

@@ -5,9 +5,12 @@ LLM 服务
 """
 import json
 import logging
+import time
 from typing import List, Dict, Any, Optional, Generator
 from openai import OpenAI
 from backend.app.core.config import settings
+from backend.app.core.observability import get_request_id, record_model_usage, timed_stage
+from backend.app.agent.events import AgentRunCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +26,19 @@ class LLMService:
         self.client = OpenAI(
             api_key=settings.llm_api_key,
             base_url=settings.llm_api_url,
+            timeout=settings.llm_timeout_seconds,
         )
         self.model = settings.llm_model
         self.max_tokens = settings.llm_max_tokens
         self.temperature = settings.llm_temperature
+        self.fallback_client = None
+        self.fallback_model = settings.llm_fallback_model.strip()
+        if settings.llm_fallback_enabled and self.fallback_model:
+            self.fallback_client = OpenAI(
+                api_key=settings.llm_fallback_api_key or settings.llm_api_key,
+                base_url=settings.llm_fallback_api_url or settings.llm_api_url,
+                timeout=settings.llm_timeout_seconds,
+            )
 
         # Langfuse 可观测
         self._langfuse = None
@@ -39,7 +51,12 @@ class LLMService:
             langfuse_public_key = getattr(settings, 'langfuse_public_key', None)
             langfuse_secret_key = getattr(settings, 'langfuse_secret_key', None)
 
-            if langfuse_host and langfuse_public_key and langfuse_secret_key:
+            if (
+                settings.observability_enabled
+                and langfuse_host
+                and langfuse_public_key
+                and langfuse_secret_key
+            ):
                 from langfuse import Langfuse
                 self._langfuse = Langfuse(
                     host=langfuse_host,
@@ -52,6 +69,161 @@ class LLMService:
         except Exception as e:
             logger.warning(f"Langfuse 初始化失败: {e}")
             self._langfuse = None
+
+    @staticmethod
+    def _is_retryable_error(exc: Exception) -> bool:
+        """只对连接、超时、限流和服务端错误执行故障转移。"""
+        status_code = getattr(exc, "status_code", None)
+        if status_code == 429 or (isinstance(status_code, int) and status_code >= 500):
+            return True
+        return type(exc).__name__ in {
+            "APIConnectionError",
+            "APITimeoutError",
+            "RateLimitError",
+            "InternalServerError",
+        }
+
+    @staticmethod
+    def _usage_values(response: Any) -> tuple[int, int, int]:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return 0, 0, 0
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+        return prompt_tokens, completion_tokens, total_tokens
+
+    @staticmethod
+    def _estimated_cost(
+        prompt_tokens: int,
+        completion_tokens: int,
+        fallback_used: bool,
+    ) -> float:
+        if fallback_used:
+            input_rate = settings.llm_fallback_input_cost_per_million
+            output_rate = settings.llm_fallback_output_cost_per_million
+        else:
+            input_rate = settings.llm_input_cost_per_million
+            output_rate = settings.llm_output_cost_per_million
+        return (
+            prompt_tokens * input_rate + completion_tokens * output_rate
+        ) / 1_000_000
+
+    def _record_attempt(
+        self,
+        *,
+        model: str,
+        provider: str,
+        duration_ms: float,
+        fallback_used: bool,
+        response: Any = None,
+        error: Optional[Exception] = None,
+    ) -> None:
+        prompt_tokens, completion_tokens, total_tokens = self._usage_values(response)
+        record_model_usage(
+            provider=provider,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            estimated_cost=self._estimated_cost(
+                prompt_tokens,
+                completion_tokens,
+                fallback_used,
+            ),
+            duration_ms=duration_ms,
+            fallback_used=fallback_used,
+            success=error is None,
+            error_type=type(error).__name__ if error else None,
+        )
+
+    def _chat_completion(self, kwargs: Dict[str, Any]) -> tuple[Any, str, bool]:
+        attempts = [(self.client, self.model, "primary", False)]
+        if self.fallback_client is not None:
+            attempts.append((self.fallback_client, self.fallback_model, "fallback", True))
+
+        last_error: Optional[Exception] = None
+        for index, (client, model, provider, fallback_used) in enumerate(attempts):
+            attempt_kwargs = {**kwargs, "model": model}
+            started = time.perf_counter()
+            try:
+                with timed_stage(f"llm.{provider}"):
+                    response = client.chat.completions.create(**attempt_kwargs)
+                duration_ms = (time.perf_counter() - started) * 1000
+                self._record_attempt(
+                    model=model,
+                    provider=provider,
+                    duration_ms=duration_ms,
+                    fallback_used=fallback_used,
+                    response=response,
+                )
+                return response, model, fallback_used
+            except AgentRunCancelled:
+                raise
+            except Exception as exc:
+                duration_ms = (time.perf_counter() - started) * 1000
+                self._record_attempt(
+                    model=model,
+                    provider=provider,
+                    duration_ms=duration_ms,
+                    fallback_used=fallback_used,
+                    error=exc,
+                )
+                last_error = exc
+                can_fallback = index == 0 and len(attempts) > 1 and self._is_retryable_error(exc)
+                if not can_fallback:
+                    break
+                logger.warning("主模型暂时不可用，切换备用模型: %s", type(exc).__name__)
+        raise last_error or RuntimeError("LLM 调用失败")
+
+    def _trace_langfuse(
+        self,
+        trace_name: Optional[str],
+        messages: List[Dict[str, str]],
+        content: str,
+        model: str,
+        duration_ms: int,
+        response: Any,
+        fallback_used: bool,
+    ) -> None:
+        if not self._langfuse or not trace_name:
+            return
+        try:
+            capture_content = settings.observability_capture_content
+            prompt_tokens, completion_tokens, total_tokens = self._usage_values(response)
+            metadata = {
+                "request_id": get_request_id(),
+                "model": model,
+                "duration_ms": duration_ms,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "fallback_used": fallback_used,
+                "content_captured": capture_content,
+            }
+            if hasattr(self._langfuse, "start_generation"):
+                generation = self._langfuse.start_generation(
+                    name=trace_name,
+                    input=messages[-1].get("content", "") if messages and capture_content else None,
+                    output=content if capture_content else None,
+                    metadata=metadata,
+                    model=model,
+                    usage_details={
+                        "input": prompt_tokens,
+                        "output": completion_tokens,
+                        "total": total_tokens,
+                    },
+                )
+                generation.end()
+            else:
+                self._langfuse.trace(
+                    name=trace_name,
+                    input=messages[-1].get("content", "") if messages and capture_content else None,
+                    output=content if capture_content else None,
+                    metadata=metadata,
+                )
+        except Exception as exc:
+            logger.warning("Langfuse trace 失败: %s", exc)
 
     def chat(
         self,
@@ -74,42 +246,32 @@ class LLMService:
         Returns:
             str: 模型回复内容
         """
-        import time
         start_time = time.time()
 
         try:
             kwargs = {
-                "model": self.model,
                 "messages": messages,
-                "temperature": temperature or self.temperature,
-                "max_tokens": max_tokens or self.max_tokens,
+                "temperature": self.temperature if temperature is None else temperature,
+                "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
             }
             if response_format:
                 kwargs["response_format"] = response_format
 
-            response = self.client.chat.completions.create(**kwargs)
+            response, used_model, fallback_used = self._chat_completion(kwargs)
             content = response.choices[0].message.content
             duration_ms = int((time.time() - start_time) * 1000)
 
             logger.debug(f"LLM 调用成功，回复长度: {len(content)}，耗时: {duration_ms}ms")
 
-            # Langfuse trace
-            if self._langfuse and trace_name:
-                try:
-                    self._langfuse.trace(
-                        name=trace_name,
-                        input=messages[-1].get("content", "") if messages else "",
-                        output=content,
-                        metadata={
-                            "model": self.model,
-                            "temperature": temperature or self.temperature,
-                            "max_tokens": max_tokens or self.max_tokens,
-                            "duration_ms": duration_ms,
-                            "tokens_used": response.usage.total_tokens if response.usage else None
-                        }
-                    )
-                except Exception as e:
-                    logger.warning(f"Langfuse trace 失败: {e}")
+            self._trace_langfuse(
+                trace_name,
+                messages,
+                content,
+                used_model,
+                duration_ms,
+                response,
+                fallback_used,
+            )
 
             return content
 
@@ -164,24 +326,58 @@ class LLMService:
         Yields:
             str: 增量 token
         """
-        try:
+        attempts = [(self.client, self.model, "primary", False)]
+        if self.fallback_client is not None:
+            attempts.append((self.fallback_client, self.fallback_model, "fallback", True))
+
+        for index, (client, model, provider, fallback_used) in enumerate(attempts):
             kwargs = {
-                "model": self.model,
+                "model": model,
                 "messages": messages,
-                "temperature": temperature or self.temperature,
-                "max_tokens": max_tokens or self.max_tokens,
-                "stream": True
+                "temperature": self.temperature if temperature is None else temperature,
+                "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+                "stream": True,
+                "stream_options": {"include_usage": True},
             }
-
-            stream = self.client.chat.completions.create(**kwargs)
-
-            for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
-
-        except Exception as e:
-            logger.error(f"LLM 流式调用失败: {e}")
-            yield f"[错误] {str(e)}"
+            started = time.perf_counter()
+            emitted = False
+            final_chunk = None
+            try:
+                stream = client.chat.completions.create(**kwargs)
+                for chunk in stream:
+                    final_chunk = chunk
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        emitted = True
+                        yield chunk.choices[0].delta.content
+                self._record_attempt(
+                    model=model,
+                    provider=provider,
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                    fallback_used=fallback_used,
+                    response=final_chunk,
+                )
+                return
+            except AgentRunCancelled:
+                raise
+            except Exception as exc:
+                self._record_attempt(
+                    model=model,
+                    provider=provider,
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                    fallback_used=fallback_used,
+                    error=exc,
+                )
+                can_fallback = (
+                    not emitted
+                    and index == 0
+                    and len(attempts) > 1
+                    and self._is_retryable_error(exc)
+                )
+                if can_fallback:
+                    logger.warning("主模型流尚未开始，切换备用模型: %s", type(exc).__name__)
+                    continue
+                logger.error("LLM 流式调用失败: %s", exc)
+                raise RuntimeError(f"LLM 流式服务调用失败: {exc}") from exc
 
     def generate_summary(self, content: str, max_length: int = 200) -> str:
         """

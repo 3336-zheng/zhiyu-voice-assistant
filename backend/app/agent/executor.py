@@ -2,24 +2,23 @@
 Plan-and-Execute Agent - Executor 执行器（课堂学习场景聚焦版）
 执行计划中的工具调用，支持无依赖步骤并行执行
 """
-import time
 import asyncio
-from typing import Dict, Any, List, Optional, Set
-from datetime import datetime
+import time
+from typing import Callable, Dict, Any, List, Optional, Set
 from concurrent.futures import ThreadPoolExecutor as ThreadExecutor
 import logging
 
 from sqlalchemy.orm import Session
 
 from backend.app.agent.models import (
-    Plan, PlanStep, ToolName, IntentType,
+    Plan, PlanStep, ToolName,
     ToolResult, ExecutionResult,
-    SearchParameters, CreateNoteParameters, UpdateNoteParameters
 )
-from backend.app.services.hybrid_retrieval_service import get_hybrid_retrieval_service
-from backend.app.services.page_service import get_page_service
-from backend.app.models.wiki import ExternalResearchRun, WikiPageSource
 from backend.app.core.database import SessionLocal
+from backend.app.core.config import settings
+from backend.app.agent.events import AgentEventType, AgentRunCancelled
+from backend.app.agent.tool_registry import AgentToolRegistry
+from backend.app.services.token_budget_service import limit_context
 
 logger = logging.getLogger(__name__)
 
@@ -37,21 +36,16 @@ class Executor:
     负责执行计划中的工具调用
     """
 
-    def __init__(self):
+    def __init__(self, tool_registry: Optional[AgentToolRegistry] = None):
         """初始化执行器"""
         self._thread_pool = ThreadExecutor(max_workers=4)
-        self.tools = {
-            ToolName.SEARCH_KNOWLEDGE_BASE: self.search_knowledge_base,
-            ToolName.CREATE_NOTE: self.create_note,
-            ToolName.UPDATE_NOTE: self.update_note,
-            ToolName.DELETE_NOTE: self.delete_note,
-            ToolName.LIST_NOTES: self.list_notes,
-            ToolName.GET_CURRENT_TIME: self.get_current_time,
-            ToolName.SUMMARIZE_TEXT: self.summarize_text,
-        }
+        self.tool_registry = tool_registry or AgentToolRegistry()
+        self.tools = dict(self.tool_registry.handlers)
 
-        # 初始化服务
-        self.hybrid_retrieval = get_hybrid_retrieval_service()
+    @property
+    def hybrid_retrieval(self):
+        """延迟加载混合检索，避免非检索意图依赖本地模型目录。"""
+        return self.tool_registry.hybrid_retrieval
 
     def _build_waves(self, steps: List[PlanStep]) -> List[List[PlanStep]]:
         """
@@ -91,7 +85,13 @@ class Executor:
 
         return waves
 
-    async def execute(self, plan: Plan, db: Session = None) -> ExecutionResult:
+    async def execute(
+        self,
+        plan: Plan,
+        db: Session = None,
+        event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> ExecutionResult:
         """
         执行计划（无依赖步骤并行执行）
 
@@ -119,9 +119,17 @@ class Executor:
             logger.info(f"计划共 {len(plan.steps)} 步，分为 {len(waves)} 个执行波次")
 
             for wave_idx, wave in enumerate(waves):
+                self._raise_if_cancelled(cancel_check)
                 if len(wave) == 1:
                     # 单步骤直接执行
-                    result = self._execute_step(wave[0], db, results, plan.original_query)
+                    result = self._execute_step(
+                        wave[0],
+                        db,
+                        results,
+                        plan.original_query,
+                        event_callback,
+                        cancel_check,
+                    )
                     results.append(result)
                     execution_log.append(result_to_log(wave[0], result))
                     if result.success:
@@ -136,7 +144,11 @@ class Executor:
                             loop.run_in_executor(
                                 self._thread_pool,
                                 self._execute_step_concurrent,
-                                step, results, plan.original_query
+                                step,
+                                results,
+                                plan.original_query,
+                                event_callback,
+                                cancel_check,
                             )
                         )
                     wave_results = await asyncio.gather(*futures)
@@ -157,7 +169,18 @@ class Executor:
                 total_steps=len(plan.steps),
                 success=success,
                 execution_log=execution_log,
-                final_data=final_data
+                final_data=final_data,
+                context_stats={
+                    "tool_results": [
+                        {
+                            "step_id": item.step_id,
+                            "tool_name": item.tool_name.value,
+                            "context_tokens": item.context_tokens,
+                            "truncated": item.context_truncated,
+                        }
+                        for item in results
+                    ]
+                },
             )
 
         finally:
@@ -188,7 +211,12 @@ class Executor:
                     )
                     if dep_result and dep_result.result:
                         # 将检索结果格式化为文本
-                        resolved[key] = self._format_search_results(dep_result.result)
+                        formatted = self._format_search_results(dep_result.result)
+                        limited = limit_context(
+                            formatted,
+                            settings.agent_tool_context_token_budget,
+                        )
+                        resolved[key] = limited.text
                         logger.info(f"解析引用 {value} → 获取到 {len(resolved[key])} 字符, 前100字: {resolved[key][:100]}")
                     else:
                         resolved[key] = ""
@@ -231,7 +259,15 @@ class Executor:
             return "\n\n".join(parts)
         return str(search_result)
 
-    def _execute_step(self, step: PlanStep, db: Session, prev_results: List[ToolResult], original_query: str = "") -> ToolResult:
+    def _execute_step(
+        self,
+        step: PlanStep,
+        db: Session,
+        prev_results: List[ToolResult],
+        original_query: str = "",
+        event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> ToolResult:
         """
         执行单个步骤（同步，在当前线程）
 
@@ -246,30 +282,48 @@ class Executor:
         """
         step_start = time.time()
         logger.info(f"执行步骤 {step.step_id}: {step.tool_name.value}")
+        self._raise_if_cancelled(cancel_check)
+        self._emit_tool_event(event_callback, AgentEventType.TOOL_STARTED, step)
 
         # 检查依赖
         if step.depends_on:
             for dep_id in step.depends_on:
                 dep_result = next((r for r in prev_results if r.step_id == dep_id and r.success), None)
                 if not dep_result:
-                    return ToolResult(
+                    tool_result = ToolResult(
                         step_id=step.step_id,
                         tool_name=step.tool_name,
                         success=False,
                         result=None,
-                        error_message=f"依赖步骤 {dep_id} 未成功执行"
+                        error_message=f"依赖步骤 {dep_id} 未成功执行",
+                        execution_time_ms=int((time.time() - step_start) * 1000),
                     )
+                    self._emit_tool_event(
+                        event_callback,
+                        AgentEventType.TOOL_COMPLETED,
+                        step,
+                        tool_result,
+                    )
+                    return tool_result
 
         try:
             tool_func = self.tools.get(step.tool_name)
             if not tool_func:
-                return ToolResult(
+                tool_result = ToolResult(
                     step_id=step.step_id,
                     tool_name=step.tool_name,
                     success=False,
                     result=None,
-                    error_message=f"未知工具: {step.tool_name.value}"
+                    error_message=f"未知工具: {step.tool_name.value}",
+                    execution_time_ms=int((time.time() - step_start) * 1000),
                 )
+                self._emit_tool_event(
+                    event_callback,
+                    AgentEventType.TOOL_COMPLETED,
+                    step,
+                    tool_result,
+                )
+                return tool_result
 
             # 解析参数中的步骤结果引用（如 $step_1_results）
             resolved_params = self._resolve_step_references(step.parameters, prev_results)
@@ -279,17 +333,29 @@ class Executor:
             else:
                 result = tool_func(resolved_params, db)
             step_time = int((time.time() - step_start) * 1000)
-            return ToolResult(
+            context = limit_context(result, settings.agent_tool_context_token_budget)
+            tool_result = ToolResult(
                 step_id=step.step_id,
                 tool_name=step.tool_name,
                 success=True,
                 result=result,
-                execution_time_ms=step_time
+                execution_time_ms=step_time,
+                context_tokens=context.used_tokens,
+                context_truncated=context.truncated,
             )
+            self._emit_tool_event(
+                event_callback,
+                AgentEventType.TOOL_COMPLETED,
+                step,
+                tool_result,
+            )
+            return tool_result
+        except AgentRunCancelled:
+            raise
         except Exception as e:
             step_time = int((time.time() - step_start) * 1000)
             logger.error(f"工具执行失败: {step.tool_name.value}, 错误: {e}")
-            return ToolResult(
+            tool_result = ToolResult(
                 step_id=step.step_id,
                 tool_name=step.tool_name,
                 success=False,
@@ -297,38 +363,70 @@ class Executor:
                 error_message=str(e),
                 execution_time_ms=step_time
             )
+            self._emit_tool_event(
+                event_callback,
+                AgentEventType.TOOL_COMPLETED,
+                step,
+                tool_result,
+            )
+            return tool_result
 
-    def _execute_step_concurrent(self, step: PlanStep, prev_results: List[ToolResult], original_query: str = "") -> ToolResult:
+    def _execute_step_concurrent(
+        self,
+        step: PlanStep,
+        prev_results: List[ToolResult],
+        original_query: str = "",
+        event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> ToolResult:
         """
         并发执行单个步骤（独立线程，使用独立 db session）
         """
         step_start = time.time()
         logger.info(f"[并发] 执行步骤 {step.step_id}: {step.tool_name.value}")
+        self._raise_if_cancelled(cancel_check)
+        self._emit_tool_event(event_callback, AgentEventType.TOOL_STARTED, step)
 
         # 检查依赖
         if step.depends_on:
             for dep_id in step.depends_on:
                 dep_result = next((r for r in prev_results if r.step_id == dep_id and r.success), None)
                 if not dep_result:
-                    return ToolResult(
+                    tool_result = ToolResult(
                         step_id=step.step_id,
                         tool_name=step.tool_name,
                         success=False,
                         result=None,
-                        error_message=f"依赖步骤 {dep_id} 未成功执行"
+                        error_message=f"依赖步骤 {dep_id} 未成功执行",
+                        execution_time_ms=int((time.time() - step_start) * 1000),
                     )
+                    self._emit_tool_event(
+                        event_callback,
+                        AgentEventType.TOOL_COMPLETED,
+                        step,
+                        tool_result,
+                    )
+                    return tool_result
 
         db = SessionLocal()
         try:
             tool_func = self.tools.get(step.tool_name)
             if not tool_func:
-                return ToolResult(
+                tool_result = ToolResult(
                     step_id=step.step_id,
                     tool_name=step.tool_name,
                     success=False,
                     result=None,
-                    error_message=f"未知工具: {step.tool_name.value}"
+                    error_message=f"未知工具: {step.tool_name.value}",
+                    execution_time_ms=int((time.time() - step_start) * 1000),
                 )
+                self._emit_tool_event(
+                    event_callback,
+                    AgentEventType.TOOL_COMPLETED,
+                    step,
+                    tool_result,
+                )
+                return tool_result
 
             # 解析参数中的步骤结果引用（如 $step_1_results）
             resolved_params = self._resolve_step_references(step.parameters, prev_results)
@@ -338,17 +436,29 @@ class Executor:
             else:
                 result = tool_func(resolved_params, db)
             step_time = int((time.time() - step_start) * 1000)
-            return ToolResult(
+            context = limit_context(result, settings.agent_tool_context_token_budget)
+            tool_result = ToolResult(
                 step_id=step.step_id,
                 tool_name=step.tool_name,
                 success=True,
                 result=result,
-                execution_time_ms=step_time
+                execution_time_ms=step_time,
+                context_tokens=context.used_tokens,
+                context_truncated=context.truncated,
             )
+            self._emit_tool_event(
+                event_callback,
+                AgentEventType.TOOL_COMPLETED,
+                step,
+                tool_result,
+            )
+            return tool_result
+        except AgentRunCancelled:
+            raise
         except Exception as e:
             step_time = int((time.time() - step_start) * 1000)
             logger.error(f"[并发] 工具执行失败: {step.tool_name.value}, 错误: {e}")
-            return ToolResult(
+            tool_result = ToolResult(
                 step_id=step.step_id,
                 tool_name=step.tool_name,
                 success=False,
@@ -356,8 +466,46 @@ class Executor:
                 error_message=str(e),
                 execution_time_ms=step_time
             )
+            self._emit_tool_event(
+                event_callback,
+                AgentEventType.TOOL_COMPLETED,
+                step,
+                tool_result,
+            )
+            return tool_result
         finally:
             db.close()
+
+    @staticmethod
+    def _raise_if_cancelled(cancel_check: Optional[Callable[[], bool]]) -> None:
+        if cancel_check and cancel_check():
+            raise AgentRunCancelled("Agent 运行已取消")
+
+    @staticmethod
+    def _emit_tool_event(
+        event_callback: Optional[Callable[[str, Dict[str, Any]], None]],
+        event_type: AgentEventType,
+        step: PlanStep,
+        result: Optional[ToolResult] = None,
+    ) -> None:
+        if event_callback is None:
+            return
+        data = {
+            "step_id": step.step_id,
+            "tool_name": step.tool_name.value,
+            "description": step.description,
+        }
+        if result is not None:
+            data.update(
+                {
+                    "success": result.success,
+                    "execution_time_ms": result.execution_time_ms,
+                    "error": result.error_message,
+                    "context_tokens": result.context_tokens,
+                    "context_truncated": result.context_truncated,
+                }
+            )
+        event_callback(event_type.value, data)
 
     def _aggregate_data(self, final_data: Dict, tool_name: ToolName, result: Any):
         """
@@ -383,229 +531,33 @@ class Executor:
         elif tool_name == ToolName.SUMMARIZE_TEXT:
             final_data["summarized_text"] = result
 
-    # ==================== 工具方法 ====================
-
     def search_knowledge_base(self, parameters: Dict, db: Session) -> List[Dict]:
-        """
-        检索知识库
-
-        Args:
-            parameters: 检索参数
-            db: 数据库会话
-
-        Returns:
-            List[Dict]: 检索结果
-        """
-        params = SearchParameters(**parameters)
-
-        results = self.hybrid_retrieval.search_hybrid(
-            query=params.query,
-            top_k=params.top_k,
-            db=db
-        )
-
-        return results
+        """兼容旧调用入口，具体实现由工具注册表负责。"""
+        return self.tool_registry.search_knowledge_base(parameters, db)
 
     def create_note(self, parameters: Dict, db: Session) -> Dict:
-        """通过 PageService 创建可版本化、可检索的 Wiki 页面。"""
-        params = CreateNoteParameters(**parameters)
-        service = get_page_service(db)
-        if params.research_run_id:
-            run = db.get(ExternalResearchRun, params.research_run_id)
-            if run is None or run.status not in {"completed", "save_pending", "saved"}:
-                raise ValueError("外部研究任务不存在或状态不可保存")
-            result = service.upsert_page_by_source(
-                title=params.title,
-                content=params.content,
-                notebook=params.notebook,
-                tags=params.tags,
-                source_type="external_research",
-                source_uri=f"external-research:{run.id}",
-                change_summary="确认后保存外部研究草稿",
-            )
-            for source in run.sources:
-                exists = (
-                    db.query(WikiPageSource)
-                    .filter(
-                        WikiPageSource.page_id == result["id"],
-                        WikiPageSource.research_source_id == source.id,
-                    )
-                    .first()
-                )
-                if not exists:
-                    db.add(
-                        WikiPageSource(
-                            page_id=result["id"],
-                            research_source_id=source.id,
-                        )
-                    )
-            run.page_id = result["id"]
-            run.status = "saved"
-            db.commit()
-            result["research_run_id"] = run.id
-        else:
-            result = service.create_page(
-                title=params.title,
-                content=params.content,
-                notebook=params.notebook,
-                tags=params.tags,
-                source_type="agent_note",
-                change_summary="Agent 确认后创建页面",
-            )
-        return result
+        """兼容旧调用入口。"""
+        return self.tool_registry.create_note(parameters, db)
 
     def update_note(self, parameters: Dict, db: Session) -> Dict:
-        """通过稳定 ID、标题或别名更新 Wiki 页面。"""
-        params = UpdateNoteParameters(**parameters)
-        service = get_page_service(db)
-        current = service.find_page(params.filename)
-        return service.update_page(
-            current["id"],
-            expected_revision=current["revision"],
-            title=params.title,
-            content=params.content,
-            tags=params.tags,
-            change_summary="Agent 确认后更新页面",
-        )
+        """兼容旧调用入口。"""
+        return self.tool_registry.update_note(parameters, db)
 
     def delete_note(self, parameters: Dict, db: Session) -> Dict:
-        """通过 PageService 删除页面，历史版本继续保留。"""
-        filename = parameters.get("filename")
-        if not filename:
-            raise ValueError("必须提供页面 ID、标题或别名")
-        service = get_page_service(db)
-        current = service.find_page(filename)
-        deleted = service.delete_page(
-            current["id"],
-            expected_revision=current["revision"],
-        )
-        deleted["deleted"] = True
-        return deleted
+        """兼容旧调用入口。"""
+        return self.tool_registry.delete_note(parameters, db)
 
     def list_notes(self, parameters: Dict, db: Session) -> List[Dict]:
-        """列出统一 Wiki 中的活动页面。"""
-        limit = parameters.get("limit", 20)
-        date_from = parameters.get("date_from")
-        date_to = parameters.get("date_to")
-        result = get_page_service(db).list_pages(offset=0, limit=1_000_000)
-        filtered = []
-        for page in result["items"]:
-            mtime = page.get("updated_at", "")
-            if date_from and mtime < date_from:
-                continue
-            if date_to and mtime > date_to + "T23:59:59":
-                continue
-            filtered.append(page)
-        return filtered[:limit]
+        """兼容旧调用入口。"""
+        return self.tool_registry.list_notes(parameters, db)
 
     def get_current_time(self, parameters: Dict, db: Session = None) -> Dict:
-        """
-        获取当前时间
-
-        Args:
-            parameters: 空参数
-            db: 数据库会话（未使用）
-
-        Returns:
-            Dict: 当前时间信息
-        """
-        now = datetime.now()
-        weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-
-        return {
-            "datetime": now.isoformat(),
-            "date": now.strftime("%Y-%m-%d"),
-            "time": now.strftime("%H:%M:%S"),
-            "weekday": weekdays[now.weekday()],
-            "timestamp": int(now.timestamp())
-        }
+        """兼容旧调用入口。"""
+        return self.tool_registry.get_current_time(parameters, db)
 
     def summarize_text(self, parameters: Dict, db: Session = None, query: str = "") -> Dict:
-        """
-        使用 LLM 总结文本内容
-
-        Args:
-            parameters: {"content": "要总结的内容（字符串或检索结果列表）"}
-            db: 数据库会话（未使用）
-            query: 原始用户查询主题，用于相关性过滤
-
-        Returns:
-            Dict: {"success": True, "summary": "总结后的文本"}
-        """
-        raw_content = parameters.get("content", "")
-
-        # 处理检索结果格式：提取每条的 content 字段拼接
-        if isinstance(raw_content, list):
-            # 按 rerank_score 过滤低分结果
-            if raw_content and isinstance(raw_content[0], dict):
-                filtered = [r for r in raw_content if r.get("rerank_score", 0) > 0.5]
-                if filtered:
-                    logger.info(f"[summarize_text] 分数过滤: {len(raw_content)} → {len(filtered)} 条")
-                    raw_content = filtered
-            texts = []
-            for item in raw_content:
-                if isinstance(item, dict):
-                    texts.append(item.get("content", item.get("text", "")))
-                else:
-                    texts.append(str(item))
-            raw_content = "\n\n".join(texts)
-        elif isinstance(raw_content, str):
-            # 尝试解析 JSON 字符串（Executor 传过来的可能是序列化后的）
-            import json
-            try:
-                parsed = json.loads(raw_content)
-                if isinstance(parsed, list):
-                    texts = []
-                    for item in parsed:
-                        if isinstance(item, dict):
-                            texts.append(item.get("content", item.get("text", "")))
-                        else:
-                            texts.append(str(item))
-                    raw_content = "\n\n".join(texts)
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        if not raw_content or not raw_content.strip():
-            return {"success": False, "summary": "", "error": "没有可总结的内容"}
-
-        # 调用 LLM 进行总结
-        try:
-            from backend.app.services.llm_service import get_llm_service
-            llm = get_llm_service()
-
-            logger.info(f"[summarize_text] 输入内容长度: {len(raw_content)} 字符")
-
-            # 构建主题提示
-            topic_hint = f"用户查询主题：{query}\n\n" if query else ""
-
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是一个知识整理助手。你的任务是**仅**对用户提供的原始内容进行整理和总结。\n"
-                        "严格要求：\n"
-                        "1. **只使用**下方提供的原始内容，禁止添加任何原始内容中没有的信息\n"
-                        "2. 去除重复内容，按主题分类整理，使用 Markdown 标题层级\n"
-                        "3. 保留原始内容中的关键信息、数据、参数、示例\n"
-                        "4. 使用中文\n"
-                        "5. 直接输出总结内容，不要加'以下是总结'等前缀\n"
-                        "6. 如果原始内容不足以形成完整总结，只整理已有的内容，不要补充\n"
-                        "7. 只保留与用户查询主题直接相关的内容，丢弃不相关的段落或知识点"
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": f"{topic_hint}请严格基于以下原始内容进行整理总结，只保留与主题相关的内容，不要添加任何额外知识：\n\n{raw_content}"
-                }
-            ]
-
-            summary = llm.chat(messages=messages, temperature=0.3, max_tokens=2000)
-            logger.info(f"[summarize_text] LLM 返回长度: {len(summary)} 字符, 前100字: {summary[:100]}")
-            return {"success": True, "summary": summary}
-
-        except Exception as e:
-            logger.error(f"LLM 总结失败: {e}")
-            return {"success": False, "summary": raw_content, "error": str(e)}
+        """兼容旧调用入口。"""
+        return self.tool_registry.summarize_text(parameters, db, query)
 
 
 # 全局执行器实例

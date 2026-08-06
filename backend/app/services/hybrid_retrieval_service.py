@@ -14,6 +14,7 @@ from backend.app.services.bm25_service import get_bm25_service
 from backend.app.services.rrf_service import get_rrf_service
 from backend.app.services.embedding_service import get_embedding_service
 from backend.app.services.reranker_service import get_reranker_service
+from backend.app.services.token_budget_service import estimate_tokens, truncate_text
 from backend.app.core.observability import timed_stage
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ TIME_RANGE_PATTERN = re.compile(
     r"\[(?P<start>\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*"
     r"(?P<end>\d{1,2}:\d{2}(?::\d{2})?)\]"
 )
+CHILD_CHUNK_PATTERN = re.compile(r"^(?P<parent>.+:chunk:\d+):child:\d+$")
 
 
 def _timecode_seconds(value: str) -> float:
@@ -56,13 +58,31 @@ class HybridRetrievalService:
     流程: BM25 + Embedding 并行检索 → RRF 融合 → BGE-reranker 精排
     """
 
-    def __init__(self):
-        """初始化混合检索服务"""
-        self.chroma_service = get_chroma_service()
-        self.bm25_service = get_bm25_service()
-        self.rrf_service = get_rrf_service()
-        self.embedding_service = get_embedding_service()
-        self.reranker_service = get_reranker_service()
+    def __init__(
+        self,
+        *,
+        chroma_service=None,
+        bm25_service=None,
+        rrf_service=None,
+        embedding_service=None,
+        reranker_service=None,
+    ):
+        """初始化检索依赖；未注入时使用生产环境的单例服务。"""
+        self.chroma_service = (
+            chroma_service if chroma_service is not None else get_chroma_service()
+        )
+        self.bm25_service = (
+            bm25_service if bm25_service is not None else get_bm25_service()
+        )
+        self.rrf_service = rrf_service if rrf_service is not None else get_rrf_service()
+        self.embedding_service = (
+            embedding_service
+            if embedding_service is not None
+            else get_embedding_service()
+        )
+        self.reranker_service = (
+            reranker_service if reranker_service is not None else get_reranker_service()
+        )
 
     def _fetch_doc_chunks(self, doc_ids: List[str]) -> Dict[str, Dict]:
         """
@@ -92,6 +112,214 @@ class HybridRetrievalService:
         except Exception as e:
             logger.error(f"获取文档块失败: {e}")
             return {}
+
+    @staticmethod
+    def _parent_chunk_id(doc_id: str) -> str:
+        """将子块 ID 折叠为稳定父块 ID，其他来源保持不变。"""
+        match = CHILD_CHUNK_PATTERN.match(doc_id)
+        return match.group("parent") if match else doc_id
+
+    @classmethod
+    def _collapse_ranked_children(
+        cls,
+        results: List[tuple[str, float]],
+    ) -> List[tuple[str, float]]:
+        """按原始排名折叠同一父块，避免多个子块重复占据候选位。"""
+        collapsed: List[tuple[str, float]] = []
+        seen = set()
+        for doc_id, score in results:
+            parent_id = cls._parent_chunk_id(doc_id)
+            if parent_id in seen:
+                continue
+            seen.add(parent_id)
+            collapsed.append((parent_id, score))
+        return collapsed
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """保留旧入口，统一委托 Token 预算服务。"""
+        return estimate_tokens(text)
+
+    @staticmethod
+    def _truncate_to_tokens(text: str, token_budget: int) -> str:
+        """保留旧入口，统一委托 Token 预算服务。"""
+        return truncate_text(text, token_budget)
+
+    @classmethod
+    def apply_token_budget(
+        cls,
+        results: List[Dict[str, Any]],
+        token_budget: int,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """按排序顺序装配上下文，最后一块可截断但不拆散来源信息。"""
+        selected: List[Dict[str, Any]] = []
+        used_tokens = 0
+        for result in results:
+            content = result.get("content", "")
+            remaining = token_budget - used_tokens
+            if remaining <= 0:
+                break
+            truncated = cls._truncate_to_tokens(content, remaining)
+            if not truncated:
+                break
+            item = dict(result)
+            item["content"] = truncated
+            item["snippet"] = truncated[:300]
+            item["context_truncated"] = len(truncated) < len(content)
+            item_tokens = cls._estimate_tokens(truncated)
+            item["context_tokens"] = item_tokens
+            selected.append(item)
+            used_tokens += item_tokens
+            if item["context_truncated"]:
+                break
+        return selected, used_tokens
+
+    def _recall(self, query: str, bm25_top_k: int, embedding_top_k: int) -> Dict[str, Any]:
+        """并行执行单个查询的稀疏与稠密召回，不做融合和精排。"""
+        with timed_stage("retrieval.embedding"):
+            query_embedding = self.embedding_service.encode(query)
+
+        def bm25_search():
+            try:
+                return self.bm25_service.search(query, top_k=bm25_top_k)
+            except Exception as exc:
+                logger.error("BM25 检索失败: %s", exc)
+                return []
+
+        def embedding_search():
+            try:
+                return self.chroma_service.search(query_embedding, top_k=embedding_top_k)
+            except Exception as exc:
+                logger.error("Embedding 检索失败: %s", exc)
+                return []
+
+        with timed_stage("retrieval.recall"):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_bm25 = executor.submit(bm25_search)
+                future_embedding = executor.submit(embedding_search)
+                bm25_results = future_bm25.result()
+                embedding_results = future_embedding.result()
+        return {"bm25": bm25_results, "embedding": embedding_results}
+
+    def search_multi(
+        self,
+        queries: List[str],
+        original_query: Optional[str] = None,
+        top_k: Optional[int] = None,
+        token_budget: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """多查询统一召回、融合、父块折叠和单次精排。"""
+        normalized_queries = list(dict.fromkeys(q.strip() for q in queries if q and q.strip()))
+        if not normalized_queries:
+            return {"results": [], "stats": {"query_count": 0}}
+
+        final_top_k = top_k or settings.rag_final_top_k
+        context_budget = token_budget or settings.rag_context_token_budget
+        recall_lists: List[List[tuple[str, float]]] = []
+        bm25_count = 0
+        embedding_count = 0
+        for query in normalized_queries:
+            recalled = self._recall(query, settings.bm25_top_k, settings.embedding_top_k)
+            bm25_count += len(recalled["bm25"])
+            embedding_count += len(recalled["embedding"])
+            recall_lists.extend(
+                [
+                    self._collapse_ranked_children(recalled["bm25"]),
+                    self._collapse_ranked_children(recalled["embedding"]),
+                ]
+            )
+
+        populated_lists = [items for items in recall_lists if items]
+        if not populated_lists:
+            return {
+                "results": [],
+                "stats": {
+                    "query_count": len(normalized_queries),
+                    "bm25_hits": bm25_count,
+                    "embedding_hits": embedding_count,
+                    "fused_candidates": 0,
+                    "reranked_candidates": 0,
+                    "selected_results": 0,
+                    "context_tokens": 0,
+                    "token_budget": context_budget,
+                },
+            }
+
+        with timed_stage("retrieval.fusion"):
+            fused = self.rrf_service.fuse_multi(
+                populated_lists,
+                top_k=max(settings.rrf_top_k, final_top_k),
+            )
+        doc_ids = [doc_id for doc_id, _ in fused]
+        with timed_stage("retrieval.fetch_chunks"):
+            chunks_dict = self._fetch_doc_chunks(doc_ids)
+
+        candidates = []
+        for doc_id, rrf_score in fused:
+            chunk = chunks_dict.get(doc_id)
+            if chunk:
+                metadata = chunk.get("metadata", {})
+                candidates.append(
+                    {
+                        "doc_id": doc_id,
+                        "content": chunk.get("content", ""),
+                        "title": metadata.get("page_title", metadata.get("section_title", "")),
+                        "source_type": metadata.get("source_type", "doc"),
+                        "metadata": metadata,
+                        "rrf_score": rrf_score,
+                    }
+                )
+                continue
+            content = self.bm25_service.corpus.get(doc_id, "")
+            if content:
+                candidates.append(
+                    {
+                        "doc_id": doc_id,
+                        "content": content,
+                        "title": doc_id,
+                        "source_type": "doc",
+                        "metadata": {},
+                        "rrf_score": rrf_score,
+                    }
+                )
+
+        if not candidates:
+            return {"results": [], "stats": {"query_count": len(normalized_queries)}}
+
+        rerank_query = original_query or normalized_queries[0]
+        with timed_stage("retrieval.rerank"):
+            reranked = self.reranker_service.rerank(
+                query=rerank_query,
+                documents=[item["content"] for item in candidates],
+                top_k=min(final_top_k, len(candidates)),
+            )
+
+        formatted = []
+        for rank, rerank_item in enumerate(reranked, start=1):
+            candidate = candidates[rerank_item["index"]]
+            result = self._format_result(
+                candidate,
+                candidate["metadata"],
+                rank,
+                "rerank_score",
+                rerank_item["score"],
+            )
+            result["rrf_score"] = candidate["rrf_score"]
+            formatted.append(result)
+
+        selected, used_tokens = self.apply_token_budget(formatted, context_budget)
+        stats = {
+            "query_count": len(normalized_queries),
+            "bm25_hits": bm25_count,
+            "embedding_hits": embedding_count,
+            "fused_candidates": len(fused),
+            "reranked_candidates": len(candidates),
+            "selected_results": len(selected),
+            "context_tokens": used_tokens,
+            "token_budget": context_budget,
+        }
+        logger.info("RAG v2 检索完成: %s", stats)
+        return {"results": selected, "stats": stats}
 
     @staticmethod
     def _normalize_tags(tags: Any) -> List[str]:

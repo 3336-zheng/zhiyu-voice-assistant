@@ -24,16 +24,65 @@ class MCPClientError(RuntimeError):
 class MCPClientService:
     """连接一个显式配置的 MCP Server，并只调用搜索和抓取工具。"""
 
+    @staticmethod
+    def describe() -> Dict[str, Any]:
+        """返回可公开的配置摘要，不包含命令参数、环境变量或密钥。"""
+        return {
+            "enabled": settings.mcp_research_enabled,
+            "available": settings.mcp_research_available(),
+            "server_label": settings.mcp_server_label,
+            "tools": {
+                "search": settings.mcp_search_tool,
+                "fetch": settings.mcp_fetch_tool,
+            },
+            "limits": {
+                "max_queries": settings.mcp_max_queries,
+                "max_sources": settings.mcp_max_sources,
+                "timeout_seconds": settings.mcp_timeout_seconds,
+            },
+            "configuration_source": "environment",
+        }
+
+    @staticmethod
+    def _server_parameters() -> StdioServerParameters:
+        return StdioServerParameters(
+            command=settings.mcp_server_command.strip(),
+            args=settings.get_mcp_server_args(),
+            env=settings.get_mcp_server_env(),
+        )
+
+    async def check_health(self) -> Dict[str, Any]:
+        """只建立会话并核验 Search/Fetch 工具，不执行任何外部查询。"""
+        status = self.describe()
+        if not status["available"]:
+            return {**status, "status": "disabled"}
+        try:
+            async with asyncio.timeout(settings.mcp_total_timeout_seconds):
+                with open(os.devnull, "w", encoding="utf-8") as errlog:
+                    async with AsyncExitStack() as stack:
+                        read_stream, write_stream = await stack.enter_async_context(
+                            stdio_client(self._server_parameters(), errlog=errlog)
+                        )
+                        session = await stack.enter_async_context(
+                            ClientSession(read_stream, write_stream)
+                        )
+                        await self._with_timeout(session.initialize())
+                        await self._verify_tools(session)
+            return {**status, "status": "healthy"}
+        except Exception as exc:
+            logger.warning("MCP 健康检查失败: %s", type(exc).__name__)
+            return {
+                **status,
+                "status": "unhealthy",
+                "error": "MCP Server 连接或工具校验失败",
+            }
+
     async def collect(self, queries: List[str], url_guard: URLGuard) -> List[Dict[str, str]]:
         """在同一 MCP 会话中搜索并抓取经过安全校验的公开 URL。"""
         if not settings.mcp_research_available():
             raise MCPClientError("外部研究服务未启用或配置不完整")
 
-        server = StdioServerParameters(
-            command=settings.mcp_server_command.strip(),
-            args=settings.get_mcp_server_args(),
-            env=settings.get_mcp_server_env(),
-        )
+        server = self._server_parameters()
         try:
             async with asyncio.timeout(settings.mcp_total_timeout_seconds):
                 with open(os.devnull, "w", encoding="utf-8") as errlog:

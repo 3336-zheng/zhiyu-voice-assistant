@@ -42,7 +42,7 @@ class RequestContextMiddleware:
             return
 
         headers = Headers(scope=scope)
-        request_id, request_token, timings_token = start_request(
+        request_id, request_token, timings_token, timeline_token, usage_token = start_request(
             headers.get("X-Request-ID")
         )
         started = time.perf_counter()
@@ -91,7 +91,7 @@ class RequestContextMiddleware:
                 total_ms,
                 json.dumps(timings, ensure_ascii=False, sort_keys=True),
             )
-            reset_request(request_token, timings_token)
+            reset_request(request_token, timings_token, timeline_token, usage_token)
 
 
 # 创建应用

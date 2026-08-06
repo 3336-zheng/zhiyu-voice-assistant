@@ -12,9 +12,74 @@ from backend.app.core.database import Base
 from backend.app.services.backup_service import BackupValidationError, create_backup, restore_backup
 from backend.app.services.evidence_service import assess_evidence
 from backend.app.services.page_service import PageService
+from backend.app.services.memory_service import MemoryService
+from backend.app.agent.executor import Executor
 
 
 class ReliabilityTestCase(unittest.TestCase):
+    def test_executor_does_not_load_retrieval_models_until_needed(self):
+        from unittest.mock import patch
+
+        with patch(
+            "backend.app.agent.tool_registry.get_hybrid_retrieval_service"
+        ) as retrieval_factory:
+            executor = Executor()
+            try:
+                retrieval_factory.assert_not_called()
+                _ = executor.hybrid_retrieval
+                retrieval_factory.assert_called_once_with()
+            finally:
+                executor._thread_pool.shutdown(wait=True)
+
+    def test_incremental_summary_preserves_raw_messages(self):
+        with tempfile.TemporaryDirectory() as root:
+            engine = create_engine(f"sqlite:///{Path(root) / 'memory.db'}")
+            Base.metadata.create_all(engine)
+            from sqlalchemy.orm import sessionmaker
+            from unittest.mock import patch
+
+            session = sessionmaker(bind=engine)()
+            service = MemoryService()
+            service.summary_threshold = 6
+
+            class FakeLLM:
+                @staticmethod
+                def chat(messages, max_tokens=300):
+                    return "增量摘要"
+
+            try:
+                for index in range(8):
+                    service.add_message(
+                        "summary-session",
+                        "user" if index % 2 == 0 else "assistant",
+                        f"消息 {index}",
+                        db=session,
+                    )
+                with patch(
+                    "backend.app.services.llm_service.get_llm_service",
+                    return_value=FakeLLM(),
+                ):
+                    service.summarize_if_needed("summary-session", db=session)
+
+                from backend.app.models.conversation import Conversation, ConversationMessage
+
+                conversation = session.query(Conversation).filter_by(
+                    session_id="summary-session"
+                ).one()
+                self.assertEqual(conversation.summary, "增量摘要")
+                self.assertIsNotNone(conversation.summary_message_id)
+                self.assertEqual(
+                    session.query(ConversationMessage).filter_by(
+                        session_id="summary-session"
+                    ).count(),
+                    8,
+                )
+                history = service.get_history("summary-session", db=session)
+                self.assertEqual(history[0]["role"], "system")
+                self.assertEqual(len(history), 6)
+            finally:
+                session.close()
+
     def test_page_index_is_queued_by_default(self):
         with tempfile.TemporaryDirectory() as root:
             engine = create_engine(f"sqlite:///{Path(root) / 'wiki.db'}")

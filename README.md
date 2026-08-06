@@ -154,7 +154,6 @@ npm audit --omit=dev
 ## 文档
 
 - [系统架构](docs/architecture.md)
-- [与最早 main 的演进对比](docs/project-evolution.md)
 - [Markdown 主数据决策](docs/adr/0001-markdown-source-of-truth.md)
 - [持久化索引任务决策](docs/adr/0002-persistent-index-tasks.md)
 - [可信 Agent 决策](docs/adr/0003-trusted-agent.md)

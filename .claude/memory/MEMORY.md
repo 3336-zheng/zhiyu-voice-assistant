@@ -1,1 +1,0 @@
-- [README 输出路径](readme_output_path.md) — README 文件统一写到 obsidian 项目第二版目录

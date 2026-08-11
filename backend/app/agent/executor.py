@@ -78,7 +78,15 @@ class Executor:
                     waves.append([step_map[sid]])
                 break
 
-            waves.append(wave)
+            parallel_steps = [
+                step
+                for step in wave
+                if self.tool_registry.get_capability(step.tool_name).supports_parallel
+            ]
+            serial_steps = [step for step in wave if step not in parallel_steps]
+            if parallel_steps:
+                waves.append(parallel_steps)
+            waves.extend([[step] for step in serial_steps])
             for s in wave:
                 completed.add(s.step_id)
                 remaining.discard(s.step_id)
@@ -198,32 +206,42 @@ class Executor:
         Returns:
             Dict: 解析后的参数
         """
-        import copy
-        resolved = copy.deepcopy(parameters)
-        for key, value in resolved.items():
-            if isinstance(value, str) and value.startswith("$step_") and value.endswith("_results"):
-                # 提取步骤ID: $step_1_results → 1
-                try:
-                    ref_step_id = int(value.split("_")[1])
-                    dep_result = next(
-                        (r for r in prev_results if r.step_id == ref_step_id and r.success),
-                        None
-                    )
-                    if dep_result and dep_result.result:
-                        # 将检索结果格式化为文本
-                        formatted = self._format_search_results(dep_result.result)
-                        limited = limit_context(
-                            formatted,
-                            settings.agent_tool_context_token_budget,
-                        )
-                        resolved[key] = limited.text
-                        logger.info(f"解析引用 {value} → 获取到 {len(resolved[key])} 字符, 前100字: {resolved[key][:100]}")
-                    else:
-                        resolved[key] = ""
-                        logger.warning(f"引用 {value} 对应的步骤未成功执行")
-                except (ValueError, IndexError):
-                    logger.warning(f"无法解析引用: {value}")
-        return resolved
+        def resolve(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {key: resolve(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [resolve(item) for item in value]
+            if not (
+                isinstance(value, str)
+                and value.startswith("$step_")
+                and value.endswith("_results")
+            ):
+                return value
+            try:
+                ref_step_id = int(value.split("_")[1])
+            except (ValueError, IndexError):
+                logger.warning("无法解析引用: %s", value)
+                return value
+            dep_result = next(
+                (
+                    result
+                    for result in prev_results
+                    if result.step_id == ref_step_id and result.success
+                ),
+                None,
+            )
+            if not dep_result or not dep_result.result:
+                logger.warning("引用 %s 对应的步骤未成功执行", value)
+                return ""
+            formatted = self._format_search_results(dep_result.result)
+            limited = limit_context(
+                formatted,
+                settings.agent_tool_context_token_budget,
+            )
+            logger.info("解析引用 %s，获得 %s 个字符", value, len(limited.text))
+            return limited.text
+
+        return resolve(parameters)
 
     def _format_search_results(self, search_result: Any) -> str:
         """将检索结果格式化为可写入的文本"""

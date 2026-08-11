@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from backend.app.core.config import settings
 from backend.app.core.database import SessionLocal
 from backend.app.models.conversation import Conversation, ConversationMessage
+from backend.app.services.token_budget_service import estimate_tokens, truncate_text
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,9 @@ class MemoryService:
         """初始化记忆服务"""
         self.max_history = settings.memory_max_history
         self.summary_threshold = settings.memory_summary_threshold
+        self.summary_trigger_tokens = settings.memory_summary_trigger_tokens
+        self.summary_token_budget = settings.memory_summary_token_budget
+        self.summary_input_token_budget = settings.memory_summary_input_token_budget
         self.session_ttl = settings.session_ttl_hours
 
     def get_or_create_session(self, session_id: str, db: Session) -> Conversation:
@@ -234,11 +238,47 @@ class MemoryService:
                 )
             messages = message_query.order_by(ConversationMessage.id).all()
 
-            if len(messages) < self.summary_threshold:
+            pending_text = "\n".join(
+                f"{message.role}: {message.content}" for message in messages
+            )
+            if (
+                len(messages) < self.summary_threshold
+                and estimate_tokens(pending_text) < self.summary_trigger_tokens
+            ):
                 return
 
             messages_to_summarize = messages[:-5]
             if not messages_to_summarize:
+                return
+
+            previous_summary = conversation.summary or "（无）"
+            previous_summary = truncate_text(
+                previous_summary,
+                min(
+                    self.summary_token_budget,
+                    max(128, self.summary_input_token_budget // 4),
+                ),
+            )
+            summary_input_remaining = max(
+                64,
+                self.summary_input_token_budget - estimate_tokens(previous_summary) - 180,
+            )
+            selected_messages = []
+            selected_text = []
+            for message in messages_to_summarize:
+                item = f"{message.role}: {message.content}"
+                item_tokens = estimate_tokens(item)
+                if item_tokens <= summary_input_remaining:
+                    selected_messages.append(message)
+                    selected_text.append(item)
+                    summary_input_remaining -= item_tokens
+                    continue
+                if not selected_messages and summary_input_remaining > 64:
+                    selected_messages.append(message)
+                    selected_text.append(truncate_text(item, summary_input_remaining))
+                break
+
+            if not selected_messages:
                 return
 
             # 生成摘要
@@ -247,18 +287,16 @@ class MemoryService:
                 llm_service = get_llm_service()
 
                 # 构建待摘要的对话文本
-                conversation_text = "\n".join([
-                    f"{msg.role}: {msg.content}"
-                    for msg in messages_to_summarize
-                ])
-                previous_summary = conversation.summary or "（无）"
+                conversation_text = "\n".join(selected_text)
 
                 summary_messages = [
                     {
                         "role": "system",
                         "content": (
-                            "请增量更新对话摘要，保留用户目标、已确认事实、关键结论和未完成事项。"
-                            "不要虚构内容。"
+                            "请增量更新个人 Wiki 助手的对话摘要，只使用提供的内容，不要虚构。"
+                            "请严格保留以下栏目：\n"
+                            "## 用户目标\n## 已确认事实\n## 页面与实体\n"
+                            "## 约束与偏好\n## 已完成事项\n## 未完成事项\n"
                         )
                     },
                     {
@@ -267,9 +305,14 @@ class MemoryService:
                     }
                 ]
 
-                summary = llm_service.chat(summary_messages, max_tokens=300)
+                summary = llm_service.chat(
+                    summary_messages,
+                    max_tokens=self.summary_token_budget,
+                )
+                if not summary or not str(summary).strip():
+                    return
                 conversation.summary = summary
-                conversation.summary_message_id = messages_to_summarize[-1].id
+                conversation.summary_message_id = selected_messages[-1].id
                 db.commit()
                 logger.info(
                     "会话 %s 已增量摘要到消息 %s，原始消息完整保留",

@@ -23,11 +23,14 @@ flowchart LR
     TASK --> WORKER["Wiki Index Worker"]
     WORKER --> SEARCH["BM25 / ChromaDB"]
     API --> RUNTIME["Agent Runtime"]
-    RUNTIME --> AGENT["LangGraph Agent"]
+    RUNTIME --> PLANNER["Capability Planner"]
     RUNTIME --> DB
-    AGENT --> RETRIEVAL["RAG v2 与证据门禁"]
+    PLANNER --> POLICY["Plan Policy"]
+    POLICY --> EXECUTOR["DAG Executor"]
+    POLICY --> RETRIEVAL["LangGraph RAG 子图"]
     RETRIEVAL --> SEARCH
-    AGENT --> GATEWAY["主备模型网关"]
+    PLANNER --> GATEWAY["主备模型网关"]
+    RETRIEVAL --> GATEWAY
     GATEWAY --> LLM["OpenAI 兼容模型"]
     AGENT --> RESEARCH["外部研究编排"]
     RESEARCH --> MCP["可信 stdio MCP Server"]
@@ -50,15 +53,19 @@ flowchart LR
 | `backend/app/api/agent.py` | 聚合 Agent 子路由 | 不承载业务流程 |
 | `backend/app/api/agent_*` | Run、确认、研究、会话和检索协议 | 调用 Agent 与领域服务 |
 | `backend/app/services/agent_runtime_service.py` | Run 状态、事件、会话锁和终态持久化 | 不实现具体 Agent 工具 |
-| `backend/app/agent/graph.py` | LangGraph 节点与状态转换 | 编排检索、证据和生成能力 |
+| `backend/app/agent/planner.py` | 根据当前能力目录生成结构化多步骤计划 | 不直接执行工具，不决定权限 |
+| `backend/app/agent/plan_policy.py` | Schema、依赖、风险、签名与执行结果校验 | 不信任模型声明的 Intent |
+| `backend/app/agent/graph.py` | LangGraph 可信 RAG 子图 | 只编排改写、检索、证据和生成 |
 | `backend/app/agent/executor.py` | 依赖图、并发波次、取消和结果聚合 | 通过工具注册表执行步骤 |
-| `backend/app/agent/tool_registry.py` | 工具映射与 Wiki、检索、摘要工具 | 通过工厂延迟加载外部依赖 |
+| `backend/app/agent/tool_registry.py` | 工具能力元数据、参数模型与具体实现 | 通过工厂延迟加载外部依赖 |
+| `backend/app/services/context_assembler.py` | 长期摘要、近期消息、当前任务和输出预算的统一装配 | 只返回模型消息与脱敏统计 |
+| `backend/app/services/memory_service.py` | 会话消息持久化和增量摘要游标 | 不删除原始对话 |
 | `backend/app/services/hybrid_retrieval_service.py` | 召回、融合、精排与上下文装配 | 构造参数可注入，默认使用生产单例 |
 | `frontend/app/src/hooks/useAgentRun.js` | SSE、续传、停止、会话与确认状态 | 不负责页面布局 |
 | `frontend/app/src/components/AgentMessage.jsx` | 回答、引用、研究和运行详情展示 | 不直接发起 API 请求 |
 | `frontend/app/src/views/AskWorkspace.jsx` | 页面编排与输入交互 | 组合 Hook 和展示组件 |
 
-这种拆分保留了原有导入入口与 URL，便于渐进迁移；测试可通过构造参数注入替身，不再依赖 `__new__` 或全局单例内部状态。当前 Agent 的 Planner、Graph 和 Responder 仍属于复杂度较高的核心模块，后续只有在业务规则继续增长时才值得进一步按节点或策略拆分。
+这种拆分保留了原有导入入口与 URL，便于渐进迁移。Planner 负责提出计划，Policy 负责把模型输出收敛为受限 DAG，Executor 只执行已经校验的步骤；LangGraph 不再重复规划，而是作为可信 RAG 的专用状态图。
 
 ## 页面写入
 
@@ -106,7 +113,9 @@ MCP Server 是部署信任边界。应用不会向子进程传递完整环境变
 
 ## Agent 写入
 
-写操作采用两阶段协议：首次请求只持久化计划和预览，确认接口才执行工具。完成结果写回 `agent_pending_actions`；重复确认直接返回首次结果，避免重复副作用。
+工具注册表为每个能力声明参数 Schema、风险级别、确认要求与并行属性。Planner 只能选择当前阶段允许的工具；Policy 校验最大步骤数、参数、步骤引用、依赖完整性和环路，并根据实际工具而非 Intent 计算风险。
+
+写操作采用两阶段协议：包含任意写入或删除步骤的完整计划，首次请求只持久化计划和预览，确认后才执行。完成结果写回 `agent_pending_actions`；重复确认直接返回首次结果，避免重复副作用。只读工具执行失败或返回空结果时最多进行一次 Replan，相同计划签名不会重复执行；重规划产生写工具时重新暂停确认，已确认写计划失败后不自动重规划。
 
 ## Agent 运行时
 
@@ -126,7 +135,11 @@ LLM 网关记录主模型和备用模型的 Token、耗时与估算成本。仅�
 
 ## 对话记忆
 
-会话摘要使用 `summary_message_id` 作为增量游标。每次只摘要尚未覆盖且不属于最近窗口的消息，旧摘要作为输入继续更新；原始 `conversation_messages` 不删除。模型上下文由“累计摘要 + 摘要游标之后的最近消息”组成，兼顾上下文预算和审计完整性。
+会话摘要使用 `summary_message_id` 作为增量游标。未摘要消息达到数量阈值或 Token 阈值后，系统只摘要最近窗口之前且实际进入摘要输入的消息；旧摘要作为输入继续更新，原始 `conversation_messages` 不删除。摘要固定保留用户目标、已确认事实、页面与实体、约束偏好、已完成事项和未完成事项。
+
+`ContextAssembler` 在每次 Planner 和 Responder 调用前统一计算模型输入预算：系统约束优先，其次是长期摘要和当前任务，近期消息从最新向前装配，最后为模型输出预留空间。默认模型窗口为 16,000 Token，近期历史预算为 3,000 Token，摘要预算为 600 Token。RAG 证据和工具结果先经过领域预算筛选，再由总装配器执行最终上限控制。
+
+装配统计只包含总预算、各分区用量、截断状态和丢弃消息数量，不产生额外正文副本。模型 tokenizer 不可用时继续使用中英文混合估算规则，因此预算保留安全余量，不能视为供应商账单 Token 的精确值。
 
 ## 关键决策
 

@@ -3,6 +3,7 @@
 """
 import json
 import os
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 
@@ -58,6 +59,8 @@ class Settings(BaseSettings):
     agent_event_buffer_size: int = 2000
     agent_run_retention_seconds: int = 3600
     agent_tool_context_token_budget: int = 4000
+    agent_plan_max_steps: int = Field(default=6, ge=1, le=20)
+    agent_max_replans: int = Field(default=1, ge=0, le=3)
 
     # ASR 引擎配置（whisper=本地, dashscope=百炼API）
     asr_provider: str = "whisper"  # 默认使用本地 Whisper
@@ -72,6 +75,7 @@ class Settings(BaseSettings):
     llm_api_url: str = "https://api.deepseek.com/v1"
     llm_model: str = "deepseek-chat"
     llm_max_tokens: int = 2048
+    llm_context_window_tokens: int = Field(default=16_000, ge=4_096)
     llm_temperature: float = 0.7
     llm_timeout_seconds: float = 60.0
     llm_fallback_enabled: bool = False
@@ -86,6 +90,10 @@ class Settings(BaseSettings):
     # 对话记忆配置（新增）
     memory_max_history: int = 20  # 最大保留对话轮数
     memory_summary_threshold: int = 10  # 超过此轮数时触发摘要压缩
+    memory_context_token_budget: int = Field(default=3_000, ge=256)
+    memory_summary_token_budget: int = Field(default=600, ge=128)
+    memory_summary_trigger_tokens: int = Field(default=4_000, ge=256)
+    memory_summary_input_token_budget: int = Field(default=6_000, ge=512)
 
     # 会话过期清理配置
     session_ttl_hours: int = 24  # 会话过期时间（小时），超过此时间未更新的会话将被清理

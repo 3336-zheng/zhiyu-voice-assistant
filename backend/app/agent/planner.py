@@ -1,74 +1,80 @@
-"""
-Plan-and-Execute Agent - Planner 规划器（课堂学习场景聚焦版）
-支持 LLM 增强的意图识别和计划生成
-"""
-import re
+"""能力注册表驱动的受限 Plan-and-Execute 规划器。"""
+
 import json
 import logging
+import re
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional, Sequence
 
 from backend.app.agent.models import (
-    Plan, PlanStep, ToolName, IntentType,
-    SearchParameters, CreateNoteParameters, UpdateNoteParameters
+    CreateNoteParameters,
+    IntentType,
+    Plan,
+    PlanStep,
+    SearchParameters,
+    ToolCapability,
+    ToolName,
+    UpdateNoteParameters,
 )
+from backend.app.agent.plan_policy import PlanPolicy, PlanValidationError
+from backend.app.agent.tool_registry import AgentToolRegistry
+from backend.app.core.config import settings
+from backend.app.services.context_assembler import ContextAssembler
 
 logger = logging.getLogger(__name__)
 
-# LLM 意图识别的系统提示（课堂学习场景聚焦版，7种意图）
-INTENT_RECOGNITION_PROMPT = """你是一个课堂学习助手的意图识别模块。根据学生的查询，识别其意图并提取参数。
+PLAN_GENERATION_PROMPT = """你是本地优先 AI Wiki 的 Planner。把用户目标拆成最少且充分的工具步骤。
 
-重要：学生的输入可能来自语音识别（ASR），包含同音字替代、错别字、口语化表达。你必须：
-1. 修正语音识别错误（如"词类"→"词语"、"分快"→"分块"、"走"→"找"等同音字/近音字）
-2. 去除口语化冗余词（如"帮我"、"查一下"、"看看"），提取核心检索关键词
-3. 将修正后的关键词填入 query 字段
+约束：
+1. 只能使用下方“当前允许工具”中的工具，不得虚构工具或参数。
+2. 用户输入可能来自语音识别；可以修正明显同音字和口语冗余，但不能改变原意。
+3. 简单任务只生成一个步骤；只有确实依赖上一步结果时才拆成多步，最多 {max_steps} 步。
+4. 后续步骤可用字符串 `$step_N_results` 引用上游完整结果，并必须在 depends_on 中声明 N。
+5. 不得自行联网。外部 MCP 研究由用户在独立入口显式触发，不属于本计划工具。
+6. 创建、更新、删除是高风险能力。仅当用户明确要求变更知识库时规划，执行前由后端统一确认。
+7. 信息不足时不要猜测页面标识或正文；宁可让参数校验失败并回退，也不要编造。
+8. intent 只能是 search、create_note、update_note、delete_note、list_notes、time_query、summarize、unknown。
 
-示例：
-- 学生说"帮我查走RAG的词类方式分快" → query: "RAG分块方式"
-- 学生说"找一下有关向量数据库的笔" → query: "向量数据库"
-- 学生说"看看那个agent开发的坑" → query: "Agent开发踩坑"
+当前允许工具：
+{capabilities}
 
-支持的意图类型（7种核心意图）：
-- search: 检索知识库/问答复习（如"查找关于RAG的笔记"、"什么是向量数据库"、"复习一下第3讲内容"）
-- create_note: 创建笔记（如"创建笔记标题是XXX内容是YYY"、"记录一下..."）
-- update_note: 更新笔记（如"更新笔记xxx的内容"、"修改笔记..."），需要 filename 参数
-- delete_note: 删除笔记（如"删除笔记xxx"、"删掉这条笔记"），需要 filename 参数
-- list_notes: 列出笔记（如"显示所有笔记"、"列出本周的笔记"、"有哪些笔记"）
-- time_query: 时间查询（如"现在几点"、"今天星期几"）
-- summarize: 摘要总结/生成复习卡片（如"总结关于RAG的内容"、"生成复习卡片"、"概括一下这节课的重点"）
-
-重要：知识统一保存为 Wiki 页面。更新、删除时，filename 参数可以填写页面 UUID、标题或唯一别名；优先使用页面 UUID。
-
-请以JSON格式返回：
-{
-    "intent": "意图类型",
-    "confidence": 0.95,
-    "parameters": {
-        "query": "修正语音错误后的核心检索关键词（去除口语冗余）",
-        "original_query_cleaned": "修正语音错误但保留完整语义的查询",
-        "title": "笔记标题（如果是创建/更新）",
-        "content": "笔记内容（如果是创建/更新）",
-        "filename": "页面 UUID、标题或唯一别名（更新/删除时必须）",
-        "tags": ["标签1", "标签2"]
-    },
-    "reasoning": "识别理由，说明做了哪些语音纠错"
-}
-
-注意：
-1. 如果学生没有明确指定参数，不要猜测
-2. 对于时间相关查询，根据当前日期推算具体日期
-3. confidence 表示识别的置信度（0-1）"""
+仅返回 JSON 对象：
+{{
+  "goal": "用户希望达成的结果",
+  "intent": "上述 intent 之一",
+  "steps": [
+    {{
+      "step_id": 1,
+      "tool_name": "工具名",
+      "parameters": {{}},
+      "description": "面向用户的步骤说明",
+      "depends_on": [],
+      "expected_output": "预期产物",
+      "success_criteria": "可验证的最低成功条件"
+    }}
+  ],
+  "reasoning": "简短说明为什么选择这些步骤"
+}}
+"""
 
 
 class Planner:
-    """
-    Agent 规划器
-    支持 LLM 增强的意图识别，同时保留规则匹配作为降级方案
-    """
+    """动态生成结构化计划，并保留确定性规则降级。"""
 
-    def __init__(self):
+    def __init__(
+        self,
+        tool_registry: Optional[AgentToolRegistry] = None,
+        validator: Optional[PlanPolicy] = None,
+    ):
         """初始化规划器"""
         self._llm_service = None
+        self.tool_registry = tool_registry or AgentToolRegistry()
+        self.validator = validator or PlanPolicy(self.tool_registry)
+        self.context_assembler = ContextAssembler(
+            context_window_tokens=settings.llm_context_window_tokens,
+            history_token_budget=settings.memory_context_token_budget,
+            summary_token_budget=settings.memory_summary_token_budget,
+        )
 
     @property
     def llm_service(self):
@@ -81,7 +87,12 @@ class Planner:
                 logger.warning(f"LLM 服务加载失败，将使用规则匹配: {e}")
         return self._llm_service
 
-    def plan(self, user_query: str, context: List[Dict[str, str]] = None) -> Plan:
+    def plan(
+        self,
+        user_query: str,
+        context: Optional[List[Dict[str, str]]] = None,
+        capabilities: Optional[Sequence[ToolCapability]] = None,
+    ) -> Plan:
         """
         分析用户意图并生成执行计划
 
@@ -94,200 +105,112 @@ class Planner:
         """
         query = user_query.strip()
 
-        # 优先使用 LLM 进行意图识别
+        active_capabilities = list(
+            capabilities if capabilities is not None else self.validator.capabilities()
+        )
+        allowed_tools = [item.name for item in active_capabilities]
+
         if self.llm_service:
             try:
-                return self._plan_with_llm(query, context)
+                plan = self._plan_with_llm(query, context, active_capabilities)
+                return self.validator.validate(plan, allowed_tools)
             except Exception as e:
-                logger.warning(f"LLM 意图识别失败，降级到规则匹配: {e}")
+                logger.warning("LLM 计划生成失败，降级到规则匹配: %s", e)
 
-        # 降级到规则匹配
-        return self._plan_with_rules(query)
+        fallback_plan = self._plan_with_rules(query)
+        return self.validator.validate(fallback_plan, allowed_tools)
 
-    def _plan_with_llm(self, query: str, context: List[Dict[str, str]] = None) -> Plan:
-        """
-        使用 LLM 进行意图识别和计划生成
+    def replan(
+        self,
+        user_query: str,
+        previous_plan: Plan,
+        execution_feedback: Dict[str, Any],
+        *,
+        context: Optional[List[Dict[str, str]]] = None,
+        capabilities: Optional[Sequence[ToolCapability]] = None,
+        remaining_steps: Optional[int] = None,
+    ) -> Plan:
+        """根据失败观察生成一次新计划；无模型时不做伪重规划。"""
+        if not self.llm_service:
+            raise PlanValidationError("LLM 不可用，无法进行重规划")
+        active_capabilities = list(
+            capabilities if capabilities is not None else self.validator.capabilities()
+        )
+        feedback = {
+            "previous_plan": previous_plan.model_dump(mode="json"),
+            "execution_feedback": execution_feedback,
+            "remaining_step_budget": remaining_steps,
+            "instruction": "不要重复失败的调用结构，优先减少步骤或更换可行的只读路径。",
+        }
+        plan = self._plan_with_llm(
+            user_query,
+            context,
+            active_capabilities,
+            replan_feedback=feedback,
+        )
+        validated = self.validator.validate(plan, [item.name for item in active_capabilities])
+        if remaining_steps is not None and len(validated.steps) > remaining_steps:
+            raise PlanValidationError(
+                f"重规划步骤数 {len(validated.steps)} 超过剩余预算 {remaining_steps}"
+            )
+        return validated
 
-        Args:
-            query: 用户查询
-            context: 对话上下文
-
-        Returns:
-            Plan: 执行计划
-        """
-        # 构建消息
+    def _plan_with_llm(
+        self,
+        query: str,
+        context: Optional[List[Dict[str, str]]],
+        capabilities: Sequence[ToolCapability],
+        replan_feedback: Optional[Dict[str, Any]] = None,
+    ) -> Plan:
+        """让 LLM 基于当前能力目录生成完整计划。"""
         now = datetime.now()
         date_info = f"当前日期: {now.strftime('%Y-%m-%d')}，星期{['一','二','三','四','五','六','日'][now.weekday()]}"
-
-        messages = [
-            {"role": "system", "content": INTENT_RECOGNITION_PROMPT + f"\n{date_info}"}
+        capability_catalog = [
+            capability.model_dump(mode="json")
+            for capability in capabilities
         ]
-
-        # 添加对话上下文
-        if context:
-            for msg in context[-6:]:  # 最近 3 轮对话
-                messages.append(msg)
-
-        messages.append({"role": "user", "content": query})
-
-        # 调用 LLM
+        prompt = PLAN_GENERATION_PROMPT.format(
+            max_steps=self.validator.max_steps,
+            capabilities=json.dumps(capability_catalog, ensure_ascii=False),
+        )
+        system_messages = [{"role": "system", "content": f"{prompt}\n{date_info}"}]
+        if replan_feedback:
+            system_messages.append(
+                {
+                    "role": "system",
+                    "content": "这是一次受限重规划。执行观察如下：\n"
+                    + json.dumps(replan_feedback, ensure_ascii=False),
+                }
+            )
+        assembled = self.context_assembler.assemble(
+            system_messages=system_messages,
+            history=context,
+            current_messages=[{"role": "user", "content": query}],
+            output_token_reserve=settings.llm_max_tokens,
+        )
+        messages = assembled.messages
+        logger.info("[planner] 上下文装配统计: %s", assembled.stats())
         result = self.llm_service.chat_json(messages=messages, temperature=0.1)
-
-        # 解析结果
-        intent_str = result.get("intent", "search")
-        parameters = result.get("parameters", {})
-        reasoning = result.get("reasoning", "")
-        logger.info(f"[planner] LLM 返回: intent={intent_str}, query={parameters.get('query', '')}, content_len={len(parameters.get('content', ''))}")
-
-        # 映射意图类型（7种核心意图）
-        intent_map = {
-            "search": IntentType.SEARCH,
-            "create_note": IntentType.CREATE_NOTE,
-            "update_note": IntentType.UPDATE_NOTE,
-            "delete_note": IntentType.DELETE_NOTE,
-            "list_notes": IntentType.LIST_NOTES,
-            "time_query": IntentType.TIME_QUERY,
-            "summarize": IntentType.SUMMARIZE,
-        }
-        intent = intent_map.get(intent_str, IntentType.SEARCH)
-
-        # 根据意图生成计划
-        if intent == IntentType.SEARCH:
-            return self._plan_search_from_llm(query, parameters, reasoning)
-        elif intent == IntentType.CREATE_NOTE:
-            return self._plan_create_note_from_llm(query, parameters, reasoning)
-        elif intent == IntentType.UPDATE_NOTE:
-            return self._plan_update_note_from_llm(query, parameters, reasoning)
-        elif intent == IntentType.DELETE_NOTE:
-            return self._plan_delete_note_from_llm(query, parameters, reasoning)
-        elif intent == IntentType.LIST_NOTES:
-            return self._plan_list_notes_from_llm(query, parameters, reasoning)
-        elif intent == IntentType.TIME_QUERY:
-            return self._plan_time_query(query)
-        elif intent == IntentType.SUMMARIZE:
-            return self._plan_summarize_from_llm(query, parameters, reasoning)
-        else:
-            return self._plan_search_from_llm(query, parameters, reasoning)
-
-    def _plan_search_from_llm(self, query: str, params: Dict, reasoning: str) -> Plan:
-        """从 LLM 结果生成检索计划"""
-        search_params = SearchParameters(
-            query=params.get("query", query),
-            top_k=params.get("top_k", 5),
-            tag_filter=params.get("tag_filter"),
-            date_from=params.get("date_from"),
-            date_to=params.get("date_to")
+        steps = result.get("steps")
+        if not isinstance(steps, list):
+            raise PlanValidationError("LLM 未返回 steps 数组")
+        plan = Plan.model_validate(
+            {
+                "goal": result.get("goal") or query,
+                "intent": result.get("intent", IntentType.UNKNOWN.value),
+                "original_query": query,
+                "steps": steps,
+                "estimated_steps": len(steps),
+                "reasoning": result.get("reasoning", "LLM 基于当前工具能力生成计划"),
+            }
         )
-
-        return Plan(
-            intent=IntentType.SEARCH,
-            original_query=query,
-            steps=[PlanStep(
-                step_id=1,
-                tool_name=ToolName.SEARCH_KNOWLEDGE_BASE,
-                parameters=search_params.dict(),
-                description=f"检索知识库: '{search_params.query}'"
-            )],
-            estimated_steps=1,
-            reasoning=reasoning or f"用户查询'{query}'被识别为检索意图。"
+        logger.info(
+            "[planner] 生成计划: intent=%s, steps=%s, tools=%s",
+            plan.intent.value,
+            len(plan.steps),
+            [step.tool_name.value for step in plan.steps],
         )
-
-    def _plan_create_note_from_llm(self, query: str, params: Dict, reasoning: str) -> Plan:
-        """从 LLM 结果生成创建笔记计划"""
-        create_params = CreateNoteParameters(
-            title=params.get("title", query[:20]),
-            content=params.get("content", query),
-            tags=params.get("tags")
-        )
-
-        return Plan(
-            intent=IntentType.CREATE_NOTE,
-            original_query=query,
-            steps=[PlanStep(
-                step_id=1,
-                tool_name=ToolName.CREATE_NOTE,
-                parameters=create_params.dict(),
-                description=f"创建笔记: {create_params.title}"
-            )],
-            estimated_steps=1,
-            reasoning=reasoning or f"用户意图是创建新笔记。"
-        )
-
-    def _plan_update_note_from_llm(self, query: str, params: Dict, reasoning: str) -> Plan:
-        """从 LLM 结果生成更新笔记计划"""
-        filename = params.get("filename", "")
-        update_params = UpdateNoteParameters(
-            filename=filename,
-            title=params.get("title"),
-            content=params.get("content"),
-            tags=params.get("tags")
-        )
-
-        return Plan(
-            intent=IntentType.UPDATE_NOTE,
-            original_query=query,
-            steps=[PlanStep(
-                step_id=1,
-                tool_name=ToolName.UPDATE_NOTE,
-                parameters=update_params.dict(),
-                description=f"更新笔记: {filename}"
-            )],
-            estimated_steps=1,
-            reasoning=reasoning or f"用户意图是更新笔记。"
-        )
-
-    def _plan_delete_note_from_llm(self, query: str, params: Dict, reasoning: str) -> Plan:
-        """从 LLM 结果生成删除笔记计划"""
-        filename = params.get("filename", "")
-
-        return Plan(
-            intent=IntentType.DELETE_NOTE,
-            original_query=query,
-            steps=[PlanStep(
-                step_id=1,
-                tool_name=ToolName.DELETE_NOTE,
-                parameters={"filename": filename},
-                description=f"删除笔记: {filename}" if filename else "删除笔记"
-            )],
-            estimated_steps=1,
-            reasoning=reasoning or "用户意图是删除笔记。"
-        )
-
-    def _plan_list_notes_from_llm(self, query: str, params: Dict, reasoning: str) -> Plan:
-        """从 LLM 结果生成列出笔记计划"""
-        return Plan(
-            intent=IntentType.LIST_NOTES,
-            original_query=query,
-            steps=[PlanStep(
-                step_id=1,
-                tool_name=ToolName.LIST_NOTES,
-                parameters={
-                    "date_from": params.get("date_from"),
-                    "date_to": params.get("date_to"),
-                    "limit": 20
-                },
-                description="列出笔记"
-            )],
-            estimated_steps=1,
-            reasoning=reasoning or "用户意图是列出笔记。"
-        )
-
-    def _plan_summarize_from_llm(self, query: str, params: Dict, reasoning: str) -> Plan:
-        """从 LLM 结果生成摘要计划"""
-        topic = params.get("query", query)
-
-        return Plan(
-            intent=IntentType.SUMMARIZE,
-            original_query=query,
-            steps=[PlanStep(
-                step_id=1,
-                tool_name=ToolName.SEARCH_KNOWLEDGE_BASE,
-                parameters={"query": topic, "top_k": 10},
-                description=f"检索相关内容: '{topic}'"
-            )],
-            estimated_steps=2,
-            reasoning=reasoning or f"用户意图是总结'{topic}'相关内容。"
-        )
+        return plan
 
     def _plan_with_rules(self, query: str) -> Plan:
         """
@@ -322,6 +245,12 @@ class Planner:
         """使用规则识别意图（课堂学习场景，7种核心意图）"""
         query_lower = query.lower()
 
+        # 明确的摘要请求优先于泛化的“复习”检索请求。
+        summarize_patterns = [r"总结.*", r"摘要.*", r"概括.*", r"归纳.*", r"复习卡片", r"生成卡片"]
+        for pattern in summarize_patterns:
+            if re.search(pattern, query_lower):
+                return IntentType.SUMMARIZE
+
         # 检索/问答意图（优先于创建笔记，避免 "搜索会议记录" 被误判）
         search_patterns = [r"^搜索", r"^查找", r"^查一下", r"^找一下", r"^看看", r"是什么", r"有哪些", r"复习", r"什么是"]
         for pattern in search_patterns:
@@ -354,12 +283,6 @@ class Planner:
         for pattern in time_patterns:
             if re.search(pattern, query_lower):
                 return IntentType.TIME_QUERY
-
-        # 摘要/复习卡片意图
-        summarize_patterns = [r"总结.*", r"摘要.*", r"概括.*", r"归纳.*", r"复习卡片", r"生成卡片"]
-        for pattern in summarize_patterns:
-            if re.search(pattern, query_lower):
-                return IntentType.SUMMARIZE
 
         # 默认为检索/问答意图
         return IntentType.SEARCH

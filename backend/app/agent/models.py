@@ -1,10 +1,11 @@
 """
 Agent 数据模型定义（课堂学习场景聚焦版）
 """
-from enum import Enum
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field
 from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class IntentType(str, Enum):
@@ -30,6 +31,25 @@ class ToolName(str, Enum):
     SUMMARIZE_TEXT = "summarize_text"
 
 
+class ToolRiskLevel(str, Enum):
+    """工具风险级别，用于执行门禁。"""
+
+    READ = "read"
+    WRITE = "write"
+    DELETE = "delete"
+
+
+class ToolCapability(BaseModel):
+    """暴露给 Planner 的工具能力描述，不包含可执行函数。"""
+
+    name: ToolName
+    description: str
+    parameters_schema: Dict[str, Any]
+    risk_level: ToolRiskLevel
+    requires_confirmation: bool = False
+    supports_parallel: bool = True
+
+
 class PlanStep(BaseModel):
     """计划步骤"""
     step_id: int
@@ -37,6 +57,8 @@ class PlanStep(BaseModel):
     parameters: Dict[str, Any]
     description: str
     depends_on: Optional[List[int]] = None  # 依赖的步骤ID
+    expected_output: Optional[str] = None
+    success_criteria: Optional[str] = None
 
 
 class Plan(BaseModel):
@@ -46,6 +68,7 @@ class Plan(BaseModel):
     steps: List[PlanStep]
     estimated_steps: int
     reasoning: str  # 规划的理由
+    goal: Optional[str] = None
 
 
 class ToolResult(BaseModel):
@@ -97,19 +120,25 @@ class AgentResponse(BaseModel):
     execution_time_ms: Optional[int] = None
 
 
-class SearchParameters(BaseModel):
+class ToolParameters(BaseModel):
+    """工具参数公共约束：拒绝模型生成但工具不认识的字段。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SearchParameters(ToolParameters):
     """检索参数"""
-    query: str
-    top_k: int = 5
+    query: str = Field(min_length=1)
+    top_k: int = Field(default=5, ge=1, le=20)
     tag_filter: Optional[str] = None
     date_from: Optional[str] = None
     date_to: Optional[str] = None
 
 
-class CreateNoteParameters(BaseModel):
+class CreateNoteParameters(ToolParameters):
     """创建笔记参数"""
-    title: str
-    content: str
+    title: str = Field(min_length=1)
+    content: str = Field(min_length=1)
     tags: Optional[List[str]] = None
     summary: Optional[str] = None
     audio_id: Optional[int] = None
@@ -117,10 +146,34 @@ class CreateNoteParameters(BaseModel):
     research_run_id: Optional[str] = None
 
 
-class UpdateNoteParameters(BaseModel):
+class UpdateNoteParameters(ToolParameters):
     """更新笔记参数（filename 兼容页面 UUID、标题或唯一别名）"""
-    filename: str
+    filename: str = Field(min_length=1)
     title: Optional[str] = None
     content: Optional[str] = None
     tags: Optional[List[str]] = None
     summary: Optional[str] = None
+
+
+class DeleteNoteParameters(ToolParameters):
+    """删除页面参数。"""
+
+    filename: str = Field(min_length=1)
+
+
+class ListNotesParameters(ToolParameters):
+    """页面列表参数。"""
+
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class CurrentTimeParameters(ToolParameters):
+    """当前时间工具无需参数。"""
+
+
+class SummarizeTextParameters(ToolParameters):
+    """摘要工具参数，content 可引用上游步骤结果。"""
+
+    content: Any

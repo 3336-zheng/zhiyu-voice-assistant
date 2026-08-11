@@ -1,8 +1,4 @@
-"""
-Plan-and-Execute Agent 主类（LangGraph 版本）
-整合 Planner、Executor、Responder，支持多轮对话记忆
-使用 LangGraph 状态机替代手写 if-else 编排
-"""
+"""受限 Plan-and-Execute Agent 主流程。"""
 import asyncio
 import time
 import logging
@@ -12,10 +8,12 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from backend.app.agent.models import AgentResponse, IntentType, Plan
+from backend.app.agent.models import AgentResponse, Plan
 from backend.app.agent.planner import get_planner
 from backend.app.agent.executor import get_executor
+from backend.app.agent.plan_policy import PlanPolicy
 from backend.app.agent.responder import get_responder
+from backend.app.agent.tool_registry import AgentToolRegistry
 from backend.app.core.database import SessionLocal
 from backend.app.core.config import settings
 from backend.app.core.observability import (
@@ -31,13 +29,6 @@ from backend.app.agent.events import AgentEventType, AgentRunCancelled
 
 logger = logging.getLogger(__name__)
 
-WRITE_INTENTS = {
-    IntentType.CREATE_NOTE,
-    IntentType.UPDATE_NOTE,
-    IntentType.DELETE_NOTE,
-}
-
-
 class AgentActionError(Exception):
     """待确认操作不存在、已失效或不属于当前会话。"""
 
@@ -51,8 +42,14 @@ class PlanExecuteAgent:
 
     def __init__(self):
         """初始化 Agent"""
-        self.planner = get_planner()
         self.executor = get_executor()
+        self.plan_policy = PlanPolicy(
+            self.executor.tool_registry,
+            max_steps=settings.agent_plan_max_steps,
+        )
+        self.planner = get_planner()
+        self.planner.tool_registry = self.executor.tool_registry
+        self.planner.validator = self.plan_policy
         self.responder = get_responder()
         self._memory_service = None
 
@@ -132,7 +129,18 @@ class PlanExecuteAgent:
             plan_status = "completed"
             try:
                 with timed_stage("agent.plan"):
-                    plan = await asyncio.to_thread(self.planner.plan, user_query, context)
+                    policy = self._get_plan_policy()
+                    capabilities = policy.capabilities()
+                    plan = await asyncio.to_thread(
+                        self.planner.plan,
+                        user_query,
+                        context,
+                        capabilities,
+                    )
+                    plan = policy.validate(
+                        plan,
+                        [capability.name for capability in capabilities],
+                    )
             except AgentRunCancelled:
                 plan_status = "cancelled"
                 raise
@@ -146,7 +154,8 @@ class PlanExecuteAgent:
                     {"stage": "agent.plan", "status": plan_status},
                 )
             self._raise_if_cancelled(cancel_check)
-            if plan.intent in WRITE_INTENTS:
+            decision = policy.decide(plan)
+            if decision.requires_confirmation:
                 response = self._create_pending_response(
                     user_query,
                     session_id,
@@ -154,7 +163,7 @@ class PlanExecuteAgent:
                     db,
                     start_time,
                 )
-            elif plan.intent in {IntentType.SEARCH, IntentType.SUMMARIZE}:
+            elif decision.is_retrieval_plan:
                 response = await asyncio.to_thread(
                     self._run_retrieval_graph,
                     user_query,
@@ -166,50 +175,16 @@ class PlanExecuteAgent:
                     cancel_check,
                 )
             else:
-                execution_result = await self.executor.execute(
+                response = await self._run_tool_plan(
+                    user_query,
+                    session_id,
                     plan,
                     db,
-                    event_callback=event_callback,
-                    cancel_check=cancel_check,
-                )
-                self._raise_if_cancelled(cancel_check)
-                self._emit_event(
+                    context,
+                    start_time,
                     event_callback,
-                    AgentEventType.STAGE_STARTED,
-                    {"stage": "agent.generation"},
+                    cancel_check,
                 )
-                generation_status = "completed"
-                with timed_stage("agent.generation"):
-                    try:
-                        response_kwargs = {}
-                        token_callback = self._token_callback(event_callback)
-                        if token_callback:
-                            response_kwargs["token_callback"] = token_callback
-                        response = await asyncio.to_thread(
-                            self.responder.generate_response,
-                            user_query,
-                            plan,
-                            execution_result,
-                            context,
-                            **response_kwargs,
-                        )
-                    except AgentRunCancelled:
-                        generation_status = "cancelled"
-                        raise
-                    except Exception:
-                        generation_status = "failed"
-                        raise
-                    finally:
-                        self._emit_event(
-                            event_callback,
-                            AgentEventType.STAGE_COMPLETED,
-                            {
-                                "stage": "agent.generation",
-                                "status": generation_status,
-                            },
-                        )
-                response.session_id = session_id
-                response.execution_time_ms = int((time.time() - start_time) * 1000)
 
             self._raise_if_cancelled(cancel_check)
             self._save_conversation(user_query, response, db)
@@ -245,6 +220,186 @@ class PlanExecuteAgent:
         finally:
             if should_close:
                 db.close()
+
+    def _get_plan_policy(self) -> PlanPolicy:
+        """兼容测试构造方式，并保证确认执行时仍会重新校验计划。"""
+        policy = getattr(self, "plan_policy", None)
+        if policy is not None:
+            return policy
+        registry = getattr(getattr(self, "executor", None), "tool_registry", None)
+        policy = PlanPolicy(
+            registry or AgentToolRegistry(),
+            max_steps=settings.agent_plan_max_steps,
+        )
+        self.plan_policy = policy
+        return policy
+
+    async def _run_tool_plan(
+        self,
+        user_query: str,
+        session_id: str,
+        plan: Plan,
+        db: Session,
+        context: List[Dict[str, str]],
+        start_time: float,
+        event_callback: Optional[Callable[[str, Dict[str, Any]], None]],
+        cancel_check: Optional[Callable[[], bool]],
+    ) -> AgentResponse:
+        """执行只读工具计划，并在失败或空结果时进行有限重规划。"""
+        policy = self._get_plan_policy()
+        current_plan = policy.validate(plan)
+        signatures = {policy.signature(current_plan)}
+        execution_result = None
+
+        for replan_count in range(max(0, settings.agent_max_replans) + 1):
+            execution_result = await self.executor.execute(
+                current_plan,
+                db,
+                event_callback=event_callback,
+                cancel_check=cancel_check,
+            )
+            self._raise_if_cancelled(cancel_check)
+            self._emit_event(
+                event_callback,
+                AgentEventType.STAGE_STARTED,
+                {"stage": "agent.evaluate"},
+            )
+            with timed_stage("agent.evaluate"):
+                evaluation = policy.evaluate(execution_result)
+            self._emit_event(
+                event_callback,
+                AgentEventType.STAGE_COMPLETED,
+                {
+                    "stage": "agent.evaluate",
+                    "status": "completed",
+                    "successful": evaluation.successful,
+                },
+            )
+            if evaluation.successful or replan_count >= settings.agent_max_replans:
+                break
+
+            self._emit_event(
+                event_callback,
+                AgentEventType.STAGE_STARTED,
+                {"stage": "agent.replan", "attempt": replan_count + 1},
+            )
+            replan_status = "completed"
+            try:
+                with timed_stage("agent.replan"):
+                    capabilities = policy.capabilities()
+                    next_plan = await asyncio.to_thread(
+                        self.planner.replan,
+                        user_query,
+                        current_plan,
+                        evaluation.as_feedback(),
+                        context=context,
+                        capabilities=capabilities,
+                        remaining_steps=max(
+                            1,
+                            settings.agent_plan_max_steps - execution_result.completed_steps,
+                        ),
+                    )
+                    next_plan = policy.validate(
+                        next_plan,
+                        [capability.name for capability in capabilities],
+                    )
+            except AgentRunCancelled:
+                replan_status = "cancelled"
+                raise
+            except Exception as exc:
+                replan_status = "failed"
+                logger.warning("Agent 重规划失败，保留首次执行结果: %s", exc)
+                break
+            finally:
+                self._emit_event(
+                    event_callback,
+                    AgentEventType.STAGE_COMPLETED,
+                    {"stage": "agent.replan", "status": replan_status},
+                )
+
+            signature = policy.signature(next_plan)
+            if signature in signatures:
+                logger.warning("重规划返回了已执行计划，阻止重复调用")
+                break
+            signatures.add(signature)
+            next_decision = policy.decide(next_plan)
+            if next_decision.requires_confirmation:
+                return self._create_pending_response(
+                    user_query,
+                    session_id,
+                    next_plan,
+                    db,
+                    start_time,
+                )
+            if next_decision.is_retrieval_plan:
+                return await asyncio.to_thread(
+                    self._run_retrieval_graph,
+                    user_query,
+                    session_id,
+                    context,
+                    next_plan,
+                    start_time,
+                    event_callback,
+                    cancel_check,
+                )
+            current_plan = next_plan
+
+        return await self._generate_tool_response(
+            user_query,
+            session_id,
+            current_plan,
+            execution_result,
+            context,
+            start_time,
+            event_callback,
+        )
+
+    async def _generate_tool_response(
+        self,
+        user_query: str,
+        session_id: str,
+        plan: Plan,
+        execution_result: Any,
+        context: List[Dict[str, str]],
+        start_time: float,
+        event_callback: Optional[Callable[[str, Dict[str, Any]], None]],
+    ) -> AgentResponse:
+        """统一执行非 RAG 工具计划的最终回答阶段。"""
+        self._emit_event(
+            event_callback,
+            AgentEventType.STAGE_STARTED,
+            {"stage": "agent.generation"},
+        )
+        generation_status = "completed"
+        try:
+            with timed_stage("agent.generation"):
+                response_kwargs = {}
+                token_callback = self._token_callback(event_callback)
+                if token_callback:
+                    response_kwargs["token_callback"] = token_callback
+                response = await asyncio.to_thread(
+                    self.responder.generate_response,
+                    user_query,
+                    plan,
+                    execution_result,
+                    context,
+                    **response_kwargs,
+                )
+        except AgentRunCancelled:
+            generation_status = "cancelled"
+            raise
+        except Exception:
+            generation_status = "failed"
+            raise
+        finally:
+            self._emit_event(
+                event_callback,
+                AgentEventType.STAGE_COMPLETED,
+                {"stage": "agent.generation", "status": generation_status},
+            )
+        response.session_id = session_id
+        response.execution_time_ms = int((time.time() - start_time) * 1000)
+        return response
 
     def _run_retrieval_graph(
         self,
@@ -405,7 +560,11 @@ class PlanExecuteAgent:
             if pending.status == "completed" and pending.result_data:
                 return AgentResponse.model_validate(pending.result_data)
 
-            plan = Plan.model_validate(pending.plan_data)
+            plan = self._get_plan_policy().validate(
+                Plan.model_validate(pending.plan_data)
+            )
+            if not self._get_plan_policy().decide(plan).requires_confirmation:
+                raise AgentActionError("待确认计划不包含需要确认的知识变更")
             start_time = time.time()
             execution_result = await self.executor.execute(plan, db)
             response = self.responder.generate_response(

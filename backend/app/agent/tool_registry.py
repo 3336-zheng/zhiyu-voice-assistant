@@ -5,14 +5,22 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Type
+
+from pydantic import BaseModel
 
 from sqlalchemy.orm import Session
 
 from backend.app.agent.models import (
     CreateNoteParameters,
+    CurrentTimeParameters,
+    DeleteNoteParameters,
+    ListNotesParameters,
     SearchParameters,
+    SummarizeTextParameters,
+    ToolCapability,
     ToolName,
+    ToolRiskLevel,
     UpdateNoteParameters,
 )
 from backend.app.models.wiki import ExternalResearchRun, WikiPageSource
@@ -47,6 +55,96 @@ class AgentToolRegistry:
             ToolName.GET_CURRENT_TIME: self.get_current_time,
             ToolName.SUMMARIZE_TEXT: self.summarize_text,
         }
+        self._parameter_models: Dict[ToolName, Type[BaseModel]] = {
+            ToolName.SEARCH_KNOWLEDGE_BASE: SearchParameters,
+            ToolName.CREATE_NOTE: CreateNoteParameters,
+            ToolName.UPDATE_NOTE: UpdateNoteParameters,
+            ToolName.DELETE_NOTE: DeleteNoteParameters,
+            ToolName.LIST_NOTES: ListNotesParameters,
+            ToolName.GET_CURRENT_TIME: CurrentTimeParameters,
+            ToolName.SUMMARIZE_TEXT: SummarizeTextParameters,
+        }
+        self._capabilities = {
+            ToolName.SEARCH_KNOWLEDGE_BASE: self._capability(
+                ToolName.SEARCH_KNOWLEDGE_BASE,
+                "使用混合检索从本地 Wiki 查找与查询相关的证据。",
+                ToolRiskLevel.READ,
+            ),
+            ToolName.CREATE_NOTE: self._capability(
+                ToolName.CREATE_NOTE,
+                "创建新的 Wiki 页面；仅在用户明确要求沉淀知识时使用。",
+                ToolRiskLevel.WRITE,
+                requires_confirmation=True,
+                supports_parallel=False,
+            ),
+            ToolName.UPDATE_NOTE: self._capability(
+                ToolName.UPDATE_NOTE,
+                "按页面 UUID、标题或唯一别名更新 Wiki 页面。",
+                ToolRiskLevel.WRITE,
+                requires_confirmation=True,
+                supports_parallel=False,
+            ),
+            ToolName.DELETE_NOTE: self._capability(
+                ToolName.DELETE_NOTE,
+                "删除指定 Wiki 页面，历史版本仍由页面服务保留。",
+                ToolRiskLevel.DELETE,
+                requires_confirmation=True,
+                supports_parallel=False,
+            ),
+            ToolName.LIST_NOTES: self._capability(
+                ToolName.LIST_NOTES,
+                "按可选时间范围列出本地 Wiki 页面。",
+                ToolRiskLevel.READ,
+            ),
+            ToolName.GET_CURRENT_TIME: self._capability(
+                ToolName.GET_CURRENT_TIME,
+                "读取当前系统日期、时间与星期。",
+                ToolRiskLevel.READ,
+            ),
+            ToolName.SUMMARIZE_TEXT: self._capability(
+                ToolName.SUMMARIZE_TEXT,
+                "严格基于给定文本生成中文摘要，可接收上游步骤结果引用。",
+                ToolRiskLevel.READ,
+            ),
+        }
+
+    def _capability(
+        self,
+        name: ToolName,
+        description: str,
+        risk_level: ToolRiskLevel,
+        *,
+        requires_confirmation: bool = False,
+        supports_parallel: bool = True,
+    ) -> ToolCapability:
+        return ToolCapability(
+            name=name,
+            description=description,
+            parameters_schema=self._parameter_models[name].model_json_schema(),
+            risk_level=risk_level,
+            requires_confirmation=requires_confirmation,
+            supports_parallel=supports_parallel,
+        )
+
+    def get_capabilities(
+        self,
+        allowed_tools: Optional[List[ToolName]] = None,
+    ) -> List[ToolCapability]:
+        """返回当前阶段可用的工具目录。"""
+        allowed = set(allowed_tools) if allowed_tools is not None else set(self._capabilities)
+        return [
+            capability.model_copy(deep=True)
+            for name, capability in self._capabilities.items()
+            if name in allowed
+        ]
+
+    def get_parameter_model(self, tool_name: ToolName) -> Type[BaseModel]:
+        """返回工具参数模型，供执行前统一校验。"""
+        return self._parameter_models[tool_name]
+
+    def get_capability(self, tool_name: ToolName) -> ToolCapability:
+        """返回单个工具的能力元数据。"""
+        return self._capabilities[tool_name].model_copy(deep=True)
 
     @property
     def hybrid_retrieval(self) -> HybridRetrievalService:
@@ -135,9 +233,7 @@ class AgentToolRegistry:
 
     def delete_note(self, parameters: Dict, db: Session) -> Dict:
         """通过 PageService 删除页面，历史版本继续保留。"""
-        filename = parameters.get("filename")
-        if not filename:
-            raise ValueError("必须提供页面 ID、标题或别名")
+        filename = DeleteNoteParameters(**parameters).filename
         service = self._page_factory(db)
         current = service.find_page(filename)
         deleted = service.delete_page(
@@ -149,9 +245,10 @@ class AgentToolRegistry:
 
     def list_notes(self, parameters: Dict, db: Session) -> List[Dict]:
         """列出统一 Wiki 中的活动页面。"""
-        limit = parameters.get("limit", 20)
-        date_from = parameters.get("date_from")
-        date_to = parameters.get("date_to")
+        params = ListNotesParameters(**parameters)
+        limit = params.limit
+        date_from = params.date_from
+        date_to = params.date_to
         result = self._page_factory(db).list_pages(offset=0, limit=1_000_000)
         filtered = []
         for page in result["items"]:
@@ -166,6 +263,7 @@ class AgentToolRegistry:
     @staticmethod
     def get_current_time(parameters: Dict, db: Session = None) -> Dict:
         """返回当前本地时间。"""
+        CurrentTimeParameters(**parameters)
         now = datetime.now()
         weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
         return {
@@ -178,7 +276,7 @@ class AgentToolRegistry:
 
     def summarize_text(self, parameters: Dict, db: Session = None, query: str = "") -> Dict:
         """严格基于工具输入调用 LLM 生成摘要。"""
-        raw_content = parameters.get("content", "")
+        raw_content = SummarizeTextParameters(**parameters).content
         if isinstance(raw_content, list):
             if raw_content and isinstance(raw_content[0], dict):
                 filtered = [item for item in raw_content if item.get("rerank_score", 0) > 0.5]
@@ -207,6 +305,8 @@ class AgentToolRegistry:
                     )
             except (json.JSONDecodeError, TypeError):
                 pass
+        elif isinstance(raw_content, dict):
+            raw_content = json.dumps(raw_content, ensure_ascii=False)
 
         if not raw_content or not raw_content.strip():
             return {"success": False, "summary": "", "error": "没有可总结的内容"}

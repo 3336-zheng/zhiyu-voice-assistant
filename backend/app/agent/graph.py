@@ -7,8 +7,7 @@ import time
 from typing import TypedDict, List, Dict, Any, Optional
 from langgraph.graph import StateGraph, END
 
-from backend.app.agent.models import IntentType, Plan, PlanStep, ToolName
-from backend.app.agent.planner import get_planner
+from backend.app.agent.models import Plan, ToolName
 from backend.app.agent.executor import get_executor
 from backend.app.agent.responder import get_responder
 from backend.app.services.query_rewrite_service import get_query_rewrite_service, RewriteStrategy
@@ -82,39 +81,6 @@ def _emit_stage(
     if status:
         data["status"] = status
     _emit_event(state, event_type, data)
-
-
-def route_node(state: AgentState) -> AgentState:
-    """
-    路由节点：分析意图，生成计划
-
-    Args:
-        state: 当前状态
-
-    Returns:
-        AgentState: 更新后的状态
-    """
-    logger.info("[graph] 路由节点：分析意图...")
-    _raise_if_cancelled(state)
-    _emit_stage(state, AgentEventType.STAGE_STARTED, "agent.route")
-    planner = get_planner()
-
-    started = time.perf_counter()
-    status = "completed"
-    try:
-        plan = state.get("plan") or planner.plan(state["query"], state.get("context"))
-        logger.info(f"[graph] 意图识别完成：{plan.intent.value}, 步骤数={len(plan.steps)}")
-        return {**state, "plan": plan, "iter_count": state.get("iter_count", 0) + 1}
-    except AgentRunCancelled:
-        status = "cancelled"
-        raise
-    except Exception as e:
-        status = "failed"
-        logger.error(f"[graph] 意图识别失败: {e}")
-        return {**state, "error": str(e)}
-    finally:
-        record_timing("agent.route", (time.perf_counter() - started) * 1000)
-        _emit_stage(state, AgentEventType.STAGE_COMPLETED, "agent.route", status)
 
 
 def query_rewrite_node(state: AgentState) -> AgentState:
@@ -453,17 +419,15 @@ def create_agent_graph() -> StateGraph:
     workflow = StateGraph(AgentState)
 
     # 添加节点
-    workflow.add_node("route", route_node)
     workflow.add_node("rewrite", query_rewrite_node)
     workflow.add_node("retrieve", retrieve_node)
     workflow.add_node("grade", grade_node)
     workflow.add_node("generate", generate_node)
 
     # 设置入口
-    workflow.set_entry_point("route")
+    workflow.set_entry_point("rewrite")
 
     # 添加边
-    workflow.add_edge("route", "rewrite")
     workflow.add_edge("rewrite", "retrieve")
     workflow.add_edge("retrieve", "grade")
 

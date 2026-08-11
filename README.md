@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/FastAPI-API-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI" />
   <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=111827" alt="React 19" />
-  <img src="https://img.shields.io/badge/LangGraph-Agent-111827?style=flat-square" alt="LangGraph" />
+  <img src="https://img.shields.io/badge/LangGraph-Trusted_RAG-111827?style=flat-square" alt="LangGraph Trusted RAG" />
   <img src="https://img.shields.io/badge/License-MIT-22C55E?style=flat-square" alt="MIT License" />
 </p>
 
@@ -28,6 +28,7 @@
 | --- | --- | --- |
 | **可维护知识主数据** | Markdown 正文 + SQLite 元数据、版本、链接与运行记录 | 文本可读、可迁移、可备份；索引故障不影响正文 |
 | **可信 RAG v2** | 父子分块、多查询统一 RRF、单次精排、Token 预算、CRAG、Evidence Gate | 兼顾召回精度、上下文完整性和证据约束 |
+| **受限动态 Agent** | 工具能力注册表、JSON Schema、多步骤 DAG、风险策略、结果评估与有限 Replan | 让模型负责规划，让后端掌握执行、预算和权限 |
 | **可恢复 Agent Runtime** | 单次真实流、类型化事件、断线续传、取消、超时、终态回放与重启收敛 | 将长流程从 HTTP 连接中解耦，明确失败语义 |
 | **受控 MCP 研究** | Search/Fetch 白名单、URL/来源校验、来源快照、研究草稿 | 本地证据不足时可查外部资料，但不自动越权写库 |
 | **确认式知识写入** | 预览 → 确认 → 幂等执行 | 防止模型误写、重复确认和网络重试产生副作用 |
@@ -64,10 +65,10 @@ Agent Run / 事件      执行状态：支持续传、终态回放和重启收�
 | 层级 | 技术选型 |
 | --- | --- |
 | 前端工作台 | React 19、Vite 6、React Markdown、Lucide React、SSE |
-| API 与运行时 | Python 3.11、FastAPI、Uvicorn、Pydantic、LangGraph |
+| API 与运行时 | Python 3.11、FastAPI、Uvicorn、Pydantic v2、LangGraph |
 | 数据与文件 | SQLite、SQLAlchemy 同步 Session、UTF-8 Markdown、YAML Front Matter |
 | 混合检索 | BM25、Jieba、BGE Embedding、ChromaDB、RRF、BGE Reranker |
-| Agent 与外部研究 | Plan-and-Execute、CRAG、MCP Python SDK、OpenAI 兼容模型接口 |
+| Agent 与外部研究 | Capability Registry、Plan-and-Execute、有限 Replan、CRAG、MCP Python SDK、OpenAI 兼容模型接口 |
 | 多模态采集 | faster-whisper、DashScope ASR、pdfplumber、python-docx |
 | 可观测性 | Request ID、Server-Timing、Langfuse、OpenTelemetry |
 | 工程化 | Pytest、GitHub Actions、Docker 多阶段构建 |
@@ -90,7 +91,35 @@ Query Rewrite
 
 子块用于提高召回粒度，父块用于精排、上下文和稳定引用。多查询结果先汇总再融合和精排，避免为每个改写查询重复执行整条链路。回答中的来源保留页面、版本、章节和稳定 Chunk ID；音频页面额外支持转写时间范围回溯。
 
+## 分层上下文策略
+
+智语不把所有历史消息直接拼接给模型，而是使用统一 `ContextAssembler` 分层装配。保留优先级为系统约束、长期摘要、当前任务、近期消息；发送给模型时仍保持“历史在前、当前问题在后”的对话顺序：
+
+```text
+系统约束 / 工具 Schema
+  → 长期对话摘要
+  → Token 预算内的近期消息
+  → 当前查询与 RAG / 工具证据
+  → 输出 Token 预留
+```
+
+会话在未摘要消息达到 10 条或估算超过 4,000 Token 时增量压缩，保留最近 5 条消息，原始消息始终保留在 SQLite。摘要使用用户目标、已确认事实、页面与实体、约束偏好、已完成事项和未完成事项等固定栏目。默认模型窗口为 16,000 Token，长期摘要预算为 600 Token，近期对话预算为 3,000 Token；RAG 和工具结果先按各自预算筛选，再由总装配器做最终上限控制。
+
+每次装配只记录各区块的估算 Token、截断状态和被丢弃的近期消息数量，不采集正文，便于定位上下文溢出而不扩大敏感内容暴露面。
+
 ## Agent 与 MCP 安全闭环
+
+Agent 采用能力注册表驱动的受限 Plan-and-Execute。每个工具声明用途、参数 JSON Schema、风险等级、是否需要确认和是否允许并行；Planner 只看到当前阶段允许的能力，并生成最多 6 步的结构化 DAG。后端随后校验工具白名单、参数、步骤引用和循环依赖，再根据实际工具风险决定执行路径，而不是信任模型声明的 Intent。Planner 和 Responder 共享分层上下文装配策略，长期摘要不会因最近消息切片而丢失。
+
+```text
+用户目标 → 能力目录 → LLM 结构化 Plan
+→ Schema / DAG / 权限校验
+→ 写入或删除：持久化完整计划并等待确认
+→ 纯检索：LangGraph 执行 Query Rewrite / CRAG / Evidence Gate
+→ 其他只读计划：Executor → Evaluator → 最多一次 Replan → Respond
+```
+
+Executor 按依赖关系构造执行波次，只并行运行显式声明可并行的工具。失败、空结果或工具内部失败可触发一次受预算约束的 Replan；相同计划签名不会重复执行，重规划若产生写入或删除步骤会重新进入确认门禁。已确认的写计划失败后不会自动换计划，避免执行超出用户确认范围的副作用。
 
 Agent Run 不依赖浏览器连接存活：模型只生成一次，增量片段同时用于展示和最终答案组装；事件带严格递增序号，断线可从最后序号续传。取消、总超时和服务重启都会收敛到明确终态，重复确认直接返回首次结果。
 
@@ -135,7 +164,7 @@ npm run build
 npm audit --omit=dev
 ```
 
-当前验证覆盖页面 `409` 冲突、索引失败重试与重启恢复、RAG v2、Agent 事件顺序与断线回放、取消、超时、重复确认、模型故障转移、增量摘要、MCP 安全边界、备份恢复和音频溯源。已验证基线为后端 `42 passed`、依赖检查通过、React 构建通过、生产依赖审计 0 漏洞。
+当前验证覆盖页面 `409` 冲突、索引失败重试与重启恢复、RAG v2、计划 Schema 与 DAG 校验、风险确认、有限 Replan、分层上下文装配、Token 触发摘要、Agent 事件顺序与断线回放、取消、超时、重复确认、模型故障转移、增量摘要、MCP 安全边界、备份恢复和音频溯源。已验证基线为后端 `58 passed`、依赖检查通过、React 构建通过、生产依赖审计 0 漏洞。
 
 当前面向单用户、本机或可信内网部署，不包含多租户认证、细粒度权限、分布式任务调度和多实例 Agent 状态共享。生产化时需要根据负载迁移 PostgreSQL、共享运行状态、独立任务队列和权限审计体系。
 

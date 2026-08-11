@@ -9,8 +9,10 @@ import {
   LoaderCircle,
   MessageSquareText,
   Save,
+  ThumbsDown,
   X,
 } from 'lucide-react'
+import AnswerFeedbackPanel from './AnswerFeedbackPanel'
 import MarkdownView from './MarkdownView'
 import { formatCost, formatTime, stageLabel } from '../utils/agentPresentation'
 
@@ -19,9 +21,13 @@ export default function AgentMessage({
   onPrepareSave,
   onResearch,
   onResolveAction,
+  onCancelFeedback,
+  onConfirmFeedback,
+  onFlagResponse,
+  onRetryFeedback,
 }) {
   return (
-    <article className={`message ${message.role}`}>
+    <article id={`message-${message.id}`} className={`message ${message.role}`}>
       <div className="message-role">{message.role === 'user' ? '你' : <><MessageSquareText size={14} /> 智语</>}</div>
       <div className="message-body">
         {message.role === 'assistant' ? <MarkdownView content={message.content} /> : message.content}
@@ -135,6 +141,19 @@ export default function AgentMessage({
               </div>
             </div>
           </details>
+        )}
+        {message.role === 'assistant' && message.requestId && message.status === 'complete' && !message.feedback && (
+          <div className="message-feedback-action">
+            <button type="button" onClick={() => onFlagResponse(message)}><ThumbsDown size={14} /> 回答有问题</button>
+          </div>
+        )}
+        {message.feedback && (
+          <AnswerFeedbackPanel
+            feedback={message.feedback}
+            onCancel={() => onCancelFeedback(message.id, message.feedback.id)}
+            onConfirm={() => onConfirmFeedback(message.id, message.feedback.id)}
+            onRetry={() => onRetryFeedback(message.id, message.feedback.id)}
+          />
         )}
       </div>
     </article>

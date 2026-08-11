@@ -10,24 +10,25 @@ function wikiLinksToMarkdown(content) {
 
 export default function MarkdownView({ content, onWikiLink }) {
   return (
-    <ReactMarkdown
-      className="markdown"
-      remarkPlugins={[remarkGfm]}
-      components={{
-        a({ href, children, ...props }) {
-          if (href?.startsWith('#wiki=')) {
-            const title = decodeURIComponent(href.slice(6))
-            return (
-              <button className="wiki-link" type="button" onClick={() => onWikiLink?.(title)}>
-                {children}
-              </button>
-            )
+    <div className="markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a({ href, children, ...props }) {
+            if (href?.startsWith('#wiki=')) {
+              const title = decodeURIComponent(href.slice(6))
+              return (
+                <button className="wiki-link" type="button" onClick={() => onWikiLink?.(title)}>
+                  {children}
+                </button>
+              )
+            }
+            return <a href={href} target="_blank" rel="noreferrer" {...props}>{children}</a>
           }
-          return <a href={href} target="_blank" rel="noreferrer" {...props}>{children}</a>
-        },
-      }}
-    >
-      {wikiLinksToMarkdown(content || '')}
-    </ReactMarkdown>
+        }}
+      >
+        {wikiLinksToMarkdown(content || '')}
+      </ReactMarkdown>
+    </div>
   )
 }

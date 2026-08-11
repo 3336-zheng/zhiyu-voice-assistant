@@ -1,11 +1,22 @@
 """轻量、非破坏性的数据库版本迁移。"""
 
 from datetime import datetime, timezone
+import re
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
+
+
+def _conversation_title(content: str | None, limit: int = 80) -> str | None:
+    """从首条用户消息生成稳定、紧凑的会话标题。"""
+    normalized = re.sub(r"\s+", " ", content or "").strip()
+    if not normalized:
+        return None
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[:limit - 3].rstrip()}..."
 
 
 def _has_column(engine: Engine, table: str, column: str) -> bool:
@@ -223,6 +234,118 @@ def ensure_schema(engine: Engine) -> int:
                 },
             )
             current = 6
+
+        # 版本 7 增加可搜索的会话标题，并为已有会话回填首条用户消息。
+        if current < 7:
+            inspector = inspect(engine)
+            if inspector.has_table("conversations"):
+                if not _has_column(engine, "conversations", "title"):
+                    connection.execute(
+                        text("ALTER TABLE conversations ADD COLUMN title VARCHAR(255)")
+                    )
+                if inspector.has_table("conversation_messages"):
+                    rows = connection.execute(
+                        text(
+                            """
+                            SELECT c.session_id,
+                                   (
+                                       SELECT m.content
+                                       FROM conversation_messages AS m
+                                       WHERE m.session_id = c.session_id
+                                         AND m.role = 'user'
+                                       ORDER BY m.id ASC
+                                       LIMIT 1
+                                   ) AS first_user_message
+                            FROM conversations AS c
+                            WHERE c.title IS NULL OR TRIM(c.title) = ''
+                            """
+                        )
+                    ).mappings()
+                    for row in rows:
+                        title = _conversation_title(row["first_user_message"])
+                        if title:
+                            connection.execute(
+                                text(
+                                    "UPDATE conversations SET title = :title "
+                                    "WHERE session_id = :session_id"
+                                ),
+                                {"title": title, "session_id": row["session_id"]},
+                            )
+            connection.execute(
+                text(
+                    "INSERT INTO schema_migrations(version, description, applied_at) "
+                    "VALUES (:version, :description, :applied_at)"
+                ),
+                {
+                    "version": 7,
+                    "description": "增加可搜索的会话标题并回填历史数据",
+                    "applied_at": datetime.now(timezone.utc),
+                },
+            )
+            current = 7
+
+        # 版本 8 保存回答反馈、确认写入、索引和自动复测闭环。
+        if current < 8:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS answer_feedbacks (
+                        id VARCHAR(36) PRIMARY KEY,
+                        request_id VARCHAR(128) NOT NULL,
+                        session_id VARCHAR(64) NOT NULL,
+                        category VARCHAR(32) NOT NULL,
+                        status VARCHAR(32) NOT NULL,
+                        question TEXT NOT NULL,
+                        answer_snapshot TEXT NOT NULL,
+                        retrieval_snapshot JSON NOT NULL,
+                        user_note TEXT,
+                        target_page_id VARCHAR(36),
+                        external_research_run_id VARCHAR(36),
+                        pending_action_id VARCHAR(36),
+                        draft_title VARCHAR(255),
+                        draft_content TEXT,
+                        write_result JSON,
+                        index_result JSON,
+                        retest_request_id VARCHAR(128),
+                        retest_answer TEXT,
+                        retest_snapshot JSON,
+                        error TEXT,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL,
+                        completed_at DATETIME,
+                        CONSTRAINT uq_answer_feedback_request UNIQUE(request_id)
+                    )
+                    """
+                )
+            )
+            for index_name, column in {
+                "ix_answer_feedbacks_request_id": "request_id",
+                "ix_answer_feedbacks_session_id": "session_id",
+                "ix_answer_feedbacks_category": "category",
+                "ix_answer_feedbacks_status": "status",
+                "ix_answer_feedbacks_target_page_id": "target_page_id",
+                "ix_answer_feedbacks_external_research_run_id": "external_research_run_id",
+                "ix_answer_feedbacks_pending_action_id": "pending_action_id",
+                "ix_answer_feedbacks_retest_request_id": "retest_request_id",
+            }.items():
+                connection.execute(
+                    text(
+                        f"CREATE INDEX IF NOT EXISTS {index_name} "
+                        f"ON answer_feedbacks ({column})"
+                    )
+                )
+            connection.execute(
+                text(
+                    "INSERT INTO schema_migrations(version, description, applied_at) "
+                    "VALUES (:version, :description, :applied_at)"
+                ),
+                {
+                    "version": 8,
+                    "description": "增加回答反馈、纠错写入和自动复测记录",
+                    "applied_at": datetime.now(timezone.utc),
+                },
+            )
+            current = 8
 
     if current > SCHEMA_VERSION:
         raise RuntimeError(

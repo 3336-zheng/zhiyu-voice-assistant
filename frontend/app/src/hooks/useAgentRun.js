@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { api, streamSse } from '../api'
 import { stageLabel } from '../utils/agentPresentation'
 
@@ -23,6 +23,8 @@ export default function useAgentRun(notify) {
   const [sessionId, setSessionId] = useState(getSessionId)
   const [activeRunId, setActiveRunId] = useState(null)
   const [liveStage, setLiveStage] = useState('准备运行')
+  const [historyVersion, setHistoryVersion] = useState(0)
+  const sessionIdRef = useRef(sessionId)
 
   const sessionLabel = useMemo(
     () => sessionId.replace('session_', '').slice(0, 10),
@@ -156,7 +158,53 @@ export default function useAgentRun(notify) {
       setLoading(false)
       setActiveRunId(null)
       setLiveStage('准备运行')
+      setHistoryVersion((version) => version + 1)
     }
+  }
+
+  async function loadSession(nextSessionId) {
+    if (loading || !nextSessionId) return null
+    const data = await api(`/agent/sessions/${encodeURIComponent(nextSessionId)}/messages`)
+    let previousUserQuery = ''
+    const restored = (data.messages || []).map((message) => {
+      const metadata = message.metadata || {}
+      if (message.role === 'user') previousUserQuery = message.content
+      return {
+        id: `history-${message.id}`,
+        role: message.role,
+        content: message.content,
+        originalQuery: message.role === 'assistant' ? previousUserQuery : undefined,
+        sources: metadata.sources || [],
+        evidenceStatus: metadata.evidence_status,
+        evidenceScore: metadata.evidence_score,
+        evidenceSourceCount: metadata.evidence_source_count,
+        evidenceReason: metadata.evidence_reason,
+        externalResearchAvailable: metadata.external_research_available,
+        confirmationRequired: metadata.confirmation_required,
+        pendingActionId: metadata.pending_action_id,
+        preview: metadata.action_preview || [],
+        requestId: metadata.request_id,
+        feedbackId: metadata.feedback_id,
+        status: metadata.confirmation_required ? 'pending' : 'complete',
+        createdAt: message.created_at,
+      }
+    })
+    await Promise.all(restored.map(async (message) => {
+      if (!message.feedbackId) return
+      try {
+        message.feedback = await api(
+          `/agent/feedback/${encodeURIComponent(message.feedbackId)}?session_id=${encodeURIComponent(nextSessionId)}`,
+        )
+      } catch {
+        message.feedback = null
+      }
+    }))
+    localStorage.setItem('zhiyu_react_session_id', nextSessionId)
+    sessionIdRef.current = nextSessionId
+    setSessionId(nextSessionId)
+    setMessages(restored)
+    setQuery('')
+    return data
   }
 
   async function stopRun() {
@@ -244,23 +292,149 @@ export default function useAgentRun(notify) {
     }
   }
 
+  function updateFeedback(messageId, feedback) {
+    setMessages((previous) => previous.map((message) => (
+      message.id === messageId ? { ...message, feedback } : message
+    )))
+  }
+
+  async function pollAnswerFeedback(messageId, feedbackId, feedbackSessionId) {
+    for (let attempt = 0; attempt < 180; attempt += 1) {
+      await wait(1000)
+      try {
+        const data = await api(
+          `/agent/feedback/${encodeURIComponent(feedbackId)}?session_id=${encodeURIComponent(feedbackSessionId)}`,
+        )
+        if (sessionIdRef.current !== feedbackSessionId) return
+        updateFeedback(messageId, data)
+        if (['resolved', 'retest_failed', 'index_failed'].includes(data.status)) {
+          if (data.status === 'resolved') {
+            notify('知识已修订，原问题复测完成', 'success')
+            setHistoryVersion((version) => version + 1)
+          }
+          return
+        }
+      } catch (error) {
+        notify(error.message, 'error')
+        return
+      }
+    }
+  }
+
+  async function reportAnswerFeedback(messageId, requestId, values) {
+    let feedbackId = null
+    updateFeedback(messageId, { status: 'reported' })
+    try {
+      const created = await api('/agent/feedback/', {
+        method: 'POST',
+        body: JSON.stringify({
+          request_id: requestId,
+          session_id: sessionId,
+          ...values,
+        }),
+      })
+      feedbackId = created.id
+      updateFeedback(messageId, { ...created, status: 'researching' })
+      const prepared = await api(`/agent/feedback/${encodeURIComponent(created.id)}/prepare`, {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId }),
+      })
+      updateFeedback(messageId, prepared)
+      notify('纠错草稿已生成，请确认后写入', 'success')
+      return prepared
+    } catch (error) {
+      if (feedbackId) {
+        try {
+          const failed = await api(
+            `/agent/feedback/${encodeURIComponent(feedbackId)}?session_id=${encodeURIComponent(sessionId)}`,
+          )
+          updateFeedback(messageId, failed)
+        } catch {
+          updateFeedback(messageId, { id: feedbackId, status: 'draft_failed', error: error.message })
+        }
+      } else {
+        updateFeedback(messageId, null)
+      }
+      notify(error.message, 'error')
+      throw error
+    }
+  }
+
+  async function confirmAnswerFeedback(messageId, feedbackId) {
+    const feedbackSessionId = sessionId
+    updateFeedback(messageId, { id: feedbackId, status: 'writing' })
+    try {
+      const data = await api(`/agent/feedback/${encodeURIComponent(feedbackId)}/confirm`, {
+        method: 'POST',
+        body: JSON.stringify({ session_id: feedbackSessionId }),
+      })
+      if (sessionIdRef.current !== feedbackSessionId) return
+      updateFeedback(messageId, data)
+      if (data.status === 'retesting') pollAnswerFeedback(messageId, feedbackId, feedbackSessionId)
+      else if (data.status === 'index_failed') notify(data.error || '索引失败', 'error')
+    } catch (error) {
+      notify(error.message, 'error')
+      const data = await api(
+        `/agent/feedback/${encodeURIComponent(feedbackId)}?session_id=${encodeURIComponent(sessionId)}`,
+      ).catch(() => ({ id: feedbackId, status: 'write_failed', error: error.message }))
+      updateFeedback(messageId, data)
+    }
+  }
+
+  async function retryAnswerFeedback(messageId, feedbackId) {
+    const feedbackSessionId = sessionId
+    try {
+      const data = await api(`/agent/feedback/${encodeURIComponent(feedbackId)}/retry`, {
+        method: 'POST',
+        body: JSON.stringify({ session_id: feedbackSessionId }),
+      })
+      if (sessionIdRef.current !== feedbackSessionId) return
+      updateFeedback(messageId, data)
+      if (data.status === 'retesting') pollAnswerFeedback(messageId, feedbackId, feedbackSessionId)
+    } catch (error) {
+      notify(error.message, 'error')
+    }
+  }
+
+  async function cancelAnswerFeedback(messageId, feedbackId) {
+    try {
+      const data = await api(`/agent/feedback/${encodeURIComponent(feedbackId)}/cancel`, {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId }),
+      })
+      updateFeedback(messageId, data)
+    } catch (error) {
+      notify(error.message, 'error')
+    }
+  }
+
   function resetSession() {
     localStorage.removeItem('zhiyu_react_session_id')
-    setSessionId(getSessionId())
+    const nextSessionId = getSessionId()
+    sessionIdRef.current = nextSessionId
+    setSessionId(nextSessionId)
     setMessages([])
+    setHistoryVersion((version) => version + 1)
   }
 
   return {
     activeRunId,
+    cancelAnswerFeedback,
+    confirmAnswerFeedback,
+    historyVersion,
     liveStage,
+    loadSession,
     loading,
     messages,
     prepareResearchSave,
     query,
     resetSession,
+    reportAnswerFeedback,
     resolveAction,
     runExternalResearch,
+    retryAnswerFeedback,
     sendQuery,
+    sessionId,
     sessionLabel,
     setQuery,
     stopRun,

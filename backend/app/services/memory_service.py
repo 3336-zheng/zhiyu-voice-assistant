@@ -4,8 +4,10 @@
 """
 import uuid
 import logging
+import re
 from typing import List, Dict, Optional
-from datetime import datetime
+from datetime import datetime, timezone
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from backend.app.core.config import settings
@@ -14,6 +16,34 @@ from backend.app.models.conversation import Conversation, ConversationMessage
 from backend.app.services.token_budget_service import estimate_tokens, truncate_text
 
 logger = logging.getLogger(__name__)
+
+
+def _conversation_title(content: str, limit: int = 80) -> str:
+    """把首条用户消息整理为历史会话标题。"""
+    normalized = re.sub(r"\s+", " ", content or "").strip()
+    if not normalized:
+        return "新对话"
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[:limit - 3].rstrip()}..."
+
+
+def _search_snippet(content: str, query: str, radius: int = 48) -> str:
+    """返回命中词附近的单行消息片段。"""
+    normalized = re.sub(r"\s+", " ", content or "").strip()
+    index = normalized.casefold().find(query.casefold())
+    if index < 0:
+        return normalized[: radius * 2]
+    start = max(0, index - radius)
+    end = min(len(normalized), index + len(query) + radius)
+    prefix = "..." if start else ""
+    suffix = "..." if end < len(normalized) else ""
+    return f"{prefix}{normalized[start:end]}{suffix}"
+
+
+def _escape_like(value: str) -> str:
+    """转义 LIKE 通配符，使用户输入按字面匹配。"""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class MemoryService:
@@ -88,7 +118,7 @@ class MemoryService:
 
         try:
             # 确保会话存在
-            self.get_or_create_session(session_id, db)
+            conversation = self.get_or_create_session(session_id, db)
 
             # 创建消息
             message = ConversationMessage(
@@ -101,12 +131,11 @@ class MemoryService:
             db.add(message)
 
             # 更新会话消息计数
-            conversation = db.query(Conversation).filter(
-                Conversation.session_id == session_id
-            ).first()
             if conversation:
                 conversation.message_count = (conversation.message_count or 0) + 1
                 conversation.updated_at = datetime.now()
+                if role == "user" and not conversation.title:
+                    conversation.title = _conversation_title(content)
 
             db.commit()
             db.refresh(message)
@@ -367,7 +396,12 @@ class MemoryService:
             if should_close:
                 db.close()
 
-    def list_sessions(self, db: Session = None, limit: int = 50) -> List[Dict]:
+    def list_sessions(
+        self,
+        db: Session = None,
+        limit: int = 50,
+        query: str = None,
+    ) -> List[Dict]:
         """
         列出所有会话
 
@@ -384,21 +418,134 @@ class MemoryService:
             should_close = True
 
         try:
-            conversations = db.query(Conversation).order_by(
+            normalized_query = (query or "").strip()
+            conversations_query = db.query(Conversation)
+            if normalized_query:
+                pattern = f"%{_escape_like(normalized_query)}%"
+                matching_sessions = select(ConversationMessage.session_id).where(
+                    ConversationMessage.content.ilike(pattern, escape="\\")
+                )
+                conversations_query = conversations_query.filter(
+                    or_(
+                        Conversation.title.ilike(pattern, escape="\\"),
+                        Conversation.session_id.in_(matching_sessions),
+                    )
+                )
+
+            conversations = conversations_query.order_by(
                 Conversation.updated_at.desc()
             ).limit(limit).all()
 
-            return [
-                {
-                    "session_id": c.session_id,
-                    "message_count": c.message_count,
-                    "has_summary": bool(c.summary),
-                    "created_at": c.created_at.isoformat() if c.created_at else None,
-                    "updated_at": c.updated_at.isoformat() if c.updated_at else None
-                }
-                for c in conversations
-            ]
+            matched_messages = {}
+            if normalized_query and conversations:
+                session_ids = [conversation.session_id for conversation in conversations]
+                matches = db.query(ConversationMessage).filter(
+                    ConversationMessage.session_id.in_(session_ids),
+                    ConversationMessage.content.ilike(pattern, escape="\\"),
+                ).order_by(ConversationMessage.id.asc()).all()
+                for message in matches:
+                    matched_messages.setdefault(message.session_id, message)
 
+            result = []
+            for conversation in conversations:
+                matched_message = matched_messages.get(conversation.session_id)
+                result.append({
+                    "session_id": conversation.session_id,
+                    "title": conversation.title or "新对话",
+                    "message_count": conversation.message_count,
+                    "has_summary": bool(conversation.summary),
+                    "match_snippet": (
+                        _search_snippet(matched_message.content, normalized_query)
+                        if matched_message else None
+                    ),
+                    "matched_message_id": matched_message.id if matched_message else None,
+                    "created_at": (
+                        conversation.created_at.isoformat()
+                        if conversation.created_at else None
+                    ),
+                    "updated_at": (
+                        conversation.updated_at.isoformat()
+                        if conversation.updated_at else None
+                    ),
+                })
+            return result
+
+        finally:
+            if should_close:
+                db.close()
+
+    def get_session_messages(
+        self,
+        session_id: str,
+        db: Session = None,
+    ) -> Optional[Dict]:
+        """读取指定会话的完整历史消息，供前端恢复对话。"""
+        should_close = False
+        if db is None:
+            db = SessionLocal()
+            should_close = True
+
+        try:
+            conversation = db.query(Conversation).filter(
+                Conversation.session_id == session_id
+            ).first()
+            if conversation is None:
+                return None
+            messages = db.query(ConversationMessage).filter(
+                ConversationMessage.session_id == session_id
+            ).order_by(ConversationMessage.id.asc()).all()
+            from backend.app.models.wiki import AgentPendingAction
+
+            action_ids = {
+                str((message.extra_data or {}).get("pending_action_id"))
+                for message in messages
+                if (message.extra_data or {}).get("pending_action_id")
+            }
+            pending_actions = {
+                action.id: action
+                for action in (
+                    db.query(AgentPendingAction)
+                    .filter(AgentPendingAction.id.in_(action_ids))
+                    .all()
+                    if action_ids else []
+                )
+            }
+
+            def message_to_dict(message: ConversationMessage) -> Dict:
+                metadata = dict(message.extra_data or {})
+                action_id = metadata.get("pending_action_id")
+                if action_id:
+                    pending = pending_actions.get(action_id)
+                    expires_at = pending.expires_at if pending else None
+                    if expires_at and expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=timezone.utc)
+                    is_action_pending = bool(
+                        pending
+                        and pending.status == "pending"
+                        and expires_at
+                        and expires_at > datetime.now(timezone.utc)
+                    )
+                    metadata["confirmation_required"] = is_action_pending
+                    metadata["action_preview"] = (
+                        list(pending.preview or []) if is_action_pending else []
+                    )
+                return {
+                    "id": message.id,
+                    "role": message.role,
+                    "content": message.content,
+                    "intent": message.intent,
+                    "metadata": metadata,
+                    "created_at": (
+                        message.created_at.isoformat()
+                        if message.created_at else None
+                    ),
+                }
+
+            return {
+                "session_id": conversation.session_id,
+                "title": conversation.title or "新对话",
+                "messages": [message_to_dict(message) for message in messages],
+            }
         finally:
             if should_close:
                 db.close()

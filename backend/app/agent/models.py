@@ -153,6 +153,7 @@ class UpdateNoteParameters(ToolParameters):
     content: Optional[str] = None
     tags: Optional[List[str]] = None
     summary: Optional[str] = None
+    research_run_id: Optional[str] = None
 
 
 class DeleteNoteParameters(ToolParameters):

@@ -174,9 +174,7 @@ class AgentToolRegistry:
         params = CreateNoteParameters(**parameters)
         service = self._page_factory(db)
         if params.research_run_id:
-            run = db.get(ExternalResearchRun, params.research_run_id)
-            if run is None or run.status not in {"completed", "save_pending", "saved"}:
-                raise ValueError("外部研究任务不存在或状态不可保存")
+            run = self._research_run(params.research_run_id, db)
             result = service.upsert_page_by_source(
                 title=params.title,
                 content=params.content,
@@ -186,25 +184,7 @@ class AgentToolRegistry:
                 source_uri=f"external-research:{run.id}",
                 change_summary="确认后保存外部研究草稿",
             )
-            for source in run.sources:
-                exists = (
-                    db.query(WikiPageSource)
-                    .filter(
-                        WikiPageSource.page_id == result["id"],
-                        WikiPageSource.research_source_id == source.id,
-                    )
-                    .first()
-                )
-                if not exists:
-                    db.add(
-                        WikiPageSource(
-                            page_id=result["id"],
-                            research_source_id=source.id,
-                        )
-                    )
-            run.page_id = result["id"]
-            run.status = "saved"
-            db.commit()
+            self._link_research_sources(result["id"], run, db)
             result["research_run_id"] = run.id
             return result
 
@@ -222,7 +202,8 @@ class AgentToolRegistry:
         params = UpdateNoteParameters(**parameters)
         service = self._page_factory(db)
         current = service.find_page(params.filename)
-        return service.update_page(
+        run = self._research_run(params.research_run_id, db) if params.research_run_id else None
+        result = service.update_page(
             current["id"],
             expected_revision=current["revision"],
             title=params.title,
@@ -230,6 +211,45 @@ class AgentToolRegistry:
             tags=params.tags,
             change_summary="Agent 确认后更新页面",
         )
+        if run:
+            self._link_research_sources(result["id"], run, db)
+            result["research_run_id"] = run.id
+        return result
+
+    @staticmethod
+    def _research_run(run_id: str, db: Session) -> ExternalResearchRun:
+        """校验纠错或外部研究草稿仍允许写入。"""
+        run = db.get(ExternalResearchRun, run_id)
+        if run is None or run.status not in {"completed", "save_pending", "saved"}:
+            raise ValueError("外部研究任务不存在或状态不可保存")
+        return run
+
+    @staticmethod
+    def _link_research_sources(
+        page_id: str,
+        run: ExternalResearchRun,
+        db: Session,
+    ) -> None:
+        """建立页面与外部来源关系，并完成研究任务状态迁移。"""
+        for source in run.sources:
+            exists = (
+                db.query(WikiPageSource)
+                .filter(
+                    WikiPageSource.page_id == page_id,
+                    WikiPageSource.research_source_id == source.id,
+                )
+                .first()
+            )
+            if not exists:
+                db.add(
+                    WikiPageSource(
+                        page_id=page_id,
+                        research_source_id=source.id,
+                    )
+                )
+        run.page_id = page_id
+        run.status = "saved"
+        db.commit()
 
     def delete_note(self, parameters: Dict, db: Session) -> Dict:
         """通过 PageService 删除页面，历史版本继续保留。"""

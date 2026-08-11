@@ -43,8 +43,9 @@ function headingsFrom(content) {
   })
 }
 
-export default function WikiWorkspace({ searchQuery, setSearchQuery, notify }) {
+export default function WikiWorkspace({ notify }) {
   const [pages, setPages] = useState([])
+  const [searchQuery, setSearchQuery] = useState('')
   const [selectedId, setSelectedId] = useState(null)
   const [current, setCurrent] = useState(null)
   const [links, setLinks] = useState({ outgoing: [], backlinks: [] })
@@ -56,8 +57,11 @@ export default function WikiWorkspace({ searchQuery, setSearchQuery, notify }) {
   const [tagFilter, setTagFilter] = useState('')
   const [modal, setModal] = useState(null)
   const uploadRef = useRef(null)
+  const pageRequestSequence = useRef(0)
 
   const loadPages = useCallback(async () => {
+    const requestSequence = pageRequestSequence.current + 1
+    pageRequestSequence.current = requestSequence
     setLoading(true)
     try {
       const params = new URLSearchParams({ page_size: '100' })
@@ -65,15 +69,17 @@ export default function WikiWorkspace({ searchQuery, setSearchQuery, notify }) {
       if (notebookFilter) params.set('notebook', notebookFilter)
       if (tagFilter) params.set('tag', tagFilter)
       const data = await api(`/api/pages?${params}`)
+      if (requestSequence !== pageRequestSequence.current) return
       setPages(data.results || [])
       setSelectedId((previous) => {
         if (previous && data.results?.some((page) => page.id === previous)) return previous
         return data.results?.[0]?.id || null
       })
     } catch (error) {
+      if (requestSequence !== pageRequestSequence.current) return
       notify(error.message, 'error')
     } finally {
-      setLoading(false)
+      if (requestSequence === pageRequestSequence.current) setLoading(false)
     }
   }, [notebookFilter, notify, searchQuery, tagFilter])
 
@@ -246,6 +252,21 @@ export default function WikiWorkspace({ searchQuery, setSearchQuery, notify }) {
           </button>
         </div>
 
+        <label className="browser-search">
+          <Search size={15} />
+          <input
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="搜索文档名称和正文"
+            aria-label="搜索知识库文档"
+          />
+          {searchQuery && (
+            <button type="button" title="清空搜索" aria-label="清空知识库搜索" onClick={() => setSearchQuery('')}>
+              <X size={14} />
+            </button>
+          )}
+        </label>
+
         <div className="filter-block">
           <div className="filter-label"><BookOpen size={14} /> 笔记本</div>
           <button className={!notebookFilter ? 'filter active' : 'filter'} onClick={() => setNotebookFilter('')}>全部页面</button>
@@ -275,9 +296,13 @@ export default function WikiWorkspace({ searchQuery, setSearchQuery, notify }) {
           {loading && <div className="inline-loading"><LoaderCircle size={16} className="spin" /> 加载中</div>}
           {!loading && pages.length === 0 && <div className="empty-inline">没有匹配的页面</div>}
           {pages.map((page) => (
-            <button key={page.id} className={selectedId === page.id ? 'page-row active' : 'page-row'} type="button" onClick={() => setSelectedId(page.id)}>
+            <button key={page.id} className={`${selectedId === page.id ? 'page-row active' : 'page-row'}${page.match_snippet ? ' with-snippet' : ''}`} type="button" onClick={() => setSelectedId(page.id)}>
               <FileText size={16} />
-              <span><strong>{page.title}</strong><small>{page.notebook || page.source_type} · {formatDate(page.updated_at)}</small></span>
+              <span>
+                <strong>{page.title}</strong>
+                <small>{page.notebook || page.source_type} · {formatDate(page.updated_at)}</small>
+                {page.match_snippet && <em>{page.match_snippet}</em>}
+              </span>
               {page.index_status === 'failed' && <i className="status-mark error" title={page.index_error}>!</i>}
             </button>
           ))}

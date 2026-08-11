@@ -713,7 +713,10 @@ class PlanExecuteAgent:
                 "evidence_status": response.evidence_status,
                 "evidence_score": response.evidence_score,
                 "evidence_source_count": response.evidence_source_count,
+                "evidence_reason": response.evidence_reason,
                 "external_research_available": response.external_research_available,
+                "action_preview": response.action_preview,
+                "request_id": response.request_id,
             },
             db=db,
         )

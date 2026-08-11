@@ -2,7 +2,7 @@
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from backend.app.agent.agent import get_agent
@@ -16,12 +16,30 @@ router = APIRouter()
 
 
 @router.get("/sessions/", response_model=SessionListResponse)
-async def list_sessions(db: Session = Depends(get_db)):
+async def list_sessions(
+    query: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
     try:
-        sessions = get_memory_service().list_sessions(db)
+        sessions = get_memory_service().list_sessions(db, limit=limit, query=query)
         return SessionListResponse(sessions=sessions, total=len(sessions))
     except Exception as exc:
         logger.error("列出会话失败: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str, db: Session = Depends(get_db)):
+    try:
+        result = get_memory_service().get_session_messages(session_id, db)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("读取会话历史失败: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

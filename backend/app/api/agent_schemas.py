@@ -1,7 +1,7 @@
 """Agent API 共享请求与响应模型。"""
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,47 @@ class AgentChatResponse(BaseModel):
 
 class AgentActionRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=64)
+
+
+class AnswerFeedbackCreateRequest(BaseModel):
+    request_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=64)
+    category: Literal[
+        "knowledge_missing",
+        "content_outdated",
+        "citation_error",
+        "answer_irrelevant",
+    ]
+    user_note: Optional[str] = Field(default=None, max_length=1000)
+    target_page_id: Optional[str] = Field(default=None, max_length=36)
+
+
+class AnswerFeedbackActionRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=64)
+
+
+class AnswerFeedbackResponse(BaseModel):
+    id: str
+    request_id: str
+    session_id: str
+    category: str
+    category_label: str
+    status: str
+    question: str
+    user_note: Optional[str] = None
+    target_page_id: Optional[str] = None
+    external_research_run_id: Optional[str] = None
+    pending_action_id: Optional[str] = None
+    action_preview: List[Dict[str, Any]] = Field(default_factory=list)
+    before: Dict[str, Any]
+    draft: Dict[str, Any]
+    write_result: Optional[Dict[str, Any]] = None
+    index_result: Optional[Dict[str, Any]] = None
+    retest: Dict[str, Any]
+    error: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 
 
 class AgentRunStatusResponse(BaseModel):

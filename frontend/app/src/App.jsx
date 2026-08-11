@@ -2,11 +2,9 @@ import { useCallback, useState } from 'react'
 import {
   BookOpen,
   BrainCircuit,
-  Command,
   Menu,
   MessageSquareText,
   Mic2,
-  Search,
   X,
 } from 'lucide-react'
 import AskWorkspace from './views/AskWorkspace'
@@ -21,7 +19,6 @@ const views = {
 
 export default function App() {
   const [activeView, setActiveView] = useState('wiki')
-  const [searchQuery, setSearchQuery] = useState('')
   const [toast, setToast] = useState(null)
   const [mobileNav, setMobileNav] = useState(false)
 
@@ -62,14 +59,12 @@ export default function App() {
           >
             {mobileNav ? <X size={20} /> : <Menu size={20} />}
           </button>
-          {activeView === 'wiki' ? (
-            <label className="global-search"><Search size={17} /><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索标题、标签或别名" /><kbd><Command size={12} /> K</kbd></label>
-          ) : <div className="topbar-context">{views[activeView].label}</div>}
+          <div className="topbar-context">{views[activeView].label}</div>
           <div className="topbar-badge">Agent Runtime <span>online</span></div>
         </header>
 
         <div className="view-container">
-          {activeView === 'wiki' && <WikiWorkspace searchQuery={searchQuery} setSearchQuery={setSearchQuery} notify={notify} />}
+          {activeView === 'wiki' && <WikiWorkspace notify={notify} />}
           {activeView === 'ask' && <AskWorkspace notify={notify} />}
           {activeView === 'capture' && <CaptureWorkspace notify={notify} onSaved={() => openView('wiki')} />}
         </div>

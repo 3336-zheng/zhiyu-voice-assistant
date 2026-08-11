@@ -163,6 +163,29 @@ class PageServiceTestCase(unittest.TestCase):
         with self.assertRaises(PageValidationError):
             self.service.get_page(changed["id"])
 
+    def test_list_pages_searches_metadata_and_markdown_content(self):
+        body_match = self.service.create_page(
+            title="课堂记录",
+            content="这里记录父子分块与统一融合的实现细节。",
+            notebook="学习",
+        )
+        title_match = self.service.create_page(
+            title="检索预算",
+            content="另一份正文",
+            tags=["RAG"],
+        )
+        self.service.create_page(title="无关页面", content="普通内容")
+
+        body_results = self.service.list_pages(query="父子分块")
+        self.assertEqual(body_results["total"], 1)
+        self.assertEqual(body_results["items"][0]["id"], body_match["id"])
+        self.assertIn("父子分块", body_results["items"][0]["match_snippet"])
+
+        title_results = self.service.list_pages(query="检索预算")
+        self.assertEqual(title_results["total"], 1)
+        self.assertEqual(title_results["items"][0]["id"], title_match["id"])
+        self.assertIsNone(title_results["items"][0]["match_snippet"])
+
     def test_index_failure_retry_and_delete_cleanup(self):
         self.indexer.fail_index = True
         created = self.service.create_page(title="索引恢复", content="正文", sync_index=True)

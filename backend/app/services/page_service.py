@@ -1,6 +1,7 @@
 """统一的 Wiki 页面编排服务。"""
 
 import uuid
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -27,6 +28,19 @@ ACTIVE_STATUS = "active"
 def utc_now() -> datetime:
     """返回带时区的 UTC 时间。"""
     return datetime.now(timezone.utc)
+
+
+def _search_snippet(content: str, query: str, radius: int = 56) -> str:
+    """返回 Markdown 正文命中词附近的单行片段。"""
+    normalized = re.sub(r"\s+", " ", content or "").strip()
+    index = normalized.casefold().find(query.casefold())
+    if index < 0:
+        return ""
+    start = max(0, index - radius)
+    end = min(len(normalized), index + len(query) + radius)
+    prefix = "..." if start else ""
+    suffix = "..." if end < len(normalized) else ""
+    return f"{prefix}{normalized[start:end]}{suffix}"
 
 
 class PageService:
@@ -242,7 +256,7 @@ class PageService:
         offset: int = 0,
         limit: int = 100,
     ) -> Dict[str, Any]:
-        """分页列出页面，并支持基础元数据过滤。"""
+        """分页列出页面，并支持元数据及 Markdown 正文过滤。"""
         rows_query = self.db.query(WikiPage)
         if not include_deleted:
             rows_query = rows_query.filter(WikiPage.status != "deleted")
@@ -252,18 +266,35 @@ class PageService:
             rows_query = rows_query.filter(WikiPage.source_type == source_type)
         rows = rows_query.order_by(WikiPage.updated_at.desc()).all()
 
-        lowered_query = query.casefold() if query else None
+        normalized_query = (query or "").strip()
+        lowered_query = normalized_query.casefold() if normalized_query else None
         filtered = []
         for row in rows:
             if tag and tag not in (row.tags or []):
                 continue
+            match_snippet = None
             if lowered_query:
                 names = [row.title, *(row.aliases or []), *(row.tags or [])]
-                if not any(lowered_query in str(value).casefold() for value in names):
+                metadata_matches = any(
+                    lowered_query in str(value).casefold() for value in names
+                )
+                content_matches = False
+                try:
+                    _, content = self.file_store.read_page(row)
+                    content_matches = lowered_query in content.casefold()
+                    if content_matches:
+                        match_snippet = _search_snippet(content, normalized_query)
+                except (OSError, PageValidationError):
+                    content_matches = False
+                if not metadata_matches and not content_matches:
                     continue
-            filtered.append(row)
+            filtered.append((row, match_snippet))
 
-        items = [self._page_summary(row) for row in filtered[offset:offset + limit]]
+        items = []
+        for row, match_snippet in filtered[offset:offset + limit]:
+            item = self._page_summary(row)
+            item["match_snippet"] = match_snippet
+            items.append(item)
         return {"total": len(filtered), "offset": offset, "limit": limit, "items": items}
 
     def update_page(

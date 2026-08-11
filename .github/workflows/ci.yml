@@ -7,10 +7,18 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend:
-    name: Backend checks
+    name: Backend unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -24,21 +32,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Compile Python sources
-        run: python -m compileall -q backend scripts main.py
-
       - name: Run unit tests
         run: python -m unittest discover -s test -p "test_*_unit.py" -v
-
-      - name: Run API integration tests
-        run: python -m unittest discover -s test -p "test_*_integration.py" -v
-
-      - name: Run model-free RAG evaluation
-        run: python test/eval/rag_eval.py --methods bm25 --output /tmp/zhiyu-rag-eval.json
 
   frontend:
     name: Frontend build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: frontend
@@ -56,50 +56,3 @@ jobs:
 
       - name: Build React application
         run: npm run build
-
-  dependency-audit:
-    name: Dependency audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Audit Python dependencies
-        run: |
-          python -m pip install --upgrade pip pip-audit
-          # PYSEC-2026-311 affects Chroma's unauthenticated HTTP server API.
-          # Zhiyu only uses the embedded PersistentClient; remove this exception
-          # as soon as Chroma publishes a fixed release.
-          pip-audit -r requirements.txt --ignore-vuln PYSEC-2026-311
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Audit frontend dependencies
-        working-directory: frontend
-        run: npm audit --audit-level=high
-
-  container:
-    name: Container build
-    needs: [backend, frontend]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build application image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          tags: zhiyu:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max

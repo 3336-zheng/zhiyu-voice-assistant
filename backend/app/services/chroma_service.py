@@ -2,6 +2,9 @@
 ChromaDB 向量数据库服务
 支持元数据过滤和混合检索
 """
+import hashlib
+import re
+
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from typing import List, Tuple, Optional, Dict, Any
@@ -12,13 +15,33 @@ from backend.app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+def resolve_embedding_collection_name(
+    base_name: str,
+    *,
+    provider: str,
+    api_url: str = "",
+    model: str = "",
+    dimensions: int = 0,
+) -> str:
+    """为在线 Embedding 配置生成稳定且不包含凭证的集合名。"""
+    if provider == "local":
+        return base_name
+    profile = "|".join(
+        [provider.strip(), api_url.strip().rstrip("/"), model.strip(), str(dimensions or 0)]
+    )
+    digest = hashlib.sha256(profile.encode("utf-8")).hexdigest()[:12]
+    safe_base = re.sub(r"[^A-Za-z0-9._-]+", "-", base_name).strip("._-") or "notes"
+    safe_base = safe_base[:49].rstrip("._-") or "notes"
+    return f"{safe_base}-{digest}"
+
+
 class ChromaService:
     """
     ChromaDB 向量数据库服务
     负责向量存储、检索和元数据过滤
     """
 
-    def __init__(self, persist_directory: str = None):
+    def __init__(self, persist_directory: str = None, collection_name: str = None):
         """
         初始化 ChromaDB 服务
 
@@ -26,7 +49,18 @@ class ChromaService:
             persist_directory: ChromaDB 持久化目录，默认使用配置中的路径
         """
         self.persist_directory = persist_directory or settings.chroma_persist_path
-        self.collection_name = settings.chroma_collection_name
+        self.base_collection_name = collection_name or settings.chroma_collection_name
+        self.collection_name = (
+            self.base_collection_name
+            if collection_name
+            else resolve_embedding_collection_name(
+                self.base_collection_name,
+                provider=settings.embedding_provider,
+                api_url=settings.embedding_api_url,
+                model=settings.embedding_model,
+                dimensions=settings.embedding_dimensions,
+            )
+        )
 
         # 初始化 ChromaDB 客户端（持久化模式）
         self.client = chromadb.PersistentClient(
@@ -42,7 +76,11 @@ class ChromaService:
             metadata={"hnsw:space": "cosine"}  # 使用余弦相似度
         )
 
-        logger.info(f"ChromaDB 服务初始化完成，集合: {self.collection_name}")
+        logger.info(
+            "ChromaDB 服务初始化完成，集合: %s，Embedding Provider: %s",
+            self.collection_name,
+            settings.embedding_provider,
+        )
 
     def add_embedding(
         self,
@@ -56,7 +94,7 @@ class ChromaService:
 
         Args:
             note_id: 笔记ID
-            embedding: 1024维向量
+            embedding: 当前 Embedding 模型生成的向量
             content: 笔记内容（用于文档存储）
             metadata: 元数据字典（可包含标题、标签、时间等）
 

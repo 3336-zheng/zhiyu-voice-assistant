@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from sqlalchemy.orm import Session
 
+from backend.app.core.config import settings
 from backend.app.agent.models import (
     CreateNoteParameters,
     CurrentTimeParameters,
@@ -299,7 +300,11 @@ class AgentToolRegistry:
         raw_content = SummarizeTextParameters(**parameters).content
         if isinstance(raw_content, list):
             if raw_content and isinstance(raw_content[0], dict):
-                filtered = [item for item in raw_content if item.get("rerank_score", 0) > 0.5]
+                filtered = [
+                    item
+                    for item in raw_content
+                    if item.get("rerank_score", 0) >= settings.evidence_min_score
+                ]
                 if filtered:
                     logger.info(
                         "[summarize_text] 分数过滤: %s -> %s 条",

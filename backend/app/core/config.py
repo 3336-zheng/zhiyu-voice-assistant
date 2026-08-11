@@ -3,6 +3,8 @@
 """
 import json
 import os
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
@@ -23,8 +25,21 @@ class Settings(BaseSettings):
 
     # 模型路径配置（需在 .env 中填写实际路径）
     whisper_model_path: str = ""
+    embedding_provider: Literal["local", "openai_compatible"] = "local"
     embedding_model_path: str = ""
+    embedding_api_key: str = ""
+    embedding_api_url: str = ""
+    embedding_model: str = ""
+    embedding_dimensions: int = Field(default=0, ge=0)
+    embedding_batch_size: int = Field(default=32, ge=1, le=2048)
+    embedding_timeout_seconds: float = Field(default=30.0, gt=0)
+    embedding_max_retries: int = Field(default=2, ge=0, le=10)
+    reranker_provider: Literal["local", "rerank_compatible"] = "local"
     reranker_model_path: str = ""
+    reranker_api_key: str = ""
+    reranker_api_url: str = ""
+    reranker_model: str = ""
+    reranker_timeout_seconds: float = Field(default=30.0, gt=0)
 
     # 文件存储配置
     upload_dir: str = "data/uploads"

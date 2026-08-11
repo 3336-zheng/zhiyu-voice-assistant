@@ -4,7 +4,7 @@
 
 **本地优先 AI Wiki，面向可信知识沉淀与可恢复 Agent 执行**
 
-语音、文档和笔记 → 可维护 Wiki → 可信 RAG → 受控研究 → 确认式写入
+语音、文档和笔记 → 可维护 Wiki → 可信 RAG → 受控研究 → 确认式写入 → 回答纠错与复测
 
 <p>
   <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+" />
@@ -28,10 +28,12 @@
 | --- | --- | --- |
 | **可维护知识主数据** | Markdown 正文 + SQLite 元数据、版本、链接与运行记录 | 文本可读、可迁移、可备份；索引故障不影响正文 |
 | **可信 RAG v2** | 父子分块、多查询统一 RRF、单次精排、Token 预算、CRAG、Evidence Gate | 兼顾召回精度、上下文完整性和证据约束 |
+| **可配置检索模型** | 本地 BGE / OpenAI 兼容 Embedding、独立在线 Rerank、向量空间隔离 | 本地隐私与云端模型能力可按部署条件组合，不污染既有索引 |
 | **受限动态 Agent** | 工具能力注册表、JSON Schema、多步骤 DAG、风险策略、结果评估与有限 Replan | 让模型负责规划，让后端掌握执行、预算和权限 |
 | **可恢复 Agent Runtime** | 单次真实流、类型化事件、断线续传、取消、超时、终态回放与重启收敛 | 将长流程从 HTTP 连接中解耦，明确失败语义 |
 | **受控 MCP 研究** | Search/Fetch 白名单、URL/来源校验、来源快照、研究草稿 | 本地证据不足时可查外部资料，但不自动越权写库 |
 | **确认式知识写入** | 预览 → 确认 → 幂等执行 | 防止模型误写、重复确认和网络重试产生副作用 |
+| **回答纠错闭环** | 回答反馈、证据快照、研究草稿、确认修订、同步索引、原题复测 | 将一次性问答变成可追踪、可恢复的知识改进流程 |
 | **可观测与可恢复** | Request ID、阶段时间线、检索统计、模型用量、持久化索引任务 | 能定位慢在哪里、错在哪里、恢复从哪里继续 |
 
 ## 一眼看懂架构
@@ -40,14 +42,20 @@
 flowchart LR
     A["语音 / 文档 / 笔记"] --> B["Wiki 主数据<br/>Markdown + SQLite"]
     B --> C["持久化索引任务"]
-    C --> D["BM25 + ChromaDB"]
-    D --> E["RAG v2<br/>统一融合 + 精排 + 证据门禁"]
+    C --> D["BM25 + ChromaDB<br/>本地 / 在线 Embedding"]
+    D --> E["RAG v2<br/>统一融合 + 本地 / 在线精排 + 证据门禁"]
     E --> F["Agent Runtime<br/>单次流 / 可续传 / 可恢复"]
     F --> G["可信回答<br/>结构化引用"]
     E -.证据不足.-> H["MCP Search / Fetch"]
     H --> I["来源快照 + Wiki 草稿"]
     I --> J["用户确认"]
     J --> B
+    G --> K["回答反馈"]
+    K --> H
+    K --> L["确认补充 / 修订"]
+    L --> B
+    B --> M["同步索引 + 原题复测"]
+    M --> G
 ```
 
 ### 关键数据边界
@@ -56,9 +64,10 @@ flowchart LR
 Markdown + SQLite     业务主数据：需要备份、可直接读取
 BM25 + ChromaDB       派生索引：可删除、可从主数据重建
 Agent Run / 事件      执行状态：支持续传、终态回放和重启收敛
+回答反馈 / 证据快照   纠错状态：支持确认、分阶段重试和原题复测
 ```
 
-页面写入先校验期望版本并原子保存正文，再在 SQLite 事务中记录版本和索引任务；并发更新返回 `409`，索引失败按退避策略重试。当前 schema 为 `6`，FastAPI `lifespan` 统一负责迁移、任务恢复和 Worker 启停。
+页面写入先校验期望版本并原子保存正文，再在 SQLite 事务中记录版本和索引任务；并发更新返回 `409`，索引失败按退避策略重试。当前 schema 为 `8`，新增会话标题/搜索与回答反馈状态；FastAPI `lifespan` 统一负责迁移、任务恢复和 Worker 启停。
 
 ## 技术栈
 
@@ -67,7 +76,7 @@ Agent Run / 事件      执行状态：支持续传、终态回放和重启收�
 | 前端工作台 | React 19、Vite 6、React Markdown、Lucide React、SSE |
 | API 与运行时 | Python 3.11、FastAPI、Uvicorn、Pydantic v2、LangGraph |
 | 数据与文件 | SQLite、SQLAlchemy 同步 Session、UTF-8 Markdown、YAML Front Matter |
-| 混合检索 | BM25、Jieba、BGE Embedding、ChromaDB、RRF、BGE Reranker |
+| 混合检索 | BM25、Jieba、ChromaDB、RRF、本地 BGE / OpenAI 兼容 Embedding、本地 BGE / Cohere 兼容 Rerank |
 | Agent 与外部研究 | Capability Registry、Plan-and-Execute、有限 Replan、CRAG、MCP Python SDK、OpenAI 兼容模型接口 |
 | 多模态采集 | faster-whisper、DashScope ASR、pdfplumber、python-docx |
 | 可观测性 | Request ID、Server-Timing、Langfuse、OpenTelemetry |
@@ -90,6 +99,25 @@ Query Rewrite
 ```
 
 子块用于提高召回粒度，父块用于精排、上下文和稳定引用。多查询结果先汇总再融合和精排，避免为每个改写查询重复执行整条链路。回答中的来源保留页面、版本、章节和稳定 Chunk ID；音频页面额外支持转写时间范围回溯。
+
+### 本地与在线检索模型
+
+Embedding 和 Rerank 保留相同的内部调用契约，可以分别选择本地或在线实现。默认配置继续使用本地模型；接入模型网关时只需修改 `.env`，RAG、Agent 和索引任务无需改代码。
+
+```env
+EMBEDDING_PROVIDER=openai_compatible
+EMBEDDING_API_URL=https://your-gateway.example.com/v1
+EMBEDDING_API_KEY=your_api_key
+EMBEDDING_MODEL=text-embedding-3-large
+EMBEDDING_DIMENSIONS=1024
+
+RERANKER_PROVIDER=rerank_compatible
+RERANKER_API_URL=https://ai-gateway.vercel.sh/v1/rerank
+RERANKER_API_KEY=your_vercel_ai_gateway_key
+RERANKER_MODEL=cohere/rerank-v3.5
+```
+
+在线 Embedding 使用批量 OpenAI Embeddings 协议；`rerank_compatible` 使用 Cohere/Jina 风格的 `query + documents + top_n` 协议，可直连 Vercel AI Gateway、Jina 或 SiliconFlow，并将响应统一为 `index + score`。`RERANKER_API_URL` 必须填写包含 `/v1/rerank` 的完整地址。不同在线 Embedding 网关、模型或维度会自动使用独立 Chroma 集合，切换后需要在知识库执行一次“重建索引”。系统不会在 Embedding 失败时静默切换模型，因为索引向量与查询向量必须来自同一语义空间；Rerank 可以独立更换，不需要重建索引。
 
 ## 分层上下文策略
 
@@ -133,6 +161,18 @@ Agent Run 不依赖浏览器连接存活：模型只生成一次，增量片段�
 
 应用只调用部署时配置的工具，拒绝本机/私网/保留地址、凭证 URL 和非 HTTP(S) 协议；外部正文作为不可信证据隔离，不能把网页指令当作 Agent 指令执行。研究结果不会自动创建页面。
 
+已完成回答还可以进入持续纠错闭环：
+
+```text
+标记知识缺失 / 内容过期 / 引用错误 / 回答不相关
+→ 保存原问题、回答、引用与检索统计快照
+→ MCP 外部研究 → 生成补充页面或既有页面修订草稿
+→ 用户确认 → 写入 Wiki → 同步索引
+→ 使用原问题启动新 Run → 保存复测回答与新检索快照
+```
+
+反馈以原回答的 Request ID 保证幂等；内容过期只能修订该回答实际引用的页面。写入、索引和复测分别持久化状态，索引或复测失败只重试当前阶段，不重复执行已经完成的页面写入。历史会话按首条用户消息生成标题，可按标题或消息正文搜索并恢复完整消息、引用和待确认状态；Wiki 搜索同时覆盖标题、标签与 Markdown 正文。
+
 ## 快速开始
 
 环境要求：Python 3.11+、Node.js 20+、ffmpeg，以及本地 Embedding/Reranker 模型或相应服务配置。
@@ -153,6 +193,8 @@ python main.py
 
 应用默认运行在 `http://127.0.0.1:8337`，开发前端可在 `frontend` 目录运行 `npm run dev`。模型路径和 API 配置见 [.env.example](.env.example)；不配置模型时，页面管理等非模型能力仍可使用。
 
+API Key 只保存在未纳入版本控制的 `.env` 中。启用在线 Embedding 或 Rerank 意味着查询和候选正文会发送到配置的服务端点，应只使用受信任的模型网关。
+
 ## 验证与边界
 
 ```bash
@@ -164,7 +206,7 @@ npm run build
 npm audit --omit=dev
 ```
 
-当前验证覆盖页面 `409` 冲突、索引失败重试与重启恢复、RAG v2、计划 Schema 与 DAG 校验、风险确认、有限 Replan、分层上下文装配、Token 触发摘要、Agent 事件顺序与断线回放、取消、超时、重复确认、模型故障转移、增量摘要、MCP 安全边界、备份恢复和音频溯源。已验证基线为后端 `58 passed`、依赖检查通过、React 构建通过、生产依赖审计 0 漏洞。
+当前自动化测试覆盖页面 `409` 冲突、索引失败重试与重启恢复、RAG v2、计划 Schema 与 DAG 校验、风险确认、有限 Replan、分层上下文装配、Token 触发摘要、Agent 事件顺序与断线回放、取消、超时、重复确认、模型故障转移、MCP 安全边界、备份恢复和音频溯源；新增覆盖回答快照与自动复测、重复反馈幂等、草稿失败恢复、索引分阶段重试、会话/正文搜索、在线 Embedding/Rerank 协议适配、Provider 错误脱敏、向量集合隔离及 schema v5-v7 到 v8 的迁移。请以当前提交实际执行上述命令的结果作为验证基线。
 
 当前面向单用户、本机或可信内网部署，不包含多租户认证、细粒度权限、分布式任务调度和多实例 Agent 状态共享。生产化时需要根据负载迁移 PostgreSQL、共享运行状态、独立任务队列和权限审计体系。
 
@@ -175,6 +217,7 @@ npm audit --omit=dev
 - [持久化索引任务决策](docs/adr/0002-persistent-index-tasks.md)
 - [可信 Agent 决策](docs/adr/0003-trusted-agent.md)
 - [受控 MCP 研究决策](docs/adr/0004-controlled-mcp-research.md)
+- [可配置检索模型决策](docs/adr/0005-configurable-retrieval-models.md)
 
 ## License
 

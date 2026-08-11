@@ -56,29 +56,40 @@ async def check_models():
     try:
         from ..services.embedding_service import get_embedding_service
         svc = get_embedding_service()
-        models["embedding"] = "loaded" if hasattr(svc, "model") and svc.model is not None else "not_loaded"
+        models["embedding"] = svc.describe()
     except Exception as e:
-        models["embedding"] = f"error: {str(e)[:100]}"
+        logger.error("Embedding 健康检查失败: %s", type(e).__name__)
+        models["embedding"] = {"status": "error", "error_type": type(e).__name__}
 
     # Reranker
     try:
         from ..services.reranker_service import get_reranker_service
         svc = get_reranker_service()
-        models["reranker"] = "loaded" if hasattr(svc, "model") and svc.model is not None else "not_loaded"
+        models["reranker"] = svc.describe()
     except Exception as e:
-        models["reranker"] = f"error: {str(e)[:100]}"
+        logger.error("Rerank 健康检查失败: %s", type(e).__name__)
+        models["reranker"] = {"status": "error", "error_type": type(e).__name__}
 
     # ChromaDB
     try:
         from ..services.chroma_service import get_chroma_service
         svc = get_chroma_service()
         count = svc.collection.count()
-        models["chromadb"] = f"loaded ({count} vectors)"
+        models["chromadb"] = {
+            "status": "ready",
+            "collection": svc.collection_name,
+            "vectors": count,
+        }
     except Exception as e:
-        models["chromadb"] = f"error: {str(e)[:100]}"
+        logger.error("ChromaDB 健康检查失败: %s", type(e).__name__)
+        models["chromadb"] = {"status": "error", "error_type": type(e).__name__}
 
     # 整体状态
-    all_ok = all(v == "loaded" or v.startswith("loaded") for v in models.values())
+    required = [models.get("embedding"), models.get("reranker"), models.get("chromadb")]
+    all_ok = all(
+        isinstance(value, dict) and value.get("status") == "ready"
+        for value in required
+    )
 
     return {
         "status": "ok" if all_ok else "degraded",

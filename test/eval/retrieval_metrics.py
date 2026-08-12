@@ -1,133 +1,143 @@
-"""
-检索评估指标
-实现 Hit@K / MRR / NDCG 三个指标
-"""
-from typing import List, Dict, Set
+"""与检索实现无关的标准排名指标。"""
+
+from __future__ import annotations
+
 import math
+import statistics
+from collections import defaultdict
+from typing import Iterable, Mapping, Sequence
 
 
-def hit_at_k(retrieved_ids: List[str], relevant_ids: Set[str], k: int) -> float:
-    """
-    Hit@K: 在前 K 个结果中是否命中相关文档
-
-    Args:
-        retrieved_ids: 检索到的文档 ID 列表（按相关性排序）
-        relevant_ids: 相关文档 ID 集合
-        k: 截断位置
-
-    Returns:
-        float: 1.0（命中）或 0.0（未命中）
-    """
-    top_k = retrieved_ids[:k]
-    for doc_id in top_k:
-        if doc_id in relevant_ids:
-            return 1.0
-    return 0.0
+def _relevant_ids(relevance: Mapping[str, float]) -> set[str]:
+    return {doc_id for doc_id, grade in relevance.items() if grade > 0}
 
 
-def mrr(retrieved_ids: List[str], relevant_ids: Set[str]) -> float:
-    """
-    MRR (Mean Reciprocal Rank): 第一个相关文档的倒数排名
-
-    Args:
-        retrieved_ids: 检索到的文档 ID 列表（按相关性排序）
-        relevant_ids: 相关文档 ID 集合
-
-    Returns:
-        float: 1/rank（rank 是第一个相关文档的位置）
-    """
-    for i, doc_id in enumerate(retrieved_ids):
-        if doc_id in relevant_ids:
-            return 1.0 / (i + 1)
-    return 0.0
+def _unique_top_k(retrieved_ids: Sequence[str], k: int) -> list[str]:
+    """按原排名去重，防止重复文档虚增指标。"""
+    unique = []
+    seen = set()
+    for doc_id in retrieved_ids:
+        if doc_id in seen:
+            continue
+        seen.add(doc_id)
+        unique.append(doc_id)
+        if len(unique) >= k:
+            break
+    return unique
 
 
-def ndcg_at_k(retrieved_ids: List[str], relevant_ids: Set[str], k: int) -> float:
-    """
-    NDCG@K (Normalized Discounted Cumulative Gain)
+def hit_at_k(
+    retrieved_ids: Sequence[str],
+    relevance: Mapping[str, float],
+    k: int,
+) -> float:
+    """前 K 条结果是否至少命中一个相关文档。"""
+    relevant = _relevant_ids(relevance)
+    return float(any(doc_id in relevant for doc_id in _unique_top_k(retrieved_ids, k)))
 
-    Args:
-        retrieved_ids: 检索到的文档 ID 列表（按相关性排序）
-        relevant_ids: 相关文档 ID 集合
-        k: 截断位置
 
-    Returns:
-        float: NDCG 分数
-    """
-    # 计算 DCG
-    dcg = 0.0
-    for i, doc_id in enumerate(retrieved_ids[:k]):
-        if doc_id in relevant_ids:
-            dcg += 1.0 / math.log2(i + 2)  # i+2 因为 log2(1) = 0
-
-    # 计算 IDCG（理想情况下的 DCG）
-    idcg = 0.0
-    num_relevant = min(len(relevant_ids), k)
-    for i in range(num_relevant):
-        idcg += 1.0 / math.log2(i + 2)
-
-    if idcg == 0:
+def precision_at_k(
+    retrieved_ids: Sequence[str],
+    relevance: Mapping[str, float],
+    k: int,
+) -> float:
+    """前 K 条结果中的相关文档比例，分母固定为 K。"""
+    if k <= 0:
         return 0.0
-
-    return dcg / idcg
-
-
-def evaluate_retrieval(
-    queries: List[Dict],
-    retrieval_fn,
-    k_values: List[int] = [1, 3, 5, 10]
-) -> Dict:
-    """
-    评估检索系统
-
-    Args:
-        queries: 查询列表，每个查询包含 {"query": str, "relevant_doc_ids": Set[str]}
-        retrieval_fn: 检索函数，接收 query 返回 doc_id 列表
-        k_values: K 值列表
-
-    Returns:
-        Dict: 评估结果
-    """
-    results = {f"hit@{k}": [] for k in k_values}
-    results["mrr"] = []
-    for k in k_values:
-        results[f"ndcg@{k}"] = []
-
-    for q in queries:
-        query = q["query"]
-        relevant_ids = q["relevant_doc_ids"]
-
-        # 执行检索
-        retrieved_ids = retrieval_fn(query)
-
-        # 计算指标
-        results["mrr"].append(mrr(retrieved_ids, relevant_ids))
-
-        for k in k_values:
-            results[f"hit@{k}"].append(hit_at_k(retrieved_ids, relevant_ids, k))
-            results[f"ndcg@{k}"].append(ndcg_at_k(retrieved_ids, relevant_ids, k))
-
-    # 计算平均值
-    avg_results = {}
-    for metric, values in results.items():
-        avg_results[metric] = sum(values) / len(values) if values else 0.0
-
-    return avg_results
+    relevant = _relevant_ids(relevance)
+    hits = sum(doc_id in relevant for doc_id in _unique_top_k(retrieved_ids, k))
+    return hits / k
 
 
-def print_metrics(results: Dict):
-    """打印评估结果"""
-    print("\n" + "=" * 50)
-    print("检索评估结果")
-    print("=" * 50)
+def recall_at_k(
+    retrieved_ids: Sequence[str],
+    relevance: Mapping[str, float],
+    k: int,
+) -> float:
+    """前 K 条结果覆盖的相关文档比例。"""
+    relevant = _relevant_ids(relevance)
+    if not relevant:
+        return 0.0
+    hits = len(set(_unique_top_k(retrieved_ids, k)) & relevant)
+    return hits / len(relevant)
 
-    for metric, value in results.items():
-        print(f"{metric:15s}: {value:.4f}")
 
-    print("=" * 50)
+def reciprocal_rank(
+    retrieved_ids: Sequence[str],
+    relevance: Mapping[str, float],
+) -> float:
+    """首个相关结果排名的倒数。"""
+    relevant = _relevant_ids(relevance)
+    for rank, doc_id in enumerate(_unique_top_k(retrieved_ids, len(retrieved_ids)), start=1):
+        if doc_id in relevant:
+            return 1.0 / rank
+    return 0.0
 
 
-if __name__ == "__main__":
-    # 示例用法
-    print("检索评估指标模块")
-    print("支持指标: Hit@K, MRR, NDCG@K")
+def ndcg_at_k(
+    retrieved_ids: Sequence[str],
+    relevance: Mapping[str, float],
+    k: int,
+) -> float:
+    """支持分级相关性的 NDCG@K，二值标签同样适用。"""
+
+    def gain(grade: float, rank: int) -> float:
+        return (2.0**grade - 1.0) / math.log2(rank + 1)
+
+    dcg = sum(
+        gain(float(relevance.get(doc_id, 0.0)), rank)
+        for rank, doc_id in enumerate(_unique_top_k(retrieved_ids, k), start=1)
+        if relevance.get(doc_id, 0.0) > 0
+    )
+    ideal_grades = sorted(
+        (float(grade) for grade in relevance.values() if grade > 0),
+        reverse=True,
+    )[:k]
+    idcg = sum(gain(grade, rank) for rank, grade in enumerate(ideal_grades, start=1))
+    return dcg / idcg if idcg else 0.0
+
+
+def evaluate_query(
+    retrieved_ids: Sequence[str],
+    relevance: Mapping[str, float],
+    k_values: Iterable[int],
+) -> dict[str, float]:
+    """计算单条查询的全部指标。"""
+    metrics = {"mrr": reciprocal_rank(retrieved_ids, relevance)}
+    for k in sorted(set(k_values)):
+        metrics[f"hit@{k}"] = hit_at_k(retrieved_ids, relevance, k)
+        metrics[f"precision@{k}"] = precision_at_k(retrieved_ids, relevance, k)
+        metrics[f"recall@{k}"] = recall_at_k(retrieved_ids, relevance, k)
+        metrics[f"ndcg@{k}"] = ndcg_at_k(retrieved_ids, relevance, k)
+    return metrics
+
+
+def aggregate_metrics(
+    query_results: Sequence[Mapping[str, object]],
+) -> dict[str, float]:
+    """对逐查询指标做宏平均，失败查询按零分保留。"""
+    values: dict[str, list[float]] = defaultdict(list)
+    for result in query_results:
+        metrics = result.get("metrics", {})
+        if isinstance(metrics, Mapping):
+            for name, value in metrics.items():
+                if isinstance(name, str) and isinstance(value, (int, float)):
+                    values[name].append(float(value))
+    return {
+        name: statistics.fmean(metric_values) if metric_values else 0.0
+        for name, metric_values in sorted(values.items())
+    }
+
+
+def aggregate_by_category(
+    query_results: Sequence[Mapping[str, object]],
+) -> dict[str, dict[str, float]]:
+    """按数据集自定义 category 输出宏平均指标。"""
+    grouped: dict[str, list[Mapping[str, object]]] = defaultdict(list)
+    for result in query_results:
+        category = result.get("category", "default")
+        grouped[str(category)].append(result)
+    return {
+        category: aggregate_metrics(results)
+        for category, results in sorted(grouped.items())
+    }

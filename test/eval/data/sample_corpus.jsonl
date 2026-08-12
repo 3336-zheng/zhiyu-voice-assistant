@@ -1,0 +1,8 @@
+{"id":"rag-overview","title":"RAG 概览","text":"检索增强生成先从外部知识库召回相关证据，再让语言模型根据证据生成回答，从而降低知识缺失造成的幻觉。","metadata":{"source":"sample","language":"zh-CN"}}
+{"id":"hybrid-retrieval","title":"混合检索","text":"混合检索并行执行 BM25 关键词召回和 Embedding 语义召回，再通过 RRF 按排名融合候选结果。","metadata":{"source":"sample","language":"zh-CN"}}
+{"id":"rerank-guide","title":"重排序","text":"Rerank 模型同时读取查询和候选文档，对融合后的候选进行精排，通常只将排名靠前的少量证据交给生成模型。","metadata":{"source":"sample","language":"zh-CN"}}
+{"id":"index-consistency","title":"向量索引一致性","text":"更换 Embedding 模型或向量维度会改变语义空间，因此文档索引和查询向量必须使用同一个模型并在切换后重建索引。","metadata":{"source":"sample","language":"zh-CN"}}
+{"id":"frontend-search","title":"前端搜索交互","text":"前端搜索框可以过滤对话标题、对话正文、知识库文档名称和正文内容。","metadata":{"source":"sample","language":"zh-CN"}}
+{"id":"database-transaction","title":"数据库事务","text":"数据库事务通过原子性、一致性、隔离性和持久性保证多步数据操作的正确性。","metadata":{"source":"sample","language":"zh-CN"}}
+{"id":"agent-confirmation","title":"Agent 写入确认","text":"Agent 对知识库执行写入或联网研究前需要经过权限校验和用户确认，后端负责预算、工具执行与审计。","metadata":{"source":"sample","language":"zh-CN"}}
+{"id":"context-budget","title":"上下文预算","text":"上下文装配按照排序顺序选择证据，并受 Token 预算约束，避免检索片段挤占模型的回答空间。","metadata":{"source":"sample","language":"zh-CN"}}

@@ -1,0 +1,5 @@
+{"id":"q-rag","query":"怎样通过检索资料减少模型胡编？","relevance":{"rag-overview":3,"hybrid-retrieval":1},"category":"语义查询","metadata":{"source":"sample"}}
+{"id":"q-hybrid","query":"BM25 和向量搜索的结果怎么合并？","relevance":{"hybrid-retrieval":3,"rerank-guide":1},"category":"检索链路","metadata":{"source":"sample"}}
+{"id":"q-rerank","query":"融合后的候选如何进一步排序？","relevant_doc_ids":["rerank-guide"],"category":"检索链路","metadata":{"source":"sample"}}
+{"id":"q-index","query":"换了嵌入模型以后为什么需要重新建库？","relevant_doc_ids":["index-consistency"],"category":"索引维护","metadata":{"source":"sample"}}
+{"id":"q-context","query":"怎么限制送给大模型的证据长度？","relevant_doc_ids":["context-budget"],"category":"上下文装配","metadata":{"source":"sample"}}

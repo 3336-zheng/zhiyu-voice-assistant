@@ -1,0 +1,104 @@
+{
+  "schema_version": "2.0",
+  "dataset_name": "zhiyu-evaluation-v2",
+  "total_questions": 120,
+  "answerable_questions": 95,
+  "unanswerable_questions": 25,
+  "question_types": {
+    "keyword": {
+      "count": 25,
+      "purpose": "验证 BM25 对专有名词、缩写、配置名和精确术语的检索能力"
+    },
+    "semantic_rewrite": {
+      "count": 35,
+      "purpose": "验证 Embedding 对不照抄标题的自然语言改写的召回能力"
+    },
+    "multi_evidence": {
+      "count": 20,
+      "purpose": "验证一个问题所需的多个事实或多个证据片段能否同时被召回"
+    },
+    "similar_concept": {
+      "count": 15,
+      "purpose": "验证 RRF 与 Rerank 能否区分知识库中的相近概念"
+    },
+    "unanswerable": {
+      "count": 25,
+      "purpose": "验证无证据或错误前提下的拒答、纠正前提或 MCP 外部研究路由"
+    }
+  },
+  "domain_quotas": [
+    {
+      "domain": "rag_retrieval",
+      "keyword": 8,
+      "semantic_rewrite": 12,
+      "multi_evidence": 8,
+      "similar_concept": 6,
+      "unanswerable": 6
+    },
+    {
+      "domain": "agent",
+      "keyword": 5,
+      "semantic_rewrite": 7,
+      "multi_evidence": 3,
+      "similar_concept": 3,
+      "unanswerable": 5
+    },
+    {
+      "domain": "embedding_vector_store",
+      "keyword": 4,
+      "semantic_rewrite": 5,
+      "multi_evidence": 2,
+      "similar_concept": 2,
+      "unanswerable": 4
+    },
+    {
+      "domain": "python_backend",
+      "keyword": 3,
+      "semantic_rewrite": 4,
+      "multi_evidence": 2,
+      "similar_concept": 1,
+      "unanswerable": 4
+    },
+    {
+      "domain": "engineering",
+      "keyword": 2,
+      "semantic_rewrite": 3,
+      "multi_evidence": 2,
+      "similar_concept": 1,
+      "unanswerable": 2
+    },
+    {
+      "domain": "zhiyu_project",
+      "keyword": 3,
+      "semantic_rewrite": 4,
+      "multi_evidence": 3,
+      "similar_concept": 2,
+      "unanswerable": 4
+    }
+  ],
+  "evaluation_scope": {
+    "retrieval_ablation": {
+      "questions": 95,
+      "methods": ["bm25", "embedding", "hybrid", "hybrid_reranker"],
+      "primary_metrics": ["evidence_recall@5", "mrr", "p95_latency_ms"]
+    },
+    "faithfulness": {
+      "questions": 50,
+      "sampling": "按 domain 与 answerable question_type 分层固定抽样",
+      "primary_metrics": ["faithfulness", "p95_latency_ms"]
+    },
+    "evidence_gate": {
+      "questions": 25,
+      "expected_actions": ["reject", "correct_premise", "external_research"],
+      "primary_metrics": ["decision_accuracy", "p95_latency_ms"]
+    }
+  },
+  "generation_rules": [
+    "所有可回答问题必须绑定原文精确证据区间和来源 SHA-256",
+    "reference_claims 中的每个事实都必须能回查到 evidence",
+    "问题不得直接复制文档标题，不得引入原文不存在的前提",
+    "同一知识点只生成一个主问题，避免近义重复导致分数虚高",
+    "无答案问题不得伪造 relevance、reference_answer 或 evidence",
+    "无答案问题按真实文档目录生成，并通过数量、动作枚举与去重校验后冻结"
+  ]
+}

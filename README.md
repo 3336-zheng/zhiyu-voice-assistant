@@ -28,6 +28,7 @@
 | --- | --- | --- |
 | **可维护知识主数据** | Markdown 正文 + SQLite 元数据、版本、链接与运行记录 | 文本可读、可迁移、可备份；索引故障不影响正文 |
 | **可信 RAG v2** | 父子分块、多查询统一 RRF、单次精排、Token 预算、CRAG、Evidence Gate | 兼顾召回精度、上下文完整性和证据约束 |
+| **可复现质量评测** | 私有语料、证据级 Question、四级检索消融与成本统计 | 评测代码公开，原始语料和真实结果保留在本地 |
 | **可配置检索模型** | 本地 BGE / OpenAI 兼容 Embedding、独立在线 Rerank、向量空间隔离 | 本地隐私与云端模型能力可按部署条件组合，不污染既有索引 |
 | **受限动态 Agent** | 工具能力注册表、JSON Schema、多步骤 DAG、风险策略、结果评估与有限 Replan | 让模型负责规划，让后端掌握执行、预算和权限 |
 | **可恢复 Agent Runtime** | 单次真实流、类型化事件、断线续传、取消、超时、终态回放与重启收敛 | 将长流程从 HTTP 连接中解耦，明确失败语义 |
@@ -100,6 +101,8 @@ Query Rewrite
 
 子块用于提高召回粒度，父块用于精排、上下文和稳定引用。多查询结果先汇总再融合和精排，避免为每个改写查询重复执行整条链路。回答中的来源保留页面、版本、章节和稳定 Chunk ID；音频页面额外支持转写时间范围回溯。
 
+父块 `1200/120`、子块 `500/80`、两路召回与精排候选各 30、最终上下文最多 5 个父块，并受 3000 Token 预算约束。这是一套面向中文技术 Markdown 的固定工程配置，不宣称算法最优。项目提供证据级 Golden Dataset 生成器和 BM25、Embedding、RRF、Rerank 四级消融入口；私有语料、生成问题和真实报告位于被 Git 忽略的 `data/eval/`，公开仓库仅保留方法、代码与小型示例。
+
 ### 本地与在线检索模型
 
 Embedding 和 Rerank 保留相同的内部调用契约，可以分别选择本地或在线实现。默认配置继续使用本地模型；接入模型网关时只需修改 `.env`，RAG、Agent 和索引任务无需改代码。
@@ -114,7 +117,7 @@ EMBEDDING_DIMENSIONS=1024
 RERANKER_PROVIDER=rerank_compatible
 RERANKER_API_URL=https://ai-gateway.vercel.sh/v1/rerank
 RERANKER_API_KEY=your_vercel_ai_gateway_key
-RERANKER_MODEL=cohere/rerank-v3.5
+RERANKER_MODEL=cohere/rerank-v4-fast
 ```
 
 在线 Embedding 使用批量 OpenAI Embeddings 协议；`rerank_compatible` 使用 Cohere/Jina 风格的 `query + documents + top_n` 协议，可直连 Vercel AI Gateway、Jina 或 SiliconFlow，并将响应统一为 `index + score`。`RERANKER_API_URL` 必须填写包含 `/v1/rerank` 的完整地址。不同在线 Embedding 网关、模型或维度会自动使用独立 Chroma 集合，切换后需要在知识库执行一次“重建索引”。系统不会在 Embedding 失败时静默切换模型，因为索引向量与查询向量必须来自同一语义空间；Rerank 可以独立更换，不需要重建索引。
@@ -213,6 +216,10 @@ npm audit --omit=dev
 ## 项目文档
 
 - [系统架构](docs/architecture.md)
+- [RAG 评测设计](docs/eval/01-evaluation-design.md)
+- [RAG 评测流程](docs/eval/02-evaluation-workflow.md)
+- [RAG 结果记录模板](docs/eval/03-evaluation-results.md)
+- [评测代码说明](test/eval/README.md)
 - [Markdown 主数据决策](docs/adr/0001-markdown-source-of-truth.md)
 - [持久化索引任务决策](docs/adr/0002-persistent-index-tasks.md)
 - [可信 Agent 决策](docs/adr/0003-trusted-agent.md)

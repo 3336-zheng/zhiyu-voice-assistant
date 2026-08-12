@@ -1,6 +1,6 @@
 """
 LLM 服务
-使用 OpenAI 兼容 SDK 调用 DeepSeek 等大模型
+使用 OpenAI 兼容 SDK 通过 Vercel AI Gateway 调用大模型
 支持 Langfuse 可观测
 """
 import json
@@ -308,6 +308,51 @@ class LLMService:
             if json_match:
                 return json.loads(json_match.group(1).strip())
             raise RuntimeError(f"无法解析 LLM 返回的 JSON: {content[:200]}")
+
+    def call_function(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        name: str,
+        description: str,
+        parameters: Dict[str, Any],
+        temperature: float = 0,
+        max_tokens: int = None,
+    ) -> Dict[str, Any]:
+        """强制调用一个 OpenAI 兼容函数，并返回经过 JSON 解析的参数。"""
+        function_name = (name or "").strip()
+        if not function_name or not isinstance(parameters, dict):
+            raise ValueError("Function Calling 需要函数名和 JSON Schema")
+        kwargs = {
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": function_name,
+                        "description": description,
+                        "parameters": parameters,
+                    },
+                }
+            ],
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": function_name},
+            },
+        }
+        try:
+            response, _, _ = self._chat_completion(kwargs)
+            tool_calls = response.choices[0].message.tool_calls or []
+            if len(tool_calls) != 1 or tool_calls[0].function.name != function_name:
+                raise RuntimeError("模型未按要求返回唯一函数调用")
+            arguments = json.loads(tool_calls[0].function.arguments)
+            if not isinstance(arguments, dict):
+                raise RuntimeError("Function Calling 参数根节点必须是对象")
+            return arguments
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Function Calling 返回了无效 JSON 参数") from exc
 
     def stream_chat(
         self,

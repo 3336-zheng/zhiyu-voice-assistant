@@ -29,9 +29,13 @@ class FakeClient:
         self.chat = SimpleNamespace(completions=FakeCompletions(result))
 
 
-def response(content="备用答案", prompt_tokens=100, completion_tokens=20):
+def response(content="备用答案", prompt_tokens=100, completion_tokens=20, tool_calls=None):
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=content, tool_calls=tool_calls)
+            )
+        ],
         usage=SimpleNamespace(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -94,6 +98,41 @@ class LLMGatewayTestCase(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "bad request"):
             service.chat([{"role": "user", "content": "问题"}])
         self.assertEqual(len(service.fallback_client.chat.completions.calls), 0)
+
+    def test_function_call_returns_arguments(self):
+        tool_call = SimpleNamespace(
+            function=SimpleNamespace(name="submit", arguments='{"value": 3}')
+        )
+        service = self.make_service(response(tool_calls=[tool_call]), None)
+
+        result = service.call_function(
+            [{"role": "user", "content": "提交"}],
+            name="submit",
+            description="提交结果",
+            parameters={
+                "type": "object",
+                "properties": {"value": {"type": "integer"}},
+                "required": ["value"],
+            },
+        )
+
+        self.assertEqual(result, {"value": 3})
+        call = service.client.chat.completions.calls[0]
+        self.assertEqual(call["tool_choice"]["function"]["name"], "submit")
+
+    def test_function_call_rejects_invalid_json_arguments(self):
+        tool_call = SimpleNamespace(
+            function=SimpleNamespace(name="submit", arguments="{invalid")
+        )
+        service = self.make_service(response(tool_calls=[tool_call]), None)
+
+        with self.assertRaisesRegex(RuntimeError, "无效 JSON"):
+            service.call_function(
+                [{"role": "user", "content": "提交"}],
+                name="submit",
+                description="提交结果",
+                parameters={"type": "object"},
+            )
 
 
 if __name__ == "__main__":

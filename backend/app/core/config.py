@@ -56,17 +56,19 @@ class Settings(BaseSettings):
 
     # 混合检索配置（新增）
     rrf_k: float = 60.0  # RRF 融合常数
-    rrf_top_k: int = 10  # 融合后候选数
-    bm25_top_k: int = 20  # BM25 检索数量
-    embedding_top_k: int = 20  # Embedding 检索数量
+    rrf_top_k: int = 30  # 融合后候选数
+    bm25_top_k: int = 30  # BM25 检索数量
+    embedding_top_k: int = 30  # Embedding 检索数量
 
     # RAG v2 配置。关闭后继续使用原有的逐查询完整检索链路。
     rag_v2_enabled: bool = True
     rag_parent_child_enabled: bool = True
-    rag_child_chunk_chars: int = 360
-    rag_child_chunk_overlap_chars: int = 60
+    rag_parent_chunk_chars: int = Field(default=1200, ge=200, le=20_000)
+    rag_parent_chunk_overlap_chars: int = Field(default=120, ge=0, le=5_000)
+    rag_child_chunk_chars: int = Field(default=500, ge=80, le=10_000)
+    rag_child_chunk_overlap_chars: int = Field(default=80, ge=0, le=2_000)
     rag_context_token_budget: int = 3000
-    rag_final_top_k: int = 8
+    rag_final_top_k: int = 5
 
     # Agent 配置（新增）
     agent_max_iterations: int = 5  # Agent 最大执行轮数
@@ -85,10 +87,10 @@ class Settings(BaseSettings):
     dashscope_asr_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_asr_model: str = "paraformer-realtime-v2"
 
-    # LLM 配置（OpenAI 兼容接口）
+    # LLM 配置（Vercel AI Gateway 的 OpenAI 兼容接口）
     llm_api_key: str = ""
-    llm_api_url: str = "https://api.deepseek.com/v1"
-    llm_model: str = "deepseek-chat"
+    llm_api_url: str = "https://ai-gateway.vercel.sh/v1"
+    llm_model: str = "deepseek/deepseek-v4-flash"
     llm_max_tokens: int = 2048
     llm_context_window_tokens: int = Field(default=16_000, ge=4_096)
     llm_temperature: float = 0.7

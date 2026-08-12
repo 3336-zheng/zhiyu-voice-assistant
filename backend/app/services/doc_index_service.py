@@ -23,11 +23,6 @@ from backend.app.services.bm25_service import get_bm25_service
 
 logger = logging.getLogger(__name__)
 
-# 分块参数
-MAX_CHUNK_CHARS = 1000  # 单块最大字符数（约 250-300 token，留余量给 512 上限）
-OVERLAP_CHARS = 100  # 块间重叠字符数
-
-
 def clean_markdown_for_chunking(content: str) -> str:
     """
     对 Markdown 文本进行数据清洗，优化分块和检索效果。
@@ -129,7 +124,12 @@ def _normalize_header_levels(content: str) -> str:
     return "\n".join(result)
 
 
-def split_markdown_by_headers(content: str, filename: str) -> List[Dict[str, Any]]:
+def split_markdown_by_headers(
+    content: str,
+    filename: str,
+    max_chars: Optional[int] = None,
+    overlap_chars: Optional[int] = None,
+) -> List[Dict[str, Any]]:
     """
     按 Markdown 标题层级切分文档，返回带元数据的块列表。
     超长块按段落递归细分。
@@ -141,6 +141,15 @@ def split_markdown_by_headers(content: str, filename: str) -> List[Dict[str, Any
     Returns:
         List[Dict]: [{text, metadata}, ...]
     """
+    del filename  # 保留参数以兼容既有调用方。
+    chunk_chars = max_chars or settings.rag_parent_chunk_chars
+    chunk_chars = max(1, chunk_chars)
+    chunk_overlap = (
+        settings.rag_parent_chunk_overlap_chars
+        if overlap_chars is None
+        else overlap_chars
+    )
+    chunk_overlap = min(max(0, chunk_overlap), chunk_chars - 1)
     lines = content.split("\n")
     chunks = []
     current_headers = {}  # {level: header_text}
@@ -153,7 +162,7 @@ def split_markdown_by_headers(content: str, filename: str) -> List[Dict[str, Any
         if not text:
             return
         # 超长块按段落细分
-        sub_chunks = _split_long_text(text, MAX_CHUNK_CHARS, OVERLAP_CHARS)
+        sub_chunks = _split_long_text(text, chunk_chars, chunk_overlap)
         for sub_text in sub_chunks:
             chunks.append({
                 "text": sub_text,

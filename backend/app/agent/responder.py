@@ -11,8 +11,8 @@ from backend.app.agent.models import (
     Plan, ExecutionResult, AgentResponse, IntentType
 )
 from backend.app.core.config import settings
-from backend.app.services.context_assembler import ContextAssembler
-from backend.app.services.token_budget_service import limit_context, serialize_context
+from backend.app.services.memory.context_assembler import ContextAssembler
+from backend.app.services.retrieval.token_budget_service import limit_context, serialize_context
 
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ class Responder:
         """延迟加载 LLM 服务"""
         if self._llm_service is None:
             try:
-                from backend.app.services.llm_service import get_llm_service
+                from backend.app.services.ai.llm_service import get_llm_service
                 self._llm_service = get_llm_service()
             except Exception as e:
                 logger.warning(f"LLM 服务加载失败，将使用模板回复: {e}")

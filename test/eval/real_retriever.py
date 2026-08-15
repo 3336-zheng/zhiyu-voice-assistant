@@ -10,7 +10,7 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 
 from backend.app.core.config import settings
-from backend.app.services.rrf_service import RRFService
+from backend.app.services.retrieval.rrf_service import RRFService
 from test.eval.dataset import CorpusDocument
 
 
@@ -62,7 +62,7 @@ class EvaluationRetriever:
     @property
     def embedding_service(self) -> Any:
         if self._embedding_service is None:
-            from backend.app.services.embedding_service import get_embedding_service
+            from backend.app.services.ai.embedding_service import get_embedding_service
 
             self._embedding_service = get_embedding_service()
         return self._embedding_service
@@ -70,7 +70,7 @@ class EvaluationRetriever:
     @property
     def reranker_service(self) -> Any:
         if self._reranker_service is None:
-            from backend.app.services.reranker_service import get_reranker_service
+            from backend.app.services.ai.reranker_service import get_reranker_service
 
             self._reranker_service = get_reranker_service()
         return self._reranker_service

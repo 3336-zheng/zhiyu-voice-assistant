@@ -34,7 +34,7 @@ jobs:
           pip install pytest
 
       - name: Run unit tests
-        run: python -m pytest -q test/test_*_unit.py
+        run: python -m pytest -q test/unit test/eval/tests
 
   frontend:
     name: Frontend build

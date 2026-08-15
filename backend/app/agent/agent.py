@@ -58,7 +58,7 @@ class PlanExecuteAgent:
         """延迟加载记忆服务"""
         if self._memory_service is None:
             try:
-                from backend.app.services.memory_service import get_memory_service
+                from backend.app.services.memory.memory_service import get_memory_service
                 self._memory_service = get_memory_service()
             except Exception as e:
                 logger.warning(f"记忆服务加载失败: {e}")
@@ -413,7 +413,7 @@ class PlanExecuteAgent:
     ) -> AgentResponse:
         """执行只读的 Agentic RAG 图。"""
         from backend.app.agent.graph import get_agent_graph
-        from backend.app.services.evidence_service import assess_evidence
+        from backend.app.services.retrieval.evidence_service import assess_evidence
 
         initial_state = {
             "query": user_query,

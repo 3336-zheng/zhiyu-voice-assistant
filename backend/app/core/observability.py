@@ -1,11 +1,16 @@
 """请求追踪和阶段耗时记录。"""
 
 import re
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
+from copy import deepcopy
 from typing import Any, Dict, Iterator, List, Optional, Tuple
+
+from .errors import ErrorCode, classify_stage_error, normalize_error_code, safe_error_message
 
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _request_id: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
@@ -21,6 +26,9 @@ _model_usage: ContextVar[Optional[List[Dict[str, Any]]]] = ContextVar(
     "model_usage",
     default=None,
 )
+_recent_traces: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+_recent_traces_lock = threading.RLock()
+_recent_trace_limit = 500
 
 
 def start_request(request_id: Optional[str] = None) -> Tuple[str, Token, Token, Token, Token]:
@@ -83,6 +91,34 @@ def get_execution_timeline() -> List[Dict[str, Any]]:
     return [dict(item) for item in (_execution_timeline.get() or [])]
 
 
+def record_error(
+    *,
+    stage: str,
+    component: str,
+    operation: str,
+    error_code: ErrorCode | str,
+    retryable: bool = False,
+    exception: Optional[BaseException] = None,
+    message: Optional[str] = None,
+) -> None:
+    """记录不含正文和凭证的请求级错误事件。"""
+    timeline = _execution_timeline.get()
+    if timeline is None:
+        return
+    timeline.append(
+        {
+            "stage": stage,
+            "status": "failed",
+            "component": component,
+            "operation": operation,
+            "error_code": normalize_error_code(error_code),
+            "retryable": bool(retryable),
+            "exception_type": type(exception).__name__ if exception else None,
+            "message": safe_error_message(message or exception or "执行失败"),
+        }
+    )
+
+
 def record_model_usage(
     *,
     provider: str,
@@ -130,6 +166,68 @@ def get_model_usage() -> Dict[str, Any]:
     }
 
 
+def store_current_trace(
+    *,
+    request_id: str,
+    method: str,
+    path: str,
+    status_code: int,
+    total_ms: float,
+    status: Optional[str] = None,
+    trace_type: str = "http",
+) -> Dict[str, Any]:
+    """保存近期请求的安全快照，供本地诊断页查询。"""
+    timeline = get_execution_timeline()
+    errors = [item for item in timeline if item.get("error_code")]
+    snapshot = {
+        "request_id": request_id,
+        "trace_type": trace_type,
+        "method": method,
+        "path": path,
+        "status": status or ("completed" if status_code < 400 else "failed"),
+        "status_code": int(status_code),
+        "total_ms": round(float(total_ms), 3),
+        "stage_timings": get_stage_timings(),
+        "timeline": timeline,
+        "model_usage": get_model_usage(),
+        "error": deepcopy(errors[-1]) if errors else None,
+        "completed_at": time.time(),
+    }
+    with _recent_traces_lock:
+        _recent_traces[request_id] = deepcopy(snapshot)
+        _recent_traces.move_to_end(request_id)
+        while len(_recent_traces) > _recent_trace_limit:
+            _recent_traces.popitem(last=False)
+    return snapshot
+
+
+def get_recent_trace(request_id: str) -> Optional[Dict[str, Any]]:
+    with _recent_traces_lock:
+        snapshot = _recent_traces.get(request_id)
+        return deepcopy(snapshot) if snapshot else None
+
+
+def list_recent_traces(limit: int = 50) -> List[Dict[str, Any]]:
+    """按完成时间倒序返回摘要，不包含模型输入输出。"""
+    normalized_limit = max(1, min(int(limit), 100))
+    with _recent_traces_lock:
+        snapshots = list(reversed(_recent_traces.values()))[:normalized_limit]
+    return [
+        {
+            "request_id": item["request_id"],
+            "trace_type": item["trace_type"],
+            "method": item["method"],
+            "path": item["path"],
+            "status": item["status"],
+            "status_code": item["status_code"],
+            "total_ms": item["total_ms"],
+            "completed_at": item["completed_at"],
+            "error_code": (item.get("error") or {}).get("error_code"),
+        }
+        for item in snapshots
+    ]
+
+
 @contextmanager
 def timed_stage(stage: str) -> Iterator[None]:
     """记录同步代码块耗时；异常不会吞掉。"""
@@ -140,8 +238,17 @@ def timed_stage(stage: str) -> Iterator[None]:
     try:
         with trace_span(stage):
             yield
-    except Exception:
+    except Exception as exc:
         status = "failed"
+        error_code, component, operation, retryable = classify_stage_error(stage)
+        record_error(
+            stage=stage,
+            component=component,
+            operation=operation,
+            error_code=error_code,
+            retryable=retryable,
+            exception=exc,
+        )
         raise
     finally:
         record_timing(stage, (time.perf_counter() - started) * 1000, status=status)

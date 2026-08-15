@@ -6,7 +6,6 @@ import react from '@vitejs/plugin-react'
 const currentDir = path.dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
-  root: path.resolve(currentDir, 'app'),
   plugins: [react()],
   build: {
     outDir: path.resolve(currentDir, 'dist'),

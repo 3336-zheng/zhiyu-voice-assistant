@@ -35,7 +35,7 @@
 | **受控 MCP 研究** | Search/Fetch 白名单、URL/来源校验、来源快照、研究草稿 | 本地证据不足时可查外部资料，但不自动越权写库 |
 | **确认式知识写入** | 预览 → 确认 → 幂等执行 | 防止模型误写、重复确认和网络重试产生副作用 |
 | **回答纠错闭环** | 回答反馈、证据快照、研究草稿、确认修订、同步索引、原题复测 | 将一次性问答变成可追踪、可恢复的知识改进流程 |
-| **可观测与可恢复** | Request ID、阶段时间线、检索统计、模型用量、持久化索引任务 | 能定位慢在哪里、错在哪里、恢复从哪里继续 |
+| **可观测与可恢复** | Request ID、结构化 JSON 日志、阶段时间线、错误码、模型用量、持久化索引任务 | 从前端请求编号定位完整链路，判断慢在哪里、错在哪里、是否可重试 |
 
 ## 一眼看懂架构
 
@@ -80,10 +80,32 @@ Agent Run / 事件      执行状态：支持续传、终态回放和重启收�
 | 混合检索 | BM25、Jieba、ChromaDB、RRF、本地 BGE / OpenAI 兼容 Embedding、本地 BGE / Cohere 兼容 Rerank |
 | Agent 与外部研究 | Capability Registry、Plan-and-Execute、有限 Replan、CRAG、MCP Python SDK、OpenAI 兼容模型接口 |
 | 多模态采集 | faster-whisper、DashScope ASR、pdfplumber、python-docx |
-| 可观测性 | Request ID、Server-Timing、Langfuse、OpenTelemetry |
+| 可观测性 | Request ID、JSON 日志轮转、运行追踪工作台、Server-Timing、Langfuse、OpenTelemetry |
 | 工程化 | Pytest、GitHub Actions、Docker 多阶段构建 |
 
 > 数据库当前使用 SQLite + 同步 SQLAlchemy；异步主要用于 FastAPI 请求、SSE、Agent/MCP 编排和索引 Worker。这个边界适合单用户本地部署，并为后续迁移 PostgreSQL 与独立任务队列保留空间。
+
+## 目录结构
+
+```text
+backend/app/
+├── agent/              # 计划、策略、执行器与 LangGraph RAG 状态图
+├── api/                # agent / wiki / ingestion / system 路由域
+├── core/               # 配置、数据库、生命周期、日志与可观测基础设施
+├── models/             # SQLAlchemy 数据模型
+└── services/           # ai / retrieval / wiki / memory / research 等领域服务
+frontend/
+├── src/app/            # React 应用入口与全局编排
+├── src/features/       # ask / wiki / capture / observability 功能域
+├── src/shared/         # API 客户端与通用组件
+└── legacy/             # 不参与主应用构建的旧静态页面
+test/
+├── unit/               # 按业务域组织的确定性测试
+├── integration/        # 真实 FastAPI、SQLite 与跨服务契约测试
+└── eval/               # RAG 数据准备、指标实现与评测测试
+```
+
+业务代码按领域归档，API 只负责协议适配，跨资源事务留在 Service，通用基础设施集中在 `core`；测试目录镜像业务边界，便于从故障模块直接定位对应测试。
 
 ## RAG 链路
 
@@ -137,6 +159,12 @@ RERANKER_MODEL=cohere/rerank-v4-fast
 会话在未摘要消息达到 10 条或估算超过 4,000 Token 时增量压缩，保留最近 5 条消息，原始消息始终保留在 SQLite。摘要使用用户目标、已确认事实、页面与实体、约束偏好、已完成事项和未完成事项等固定栏目。默认模型窗口为 16,000 Token，长期摘要预算为 600 Token，近期对话预算为 3,000 Token；RAG 和工具结果先按各自预算筛选，再由总装配器做最终上限控制。
 
 每次装配只记录各区块的估算 Token、截断状态和被丢弃的近期消息数量，不采集正文，便于定位上下文溢出而不扩大敏感内容暴露面。
+
+## 日志追踪与错误定位
+
+每个 HTTP 请求和独立 Agent Run 都分配稳定 Request ID，并将查询改写、召回、融合、精排、证据判断和生成阶段串成同一条时间线。前端“运行追踪”工作台可以查看近期请求、阶段耗时、错误码、重试属性及模型调用摘要；服务重启后仍可从 SQLite 中读取 Agent 终态快照。
+
+终端输出适合开发时实时观察，`data/logs/app.log` 保存单行 JSON 运行日志，`data/logs/error.log` 单独保存错误并按大小轮转。日志字段包括 `request_id`、`component`、`operation`、`error_code` 和 `duration_ms`，模型密钥、Prompt、Wiki 正文、转写全文及外部网页内容不会写入日志。追踪查询默认只允许本机访问，远程部署需要先补充鉴权再显式开放。
 
 ## Agent 与 MCP 安全闭环
 
@@ -215,7 +243,8 @@ npm audit --omit=dev
 
 ## 项目文档
 
-- [系统架构](docs/architecture.md)
+- [系统架构](docs/architecture/overview.md)
+- [日志与运行追踪](docs/runbooks/observability.md)
 - [RAG 评测设计](docs/eval/01-evaluation-design.md)
 - [RAG 评测流程](docs/eval/02-evaluation-workflow.md)
 - [RAG 结果记录模板](docs/eval/03-evaluation-results.md)

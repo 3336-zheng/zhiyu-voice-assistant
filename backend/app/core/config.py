@@ -119,6 +119,9 @@ class Settings(BaseSettings):
     # 日志配置
     log_level: str = "INFO"
     log_file: str = "data/logs/app.log"
+    log_error_file: str = "data/logs/error.log"
+    log_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1_048_576)
+    log_backup_count: int = Field(default=7, ge=1, le=90)
 
     # Langfuse 可观测配置（可选）
     langfuse_host: str = ""  # Langfuse 服务地址
@@ -126,6 +129,8 @@ class Settings(BaseSettings):
     langfuse_secret_key: str = ""  # Langfuse 私钥
     observability_enabled: bool = True
     observability_capture_content: bool = False
+    observability_trace_api_enabled: bool = True
+    observability_trace_allow_remote: bool = False
     otel_enabled: bool = False
     otel_service_name: str = "zhiyu-wiki"
     otel_exporter_endpoint: str = ""

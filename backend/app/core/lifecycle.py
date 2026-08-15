@@ -46,7 +46,7 @@ def _migrate_relative_paths() -> None:
 
 
 def _sync_document_index() -> None:
-    from ..services.doc_index_service import get_doc_index_service
+    from ..services.ingestion.doc_index_service import get_doc_index_service
 
     result = get_doc_index_service().sync_docs()
     logger.info("文档增量同步完成: %s", result)
@@ -54,7 +54,7 @@ def _sync_document_index() -> None:
 
 def _recover_wiki_index_tasks() -> None:
     from .database import SessionLocal
-    from ..services.page_service import get_page_service
+    from ..services.wiki.page_service import get_page_service
 
     db = SessionLocal()
     try:
@@ -70,7 +70,7 @@ async def _periodic_cleanup() -> None:
         try:
             await asyncio.sleep(settings.cleanup_interval_minutes * 60)
             from .database import SessionLocal
-            from ..services.memory_service import get_memory_service
+            from ..services.memory.memory_service import get_memory_service
 
             db = SessionLocal()
             try:
@@ -93,7 +93,7 @@ async def lifespan(app: FastAPI):
 
     configure_telemetry()
     _initialize_database()
-    from ..services.agent_runtime_service import get_agent_runtime_service
+    from ..services.runtime.agent_runtime_service import get_agent_runtime_service
 
     agent_runtime = get_agent_runtime_service()
     try:
@@ -118,7 +118,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Wiki 索引任务恢复失败（不影响启动）: %s", exc, exc_info=True)
 
-    from ..services.wiki_index_worker import run_wiki_index_worker
+    from ..services.wiki.wiki_index_worker import run_wiki_index_worker
 
     tasks = [
         asyncio.create_task(run_wiki_index_worker(), name="wiki-index-worker"),

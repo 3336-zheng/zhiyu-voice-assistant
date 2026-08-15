@@ -19,7 +19,7 @@ from backend.app.agent.models import (
 from backend.app.agent.plan_policy import PlanPolicy, PlanValidationError
 from backend.app.agent.tool_registry import AgentToolRegistry
 from backend.app.core.config import settings
-from backend.app.services.context_assembler import ContextAssembler
+from backend.app.services.memory.context_assembler import ContextAssembler
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ class Planner:
         """延迟加载 LLM 服务"""
         if self._llm_service is None:
             try:
-                from backend.app.services.llm_service import get_llm_service
+                from backend.app.services.ai.llm_service import get_llm_service
                 self._llm_service = get_llm_service()
             except Exception as e:
                 logger.warning(f"LLM 服务加载失败，将使用规则匹配: {e}")

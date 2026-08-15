@@ -25,11 +25,11 @@ from backend.app.agent.models import (
     UpdateNoteParameters,
 )
 from backend.app.models.wiki import ExternalResearchRun, WikiPageSource
-from backend.app.services.hybrid_retrieval_service import (
+from backend.app.services.retrieval.hybrid_retrieval_service import (
     HybridRetrievalService,
     get_hybrid_retrieval_service,
 )
-from backend.app.services.page_service import PageService, get_page_service
+from backend.app.services.wiki.page_service import PageService, get_page_service
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,7 @@ class AgentToolRegistry:
     def _get_llm(self) -> Any:
         if self._llm_factory is not None:
             return self._llm_factory()
-        from backend.app.services.llm_service import get_llm_service
+        from backend.app.services.ai.llm_service import get_llm_service
 
         return get_llm_service()
 

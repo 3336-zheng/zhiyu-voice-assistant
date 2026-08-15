@@ -1,7 +1,6 @@
 """
 智语端侧智能语音笔记助手后端应用
 """
-import json
 import logging
 import time
 from pathlib import Path
@@ -13,19 +12,30 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .api import audio_router, notes_router, health_router, agent_router, pages_router
-from .api.docs import router as docs_router
-from .api.summary import router as summary_router
+from .api import (
+    agent_router,
+    audio_router,
+    docs_router,
+    health_router,
+    notes_router,
+    observability_router,
+    pages_router,
+    summary_router,
+)
 from .core.config import settings
+from .core.errors import ErrorCode
 from .core.lifecycle import lifespan
+from .core.logging_config import configure_logging, log_event
 from .core.observability import (
     build_server_timing,
-    get_stage_timings,
+    record_error,
     record_timing,
     reset_request,
     start_request,
+    store_current_trace,
 )
 
+configure_logging(settings)
 logger = logging.getLogger(__name__)
 
 
@@ -63,33 +73,60 @@ class RequestContextMiddleware:
         try:
             await self.app(scope, receive, send_with_context)
         except Exception as exc:
-            logger.error(
-                "请求失败 request_id=%s method=%s path=%s error=%s",
-                request_id,
-                scope.get("method"),
-                scope.get("path"),
-                type(exc).__name__,
-                exc_info=True,
+            record_error(
+                stage="http.request",
+                component="api",
+                operation="request",
+                error_code=ErrorCode.INTERNAL_ERROR,
+                retryable=False,
+                exception=exc,
+            )
+            log_event(
+                logger,
+                logging.ERROR,
+                "请求处理失败",
+                component="api",
+                operation="request",
+                error_code=ErrorCode.INTERNAL_ERROR,
+                retryable=False,
+                exception=exc,
+                method=scope.get("method"),
+                path=scope.get("path"),
+                status_code=500,
             )
             if response_started:
                 raise
             response = JSONResponse(
                 status_code=500,
-                content={"detail": "服务器内部错误", "request_id": request_id},
+                content={
+                    "detail": "服务器内部错误",
+                    "request_id": request_id,
+                    "error_code": ErrorCode.INTERNAL_ERROR.value,
+                },
             )
             await response(scope, receive, send_with_context)
         finally:
             total_ms = (time.perf_counter() - started) * 1000
             record_timing("http.total", total_ms)
-            timings = get_stage_timings()
-            logger.info(
-                "请求完成 request_id=%s method=%s path=%s status=%s total_ms=%.3f timings=%s",
-                request_id,
-                scope.get("method"),
-                scope.get("path"),
-                status_code,
-                total_ms,
-                json.dumps(timings, ensure_ascii=False, sort_keys=True),
+            request_path = scope.get("path") or ""
+            if not request_path.startswith("/api/observability"):
+                store_current_trace(
+                    request_id=request_id,
+                    method=scope.get("method") or "HTTP",
+                    path=request_path,
+                    status_code=status_code,
+                    total_ms=total_ms,
+                )
+            log_event(
+                logger,
+                logging.INFO,
+                "请求完成",
+                component="api",
+                operation="request",
+                duration_ms=total_ms,
+                method=scope.get("method"),
+                path=request_path,
+                status_code=status_code,
             )
             reset_request(request_token, timings_token, timeline_token, usage_token)
 
@@ -125,8 +162,9 @@ app.include_router(health_router, prefix="/health", tags=["健康检查"])
 app.include_router(docs_router, prefix="/api/documents", tags=["兼容 API：文档"])
 app.include_router(summary_router, prefix="/summary", tags=["纪要总结"])
 app.include_router(pages_router, prefix="/api/pages", tags=["Wiki 页面"])
+app.include_router(observability_router, prefix="/api/observability", tags=["本地运行追踪"])
 
 # 挂载前端静态文件（必须放在最后）。构建后优先使用 React，未构建时回退旧页面。
 react_frontend = Path("frontend/dist")
-frontend_directory = react_frontend if react_frontend.exists() else Path("frontend")
+frontend_directory = react_frontend if react_frontend.exists() else Path("frontend/legacy")
 app.mount("/", StaticFiles(directory=str(frontend_directory), html=True), name="frontend")

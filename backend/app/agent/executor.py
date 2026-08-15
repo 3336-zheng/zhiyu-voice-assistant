@@ -18,7 +18,7 @@ from backend.app.core.database import SessionLocal
 from backend.app.core.config import settings
 from backend.app.agent.events import AgentEventType, AgentRunCancelled
 from backend.app.agent.tool_registry import AgentToolRegistry
-from backend.app.services.token_budget_service import limit_context
+from backend.app.services.retrieval.token_budget_service import limit_context
 
 logger = logging.getLogger(__name__)
 

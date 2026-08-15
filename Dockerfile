@@ -5,7 +5,8 @@ WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/vite.config.js ./
-COPY frontend/app/ app/
+COPY frontend/index.html ./
+COPY frontend/src/ src/
 RUN npm run build
 
 # 智语端侧智能语音笔记助手运行镜像
@@ -26,7 +27,7 @@ RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua
 # 复制项目代码
 COPY main.py .
 COPY backend/ backend/
-COPY frontend/index.html frontend/summary.html frontend/docs.html frontend/style.css frontend/
+COPY frontend/legacy/ frontend/legacy/
 COPY --from=frontend-builder /frontend/dist frontend/dist
 
 # 创建数据目录（运行时通过 volume 挂载）

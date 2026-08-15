@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.app.services.backup_service import BackupValidationError, create_backup, restore_backup
+from backend.app.services.system.backup_service import BackupValidationError, create_backup, restore_backup
 
 
 def main() -> int:

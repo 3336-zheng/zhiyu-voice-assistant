@@ -16,13 +16,13 @@ from typing import Any, Iterable, Sequence
 
 from backend.app.core.config import settings
 from backend.app.core.database import SessionLocal
-from backend.app.services.doc_index_service import (
+from backend.app.services.ingestion.doc_index_service import (
     clean_markdown_for_chunking,
     split_markdown_by_headers,
 )
-from backend.app.services.llm_service import get_llm_service
-from backend.app.services.page_index_service import split_parent_into_children
-from backend.app.services.page_service import get_page_service
+from backend.app.services.ai.llm_service import get_llm_service
+from backend.app.services.wiki.page_index_service import split_parent_into_children
+from backend.app.services.wiki.page_service import get_page_service
 from test.eval.dataset import load_evaluation_dataset
 from test.eval.dataset_manifest import (
     DEFAULT_QUESTION_PLAN,
@@ -868,7 +868,7 @@ def prepare_dataset(
             raise DatasetPreparationError(
                 f"Wiki 索引存在 {index['failed']} 个失败任务，停止生成负例"
             )
-        from backend.app.services.doc_index_service import get_doc_index_service
+        from backend.app.services.ingestion.doc_index_service import get_doc_index_service
 
         get_doc_index_service().sync_docs()
 

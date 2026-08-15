@@ -10,9 +10,9 @@ from langgraph.graph import StateGraph, END
 from backend.app.agent.models import Plan, ToolName
 from backend.app.agent.executor import get_executor
 from backend.app.agent.responder import get_responder
-from backend.app.services.query_rewrite_service import get_query_rewrite_service, RewriteStrategy
-from backend.app.services.crag_grader_service import get_crag_grader_service, RelevanceGrade
-from backend.app.services.evidence_service import assess_evidence
+from backend.app.services.retrieval.query_rewrite_service import get_query_rewrite_service, RewriteStrategy
+from backend.app.services.retrieval.crag_grader_service import get_crag_grader_service, RelevanceGrade
+from backend.app.services.retrieval.evidence_service import assess_evidence
 from backend.app.core.config import settings
 from backend.app.core.observability import record_timing, timed_stage
 from backend.app.agent.events import AgentEventType, AgentRunCancelled
@@ -110,7 +110,7 @@ def query_rewrite_node(state: AgentState) -> AgentState:
             num_queries=3
         )
 
-        logger.info(f"[graph] Query 改写完成: 原始='{query[:30]}...', 改写数={len(rewritten_queries)-1}")
+        logger.info("[graph] Query 改写完成: 改写数=%s", len(rewritten_queries) - 1)
         return {
             **state,
             "rewritten_queries": rewritten_queries,

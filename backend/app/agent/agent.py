@@ -456,7 +456,7 @@ class PlanExecuteAgent:
             "crag_lower_threshold": settings.crag_lower_threshold,
             "crag_coverage": None,
             "crag_support_count": 0,
-            "crag_partial_count": 0,
+            "crag_limited_support_count": 0,
             "crag_incorrect_count": 0,
             "refined_content": None,
             "retrieval_stats": None,

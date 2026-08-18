@@ -44,7 +44,7 @@ class AgentState(TypedDict):
     crag_lower_threshold: Optional[float]
     crag_coverage: Optional[str]
     crag_support_count: int
-    crag_partial_count: int
+    crag_limited_support_count: int
     crag_incorrect_count: int
     refined_content: Optional[str]  # P1-6: 精炼后的内容
     retrieval_stats: Optional[Dict[str, Any]]
@@ -355,10 +355,10 @@ def grade_node(state: AgentState) -> AgentState:
             for item in scored_results
             if item["crag_verdict"] == "support"
         ]
-        partial_results = [
+        limited_support_results = [
             item
             for item in scored_results
-            if item["crag_verdict"] == "partial"
+            if item["crag_verdict"] == "limited_support"
         ]
         incorrect_results = [
             item
@@ -372,7 +372,7 @@ def grade_node(state: AgentState) -> AgentState:
                 item
                 for item in scored_results
                 if item["crag_verdict"]
-                in {"support", "partial"}
+                in {"support", "limited_support"}
             ]
         else:
             accepted_results = []
@@ -406,7 +406,7 @@ def grade_node(state: AgentState) -> AgentState:
             "grading_failed": grade_result.get("grading_failed", False),
             "coverage": grade_result.get("coverage"),
             "support_count": len(support_results),
-            "partial_count": len(partial_results),
+            "limited_support_count": len(limited_support_results),
             "incorrect_count": len(incorrect_results),
             "accepted_count": len(accepted_results),
         }
@@ -439,7 +439,7 @@ def grade_node(state: AgentState) -> AgentState:
             "crag_lower_threshold": grade_result.get("lower_threshold"),
             "crag_coverage": grade_result.get("coverage"),
             "crag_support_count": len(support_results),
-            "crag_partial_count": len(partial_results),
+            "crag_limited_support_count": len(limited_support_results),
             "crag_incorrect_count": len(incorrect_results),
             "search_results": accepted_results,
             "refined_content": refined_content,
@@ -463,7 +463,7 @@ def grade_node(state: AgentState) -> AgentState:
             "crag_lower_threshold": grader_service.lower_threshold,
             "crag_coverage": "none",
             "crag_support_count": 0,
-            "crag_partial_count": 0,
+            "crag_limited_support_count": 0,
             "crag_incorrect_count": len(state.get("search_results") or []),
             "search_results": [],
         }

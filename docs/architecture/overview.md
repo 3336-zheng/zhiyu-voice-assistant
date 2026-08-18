@@ -116,16 +116,16 @@ API 聚合入口保持原有 URL 稳定，内部模块则按业务域显式导�
      -> 多查询批量 Embedding / BM25 召回 -> 子块折叠为父块
      -> 单次 RRF -> 独立查询单次 Reranker -> 质量过滤 -> Token Budget
      -> Fast Path 高置信跳过 CRAG；否则 CRAG 完整逐文档 evidence score
-     -> support / partial / incorrect 过滤 + 覆盖度裁决
-     -> partial 对照精炼 -> Evidence Gate -> Generate
+     -> support / limited_support / incorrect 过滤 + complete / incomplete / none 覆盖度裁决
+     -> limited_support 对照精炼 -> Evidence Gate -> Generate
      -> Fast Path 低证据时最多恢复一次完整 Query Rewrite
 ```
 
-Fast Path 只匹配无会话、短、无副作用且不含比较/并行等复杂语义的问题；它仍然经过 Rerank 和 Evidence Gate。已有 Rerank 分数达到快速路径阈值且来源足够时跳过 CRAG；若 CRAG 判定为 `incorrect`，状态关闭快速标记并恢复一次完整 Query Rewrite，恢复后仍失败则结束并拒答。普通链路的 Query Rewrite 显式接收原问题、会话上下文和 Planner `goal`/`intent`，在一次 LLM 调用中先完成指代消解，再生成多视角查询。索引同时保存稳定父块和细粒度子块。子块参与召回，命中后折叠回父块；不同查询的稀疏、稠密结果全部收集后只执行一次统一融合，并以独立查询完成一次精排，避免旧链路为每个查询重复加载候选和精排。CRAG 显式接收原问题、独立查询、Planner 语义，以及候选标题、来源、Rerank 分数和有限正文；一次 Function Calling 必须为最多 5 个候选返回完整、唯一的逐文档 `evidence score` 和直接证据覆盖度，整体 `grade` 仅保留为诊断字段。后端按 `CRAG_UPPER_THRESHOLD`/`CRAG_LOWER_THRESHOLD` 将文档派生为 `support`、`partial` 或 `incorrect`：完整覆盖时只注入 support；覆盖不足时保留 support 与 partial，并由精炼阶段以 support 为锚点比较 partial；incorrect 不进入生成上下文。漏评分、重复或越界文档编号、非法分数和结构化评分失败均 fail closed。CRAG 负责证据过滤与检索纠正，Evidence Gate 则独立使用真实 Rerank 分数和来源数控制生成。最终上下文按 Token 预算装配，最后一个父块允许截断，但来源标识不会丢失。
+Fast Path 只匹配无会话、短、无副作用且不含比较/并行等复杂语义的问题；它仍然经过 Rerank 和 Evidence Gate。已有 Rerank 分数达到快速路径阈值且来源足够时跳过 CRAG；若 CRAG 判定为 `incorrect`，状态关闭快速标记并恢复一次完整 Query Rewrite，恢复后仍失败则结束并拒答。普通链路的 Query Rewrite 显式接收原问题、会话上下文和 Planner `goal`/`intent`，在一次 LLM 调用中先完成指代消解，再生成多视角查询。索引同时保存稳定父块和细粒度子块。子块参与召回，命中后折叠回父块；不同查询的稀疏、稠密结果全部收集后只执行一次统一融合，并以独立查询完成一次精排，避免旧链路为每个查询重复加载候选和精排。CRAG 显式接收原问题、独立查询、Planner 语义，以及候选标题、来源、Rerank 分数和有限正文；一次 Function Calling 必须为最多 5 个候选返回完整、唯一的逐文档 `evidence score` 和直接证据覆盖度，整体 `grade` 仅保留为诊断字段。后端按 `CRAG_UPPER_THRESHOLD`/`CRAG_LOWER_THRESHOLD` 将文档派生为 `support`、`limited_support` 或 `incorrect`，并将整体覆盖度限制为 `complete`、`incomplete` 或 `none`：完整覆盖时只注入 support；覆盖不足时保留 support 与 limited_support，并由精炼阶段以 support 为锚点比较 limited_support；incorrect 不进入生成上下文。漏评分、重复或越界文档编号、非法分数和结构化评分失败均 fail closed。CRAG 负责证据过滤与检索纠正，Evidence Gate 则独立使用真实 Rerank 分数和来源数控制生成。最终上下文按 Token 预算装配，最后一个父块允许截断，但来源标识不会丢失。
 
 父块大小、父块重叠、子块大小和子块重叠均由环境变量配置。当前固定采用父块 `1200/120`、子块 `500/80`；BM25 与 Embedding 每个查询默认各召回 20 条，统一 RRF 后保留最多 12 条进入 Rerank，最终最多选择 5 个父块并受 3000 Token 预算约束。Rerank 结果再按最低分 `0.35` 和相对最高分差 `0.20` 过滤，但保留最高分候选供 Evidence Gate 判断。该配置是中文技术 Markdown 场景下的工程默认值，不通过分块参数网格搜索宣称算法最优；质量由真实文档统一评测集验证。
 
-查询向量、检索结果和 CRAG 判断均使用线程安全的进程内 LRU/TTL 缓存。查询缓存键包含 Provider、模型和文本；检索缓存键包含查询集合、独立查询、Top-K、Token 预算、筛选配置和当前 Chroma collection count/generation；CRAG 缓存键包含原问题、独立查询、Planner 语义、阈值及前 5 个证据的文档 ID、revision、Rerank 分数和正文哈希。缓存命中会写入 `cache_hit` 统计，TTL 到期、容量淘汰或索引/证据版本变化后自然失效。默认 TTL/容量分别为查询 `60 秒/256 项`、检索 `20 秒/128 项`、CRAG `60 秒/128 项`。
+查询向量、检索结果和 CRAG 判断均使用线程安全的进程内 LRU/TTL 缓存。查询缓存键包含 Provider、模型和文本；检索缓存键包含查询集合、独立查询、Top-K、Token 预算、筛选配置和当前 Chroma collection count/generation；CRAG 缓存键包含原问题、独立查询、Planner 语义、阈值及前 5 个证据的文档 ID、revision、Rerank 分数和正文哈希。检索缓存命中会写入 `cache_hit` 统计，CRAG 缓存命中目前只在评分服务返回值中标记；TTL 到期、容量淘汰或索引/证据版本变化后自然失效。默认 TTL/容量分别为查询 `60 秒/256 项`、检索 `20 秒/128 项`、CRAG `60 秒/128 项`。
 
 `RAG_V2_ENABLED` 是总回退开关，关闭后恢复原逐查询完整检索；`RAG_PARENT_CHILD_ENABLED` 可以独立关闭父子分块。CRAG、证据门禁、稳定引用和 MCP 确认流程不受开关影响。
 

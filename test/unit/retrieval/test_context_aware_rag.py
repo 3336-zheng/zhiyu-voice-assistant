@@ -84,7 +84,7 @@ class RecordingGrader:
             "max_score": 0.93,
             "coverage": "complete",
             "support_doc_ids": [0],
-            "partial_doc_ids": [],
+            "limited_support_doc_ids": [],
             "incorrect_doc_ids": [],
             "upper_threshold": 0.7,
             "lower_threshold": 0.3,
@@ -102,7 +102,7 @@ class StaticGrader:
 
     def refine_documents(self, query, documents, **kwargs):
         self.refine_inputs.append(documents)
-        return "support 已确认核心事实；partial 仅补充未完整说明的边界。"
+        return "support 已确认核心事实；limited_support 仅补充未完整说明的边界。"
 
 
 def make_plan():
@@ -263,7 +263,7 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
         documents = [{"title": "证据", "content": "与问题相关"}]
         cases = [
             (0.70, "complete", RelevanceGrade.CORRECT, "support"),
-            (0.50, "partial", RelevanceGrade.AMBIGUOUS, "partial"),
+            (0.50, "incomplete", RelevanceGrade.AMBIGUOUS, "limited_support"),
             (0.30, "none", RelevanceGrade.INCORRECT, "incorrect"),
         ]
 
@@ -289,7 +289,7 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
                 self.assertEqual(result["model_grade"], "incorrect")
                 self.assertEqual(result["scores"][0]["verdict"], expected_verdict)
 
-    def test_three_support_two_partial_use_coverage_for_overall_grade(self):
+    def test_three_support_two_limited_support_use_coverage_for_overall_grade(self):
         documents = [
             {"title": f"证据 {index}", "content": f"正文 {index}"}
             for index in range(5)
@@ -298,7 +298,7 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
 
         for coverage, expected_grade in (
             ("complete", RelevanceGrade.CORRECT),
-            ("partial", RelevanceGrade.AMBIGUOUS),
+            ("incomplete", RelevanceGrade.AMBIGUOUS),
         ):
             with self.subTest(coverage=coverage):
                 service = CRAGGraderService()
@@ -322,7 +322,7 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
 
                 self.assertEqual(result["grade"], expected_grade)
                 self.assertEqual(result["support_doc_ids"], [0, 1, 2])
-                self.assertEqual(result["partial_doc_ids"], [3, 4])
+                self.assertEqual(result["limited_support_doc_ids"], [3, 4])
                 self.assertEqual(result["incorrect_doc_ids"], [])
 
     def test_crag_discards_invalid_and_out_of_range_scores(self):
@@ -399,7 +399,12 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
             {"doc_id": 0, "score": 0.91, "verdict": "support", "reason": "直接"},
             {"doc_id": 1, "score": 0.82, "verdict": "support", "reason": "直接"},
             {"doc_id": 2, "score": 0.74, "verdict": "support", "reason": "直接"},
-            {"doc_id": 3, "score": 0.60, "verdict": "partial", "reason": "部分"},
+            {
+                "doc_id": 3,
+                "score": 0.60,
+                "verdict": "limited_support",
+                "reason": "部分",
+            },
             {"doc_id": 4, "score": 0.20, "verdict": "incorrect", "reason": "无关"},
         ]
         grader = StaticGrader(
@@ -436,17 +441,27 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
             ["page-0", "page-1", "page-2"],
         )
         self.assertEqual(result["crag_support_count"], 3)
-        self.assertEqual(result["crag_partial_count"], 1)
+        self.assertEqual(result["crag_limited_support_count"], 1)
         self.assertEqual(result["crag_incorrect_count"], 1)
         self.assertEqual(grader.refine_inputs, [])
 
-    def test_grade_node_refines_support_and_partial_when_coverage_is_partial(self):
+    def test_grade_node_refines_limited_support_when_coverage_is_incomplete(self):
         scores = [
             {"doc_id": 0, "score": 0.91, "verdict": "support", "reason": "直接"},
             {"doc_id": 1, "score": 0.82, "verdict": "support", "reason": "直接"},
             {"doc_id": 2, "score": 0.74, "verdict": "support", "reason": "直接"},
-            {"doc_id": 3, "score": 0.60, "verdict": "partial", "reason": "部分"},
-            {"doc_id": 4, "score": 0.45, "verdict": "partial", "reason": "部分"},
+            {
+                "doc_id": 3,
+                "score": 0.60,
+                "verdict": "limited_support",
+                "reason": "部分",
+            },
+            {
+                "doc_id": 4,
+                "score": 0.45,
+                "verdict": "limited_support",
+                "reason": "部分",
+            },
         ]
         grader = StaticGrader(
             {
@@ -454,7 +469,7 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
                 "scores": scores,
                 "reasoning": "support 只覆盖部分问题",
                 "max_score": 0.91,
-                "coverage": "partial",
+                "coverage": "incomplete",
                 "upper_threshold": 0.7,
                 "lower_threshold": 0.3,
                 "grading_failed": False,
@@ -481,9 +496,15 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
         self.assertEqual(len(grader.refine_inputs), 1)
         self.assertEqual(
             [item["crag_verdict"] for item in grader.refine_inputs[0]],
-            ["support", "support", "support", "partial", "partial"],
+            [
+                "support",
+                "support",
+                "support",
+                "limited_support",
+                "limited_support",
+            ],
         )
-        self.assertIn("partial 仅补充", result["refined_content"])
+        self.assertIn("limited_support 仅补充", result["refined_content"])
 
     def test_insufficient_evidence_returns_without_calling_responder(self):
         class FailingResponder:

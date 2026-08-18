@@ -34,6 +34,9 @@ class AgentState(TypedDict):
     search_results: Optional[List[Dict]]
     execution_results: Optional[Dict[str, Any]]
     relevance_grade: Optional[str]  # P1-6: CRAG 评分结果
+    crag_max_score: Optional[float]
+    crag_upper_threshold: Optional[float]
+    crag_lower_threshold: Optional[float]
     refined_content: Optional[str]  # P1-6: 精炼后的内容
     retrieval_stats: Optional[Dict[str, Any]]
 
@@ -262,7 +265,12 @@ def grade_node(state: AgentState) -> AgentState:
         grade = grade_result["grade"]
         reasoning = grade_result["reasoning"]
 
-        logger.info(f"[graph] CRAG 评分完成: grade={grade.value}, 理由='{reasoning[:50]}...'")
+        logger.info(
+            "[graph] CRAG 评分完成: grade=%s, max_score=%s, 理由='%s...'",
+            grade.value,
+            grade_result.get("max_score"),
+            reasoning[:50],
+        )
 
         # 如果是 ambiguous，执行知识精炼
         refined_content = None
@@ -276,10 +284,23 @@ def grade_node(state: AgentState) -> AgentState:
             )
             logger.info(f"[graph] 知识精炼完成: 长度={len(refined_content)}")
 
+        retrieval_stats = dict(state.get("retrieval_stats") or {})
+        retrieval_stats["crag"] = {
+            "max_score": grade_result.get("max_score"),
+            "upper_threshold": grade_result.get("upper_threshold"),
+            "lower_threshold": grade_result.get("lower_threshold"),
+            "score_count": len(grade_result.get("scores") or []),
+            "model_grade": grade_result.get("model_grade"),
+        }
+
         return {
             **state,
             "relevance_grade": grade.value,
-            "refined_content": refined_content
+            "crag_max_score": grade_result.get("max_score"),
+            "crag_upper_threshold": grade_result.get("upper_threshold"),
+            "crag_lower_threshold": grade_result.get("lower_threshold"),
+            "refined_content": refined_content,
+            "retrieval_stats": retrieval_stats,
         }
 
     except AgentRunCancelled:
@@ -289,7 +310,13 @@ def grade_node(state: AgentState) -> AgentState:
         status = "failed"
         logger.error(f"[graph] CRAG 评分失败: {e}")
         # 失败时默认 ambiguous，触发重试
-        return {**state, "relevance_grade": "ambiguous"}
+        return {
+            **state,
+            "relevance_grade": "ambiguous",
+            "crag_max_score": None,
+            "crag_upper_threshold": grader_service.upper_threshold,
+            "crag_lower_threshold": grader_service.lower_threshold,
+        }
     finally:
         record_timing("agent.crag_grade", (time.perf_counter() - started) * 1000)
         _emit_stage(state, AgentEventType.STAGE_COMPLETED, "agent.crag_grade", status)

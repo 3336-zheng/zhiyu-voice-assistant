@@ -404,13 +404,13 @@ class DocIndexService:
         Returns:
             Dict: 同步结果统计
         """
+        # ---- 第一步：重建 BM25 ----
+        self.rebuild_bm25_from_persistent()
+
         if not os.path.exists(self.docs_dir):
             logger.warning(f"文档目录不存在: {self.docs_dir}")
             os.makedirs(self.docs_dir, exist_ok=True)
             return {"total": 0, "reindexed": 0, "skipped": 0, "cleaned": 0}
-
-        # ---- 第一步：重建 BM25 ----
-        self._rebuild_bm25_from_persistent()
 
         # ---- 第二步：扫描磁盘文件，增量同步 ChromaDB ----
         disk_files: Dict[str, float] = {}  # {filename: mtime}
@@ -467,7 +467,7 @@ class DocIndexService:
         )
         return result
 
-    def _rebuild_bm25_from_persistent(self):
+    def rebuild_bm25_from_persistent(self):
         """
         从 ChromaDB 已有 doc chunks 重建 BM25 索引。
         BM25 是纯内存索引，每次启动必须重建。
@@ -513,6 +513,11 @@ class DocIndexService:
             )
 
         logger.info(f"BM25 索引重建完成，文档与 Wiki 分块数: {bm25.get_document_count()}")
+
+    # 保留旧的私有入口，兼容已有调用方；新代码应使用公共方法。
+    def _rebuild_bm25_from_persistent(self):
+        """兼容旧调用的 BM25 持久化重建入口。"""
+        return self.rebuild_bm25_from_persistent()
 
     def _get_indexed_mtimes(self) -> Dict[str, float]:
         """

@@ -52,6 +52,13 @@ def _sync_document_index() -> None:
     logger.info("文档增量同步完成: %s", result)
 
 
+def _rebuild_bm25_index() -> None:
+    """从 ChromaDB 恢复 BM25 内存索引，避免重启后只剩向量检索。"""
+    from ..services.ingestion.doc_index_service import get_doc_index_service
+
+    get_doc_index_service().rebuild_bm25_from_persistent()
+
+
 def _recover_wiki_index_tasks() -> None:
     from .database import SessionLocal
     from ..services.wiki.page_service import get_page_service
@@ -112,6 +119,10 @@ async def lifespan(app: FastAPI):
             logger.warning("旧文档同步失败（不影响启动）: %s", exc, exc_info=True)
     else:
         logger.info("旧 data/docs 自动索引已关闭；需要时请执行显式迁移")
+        try:
+            await asyncio.to_thread(_rebuild_bm25_index)
+        except Exception as exc:
+            logger.warning("BM25 持久化索引恢复失败（不影响启动）: %s", exc, exc_info=True)
 
     try:
         _recover_wiki_index_tasks()

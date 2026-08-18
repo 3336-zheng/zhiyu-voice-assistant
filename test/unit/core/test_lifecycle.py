@@ -28,9 +28,11 @@ class LifecycleTestCase(unittest.IsolatedAsyncioTestCase):
 
         app = SimpleNamespace(state=SimpleNamespace())
         with (
+            patch.object(lifecycle.settings, "sync_legacy_docs_on_startup", False),
             patch.object(lifecycle, "_initialize_database"),
             patch.object(lifecycle, "_migrate_relative_paths"),
             patch.object(lifecycle, "_sync_document_index"),
+            patch.object(lifecycle, "_rebuild_bm25_index") as rebuild_bm25,
             patch.object(lifecycle, "_recover_wiki_index_tasks"),
             patch(
                 "backend.app.services.wiki.wiki_index_worker.run_wiki_index_worker",
@@ -41,6 +43,7 @@ class LifecycleTestCase(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(worker_started.wait(), timeout=1)
                 self.assertEqual(len(app.state.background_tasks), 2)
                 self.assertTrue(all(not task.done() for task in app.state.background_tasks))
+                rebuild_bm25.assert_called_once_with()
 
         self.assertEqual(app.state.background_tasks, [])
 

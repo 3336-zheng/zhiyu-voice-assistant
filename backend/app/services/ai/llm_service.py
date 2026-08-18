@@ -33,6 +33,8 @@ class LLMService:
         self.temperature = settings.llm_temperature
         self.fallback_client = None
         self.fallback_model = settings.llm_fallback_model.strip()
+        # None 表示尚未探测；False 表示当前网关不支持 response_format。
+        self._json_response_format_supported: Optional[bool] = None
         if settings.llm_fallback_enabled and self.fallback_model:
             self.fallback_client = OpenAI(
                 api_key=settings.llm_fallback_api_key or settings.llm_api_key,
@@ -296,12 +298,35 @@ class LLMService:
         Returns:
             Dict: 解析后的 JSON 结果
         """
-        content = self.chat(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            response_format={"type": "json_object"}
-        )
+        response_format = {"type": "json_object"}
+        if self._json_response_format_supported is not False:
+            try:
+                content = self.chat(
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    response_format=response_format,
+                )
+                self._json_response_format_supported = True
+            except RuntimeError as exc:
+                if not self._is_response_format_rejection(exc):
+                    raise
+                self._json_response_format_supported = False
+                logger.warning(
+                    "当前 LLM 网关不支持 response_format，降级为提示词约束 JSON: %s",
+                    str(exc)[:240],
+                )
+                content = self.chat(
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+        else:
+            content = self.chat(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
 
         try:
             return json.loads(content)
@@ -311,6 +336,17 @@ class LLMService:
             if json_match:
                 return json.loads(json_match.group(1).strip())
             raise RuntimeError(f"无法解析 LLM 返回的 JSON: {content[:200]}")
+
+    @staticmethod
+    def _is_response_format_rejection(exc: Exception) -> bool:
+        """识别网关不支持 response_format 的请求错误。"""
+        message = str(exc).lower()
+        if "response_format" not in message:
+            return False
+        return any(
+            marker in message
+            for marker in ("invalid", "unsupported", "not support", "unknown")
+        )
 
     def call_function(
         self,

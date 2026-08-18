@@ -295,6 +295,7 @@ class BM25Service:
             self.tokenized_corpus = []
             self.doc_id_list = []
             self.bm25 = None
+            self._dirty = False
             logger.info("BM25 索引已清空")
             return True
         except Exception as e:

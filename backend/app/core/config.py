@@ -5,7 +5,7 @@ import json
 import os
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 
@@ -154,6 +154,10 @@ class Settings(BaseSettings):
     evidence_min_score: float = 0.35
     evidence_min_sources: int = 1
 
+    # CRAG 证据相关性双阈值。最终等级由后端根据最高有效证据分数裁决。
+    crag_upper_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    crag_lower_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+
     # MCP 外部研究。默认关闭，仅允许显式配置的 stdio Server 与两个只读工具。
     mcp_research_enabled: bool = False
     mcp_server_label: str = "external-research"
@@ -170,6 +174,13 @@ class Settings(BaseSettings):
     mcp_max_content_chars: int = 12_000
     mcp_timeout_seconds: float = 30.0
     mcp_total_timeout_seconds: float = 90.0
+
+    @model_validator(mode="after")
+    def validate_crag_thresholds(self):
+        """保证 CRAG 的双阈值形成明确的三段区间。"""
+        if self.crag_lower_threshold >= self.crag_upper_threshold:
+            raise ValueError("CRAG_LOWER_THRESHOLD 必须小于 CRAG_UPPER_THRESHOLD")
+        return self
 
     def get_cors_origins(self) -> list:
         """获取 CORS 允许的源列表"""

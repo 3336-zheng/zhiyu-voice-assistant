@@ -81,6 +81,7 @@ class LLMGatewayTestCase(unittest.TestCase):
         service.max_tokens = 100
         service.temperature = 0.1
         service._langfuse = None
+        service._json_response_format_supported = None
         return service
 
     def test_retryable_primary_failure_uses_fallback_and_records_cost(self):
@@ -119,6 +120,35 @@ class LLMGatewayTestCase(unittest.TestCase):
         self.assertEqual(result, {"value": 3})
         call = service.client.chat.completions.calls[0]
         self.assertEqual(call["tool_choice"]["function"]["name"], "submit")
+
+    def test_chat_json_downgrades_when_gateway_rejects_response_format(self):
+        service = self.make_service(response('{"intent":"search"}'), None)
+
+        class ResponseFormatRejectingCompletions:
+            def __init__(self):
+                self.calls = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                if "response_format" in kwargs:
+                    raise RuntimeError(
+                        "LLM 服务调用失败: Error code: 400 "
+                        "response_format invalid_request_error"
+                    )
+                return response('{"intent":"search"}')
+
+        completions = ResponseFormatRejectingCompletions()
+        service.client = SimpleNamespace(
+            chat=SimpleNamespace(completions=completions)
+        )
+
+        self.assertEqual(service.chat_json([]), {"intent": "search"})
+        self.assertFalse(service._json_response_format_supported)
+        self.assertEqual(service.chat_json([]), {"intent": "search"})
+        self.assertEqual(len(completions.calls), 3)
+        self.assertIn("response_format", completions.calls[0])
+        self.assertNotIn("response_format", completions.calls[1])
+        self.assertNotIn("response_format", completions.calls[2])
 
     def test_function_call_rejects_invalid_json_arguments(self):
         tool_call = SimpleNamespace(

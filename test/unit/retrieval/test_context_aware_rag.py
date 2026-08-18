@@ -179,6 +179,56 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
         self.assertIn("标题：Whisper 潮汕话微调实验", prompt)
         self.assertIn("来源：/api/pages/12", prompt)
         self.assertIn("Rerank 分数：0.91", prompt)
+        self.assertIn("max_score >= 0.70 -> correct", prompt)
+        self.assertIn("0.30 < max_score < 0.70 -> ambiguous", prompt)
+        self.assertIn("max_score <= 0.30 -> incorrect", prompt)
+        self.assertEqual(result["max_score"], 0.93)
+
+    def test_crag_uses_double_thresholds_and_ignores_model_grade(self):
+        documents = [{"title": "证据", "content": "与问题相关"}]
+        cases = [
+            (0.70, RelevanceGrade.CORRECT),
+            (0.50, RelevanceGrade.AMBIGUOUS),
+            (0.30, RelevanceGrade.INCORRECT),
+        ]
+
+        for score, expected_grade in cases:
+            with self.subTest(score=score):
+                service = CRAGGraderService(upper_threshold=0.7, lower_threshold=0.3)
+                llm = RecordingJSONLLM(
+                    {
+                        "grade": "incorrect",
+                        "scores": [{"doc_id": 0, "score": score}],
+                        "reasoning": "测试",
+                    }
+                )
+                service._llm_service = llm
+
+                result = service.grade_documents("问题", documents)
+
+                self.assertEqual(result["grade"], expected_grade)
+                self.assertEqual(result["max_score"], score)
+                self.assertEqual(result["model_grade"], "incorrect")
+
+    def test_crag_discards_invalid_and_out_of_range_scores(self):
+        service = CRAGGraderService()
+        service._llm_service = RecordingJSONLLM(
+            {
+                "grade": "correct",
+                "scores": [
+                    {"doc_id": 99, "score": 1.0},
+                    {"doc_id": 0, "score": "not-a-number"},
+                    {"doc_id": 0, "score": 1.2},
+                ],
+                "reasoning": "无效输出",
+            }
+        )
+
+        result = service.grade_documents("问题", [{"content": "证据"}])
+
+        self.assertEqual(result["grade"], RelevanceGrade.AMBIGUOUS)
+        self.assertIsNone(result["max_score"])
+        self.assertEqual(result["scores"], [])
 
     def test_grade_node_forwards_planner_semantics_to_crag(self):
         grader = RecordingGrader()

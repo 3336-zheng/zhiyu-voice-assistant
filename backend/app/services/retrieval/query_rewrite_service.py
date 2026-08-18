@@ -3,11 +3,14 @@ Query 改写服务
 支持 HyDE 和 RAG-Fusion 两种策略，用于检索前优化召回
 """
 import logging
+import hashlib
+import json
 from typing import List, Dict, Optional
 from enum import Enum
 
 from backend.app.core.config import settings
 from backend.app.services.memory.context_assembler import ContextAssembler
+from backend.app.core.ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,10 @@ class QueryRewriteService:
             history_token_budget=settings.memory_context_token_budget,
             summary_token_budget=settings.memory_summary_token_budget,
         )
+        self._cache: TTLCache[str, List[str]] = TTLCache(
+            settings.query_rewrite_cache_ttl_seconds,
+            settings.query_rewrite_cache_max_entries,
+        )
 
     @property
     def llm_service(self):
@@ -53,6 +60,7 @@ class QueryRewriteService:
         context: Optional[List[Dict[str, str]]] = None,
         goal: Optional[str] = None,
         intent: Optional[str] = None,
+        force_refresh: bool = False,
     ) -> List[str]:
         """
         改写查询
@@ -71,11 +79,24 @@ class QueryRewriteService:
         if strategy == RewriteStrategy.NONE:
             return [self._fallback_query(query, goal)]
 
+        cache_key = self._cache_key(
+            query,
+            strategy=strategy,
+            num_queries=num_queries,
+            context=context,
+            goal=goal,
+            intent=intent,
+        )
+        cached = None if force_refresh else self._cache.get(cache_key)
+        if cached is not None:
+            logger.info("Query 改写缓存命中: strategy=%s", strategy.value)
+            return cached
+
         try:
             if strategy == RewriteStrategy.HYDE:
-                return self._hyde_rewrite(query, context, goal, intent)
+                result = self._hyde_rewrite(query, context, goal, intent)
             elif strategy == RewriteStrategy.RAG_FUSION:
-                return self._rag_fusion_rewrite(
+                result = self._rag_fusion_rewrite(
                     query,
                     num_queries,
                     context,
@@ -83,7 +104,10 @@ class QueryRewriteService:
                     intent,
                 )
             else:
-                return [self._fallback_query(query, goal)]
+                result = [self._fallback_query(query, goal)]
+            if not force_refresh:
+                self._cache.set(cache_key, result)
+            return result
         except Exception as e:
             logger.error(f"Query 改写失败: {e}")
             return [self._fallback_query(query, goal)]
@@ -130,7 +154,9 @@ class QueryRewriteService:
             hypothetical_answer = self.llm_service.chat(
                 messages=messages,
                 temperature=0.7,
-                max_tokens=200
+                max_tokens=200,
+                model=settings.llm_query_rewrite_model or settings.llm_model,
+                trace_name="agent.query_rewrite.hyde",
             )
 
             logger.info(
@@ -187,11 +213,37 @@ class QueryRewriteService:
                 output_token_reserve=300,
             )
 
-            response = self.llm_service.chat_json(
-                messages=messages,
-                temperature=0.3,
-                max_tokens=300,
-            )
+            parameters = {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "standalone_query": {"type": "string", "minLength": 1},
+                    "queries": {
+                        "type": "array",
+                        "maxItems": max(1, num_queries),
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                },
+                "required": ["standalone_query", "queries"],
+            }
+            structured_call = getattr(self.llm_service, "structured_call", None)
+            if callable(structured_call):
+                response = structured_call(
+                    messages,
+                    name="submit_query_rewrite",
+                    description="提交独立查询和有限数量的检索变体",
+                    parameters=parameters,
+                    temperature=0.3,
+                    max_tokens=300,
+                    model=settings.llm_query_rewrite_model or settings.llm_model,
+                    trace_name="agent.query_rewrite",
+                )
+            else:
+                response = self.llm_service.chat_json(
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=300,
+                )
 
             standalone_query = str(
                 response.get("standalone_query") or self._fallback_query(query, goal)
@@ -242,6 +294,36 @@ class QueryRewriteService:
     def _fallback_query(query: str, goal: Optional[str]) -> str:
         """模型不可用时优先复用 Planner 已解析目标。"""
         return (goal or query).strip()
+
+    @staticmethod
+    def _cache_key(
+        query: str,
+        *,
+        strategy: RewriteStrategy,
+        num_queries: int,
+        context: Optional[List[Dict[str, str]]],
+        goal: Optional[str],
+        intent: Optional[str],
+    ) -> str:
+        """根据语义输入生成稳定键，避免改写结果受调用进程状态影响。"""
+        payload = {
+            "query": query,
+            "strategy": strategy.value,
+            "num_queries": num_queries,
+            "context": context if QueryRewriteService._query_needs_context(query) else [],
+            "goal": goal or "",
+            "intent": intent or "",
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _query_needs_context(query: str) -> bool:
+        """只有存在明显指代时才把会话历史纳入缓存键。"""
+        return any(
+            marker in (query or "")
+            for marker in ("它", "这个", "那个", "上面", "刚才", "前者", "后者", "该问题")
+        )
 
 
 # 全局实例

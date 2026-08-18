@@ -3,8 +3,14 @@
 import unittest
 from unittest.mock import patch
 
-from backend.app.agent.graph import grade_node, query_rewrite_node, retrieve_node
+from backend.app.agent.graph import (
+    generate_node,
+    grade_node,
+    query_rewrite_node,
+    retrieve_node,
+)
 from backend.app.agent.models import IntentType, Plan, PlanStep, ToolName
+from backend.app.agent.responder import RESPONSE_GENERATION_PROMPT
 from backend.app.services.retrieval.crag_grader_service import (
     CRAGGraderService,
     RelevanceGrade,
@@ -94,6 +100,27 @@ def make_state():
 
 
 class ContextAwareRewriteTestCase(unittest.TestCase):
+    def test_rewrite_cache_reuses_non_contextual_query_and_refresh_can_bypass(self):
+        service = QueryRewriteService()
+        llm = RecordingJSONLLM(
+            {
+                "standalone_query": "SQLite 在智语中的职责是什么？",
+                "queries": ["SQLite 主数据", "SQLite 运行记录"],
+            }
+        )
+        service._llm_service = llm
+
+        first = service.rewrite_query("SQLite 在智语中负责什么？")
+        second = service.rewrite_query("SQLite 在智语中负责什么？")
+        refreshed = service.rewrite_query(
+            "SQLite 在智语中负责什么？",
+            force_refresh=True,
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(refreshed, first)
+        self.assertEqual(len(llm.calls), 2)
+
     def test_rewrite_prompt_contains_history_goal_and_returns_standalone_query(self):
         service = QueryRewriteService()
         llm = RecordingJSONLLM(
@@ -143,6 +170,10 @@ class ContextAwareRewriteTestCase(unittest.TestCase):
 
 
 class ContextAwareCRAGTestCase(unittest.TestCase):
+    def test_responder_prompt_forbids_inference_beyond_evidence(self):
+        self.assertIn("当前证据未说明", RESPONSE_GENERATION_PROMPT)
+        self.assertIn("禁止使用“可能”“推测”“暗示”", RESPONSE_GENERATION_PROMPT)
+
     def test_crag_prompt_contains_resolved_intent_and_document_metadata(self):
         service = CRAGGraderService()
         llm = RecordingJSONLLM(
@@ -226,7 +257,8 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
 
         result = service.grade_documents("问题", [{"content": "证据"}])
 
-        self.assertEqual(result["grade"], RelevanceGrade.AMBIGUOUS)
+        # 没有任何有效证据分数时必须 fail closed，禁止继续生成。
+        self.assertEqual(result["grade"], RelevanceGrade.INCORRECT)
         self.assertIsNone(result["max_score"])
         self.assertEqual(result["scores"], [])
 
@@ -245,6 +277,32 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
         self.assertEqual(grader.kwargs["retrieval_query"], state["retrieval_query"])
         self.assertEqual(grader.kwargs["goal"], state["plan"].goal)
         self.assertEqual(grader.kwargs["intent"], "search")
+
+    def test_insufficient_evidence_returns_without_calling_responder(self):
+        class FailingResponder:
+            @staticmethod
+            def generate_response(*args, **kwargs):
+                raise AssertionError("证据不足时不应调用生成模型")
+
+        state = make_state()
+        state["search_results"] = [
+            {
+                "page_id": "unrelated-page",
+                "title": "无关页面",
+                "content": "这段正文与用户问题无关。",
+                "rerank_score": 0.1,
+            }
+        ]
+
+        with patch(
+            "backend.app.agent.graph.get_responder",
+            return_value=FailingResponder(),
+        ):
+            result = generate_node(state)
+
+        self.assertEqual(result["evidence_status"], "insufficient")
+        self.assertEqual(result["confidence"], 0.0)
+        self.assertIn("没有足够证据", result["answer"])
 
 
 if __name__ == "__main__":

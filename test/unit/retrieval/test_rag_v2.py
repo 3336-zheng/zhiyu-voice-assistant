@@ -162,6 +162,8 @@ class RagV2TestCase(unittest.TestCase):
 
     def test_fast_path_only_accepts_simple_read_queries(self):
         self.assertTrue(is_fast_path_query("Markdown 作为知识主数据有哪些优势？"))
+        self.assertTrue(is_fast_path_query("SQLite 在智语中负责保存什么？"))
+        self.assertFalse(is_fast_path_query("请把这段内容保存到知识库"))
         self.assertFalse(is_fast_path_query("比较父子分块和 RRF，并说明什么时候触发重检？"))
         self.assertFalse(is_fast_path_query("请把这段内容总结成复习卡片"))
         self.assertFalse(

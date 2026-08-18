@@ -111,15 +111,20 @@ API 聚合入口保持原有 URL 稳定，内部模块则按业务域显式导�
 ## 可信问答
 
 ```text
-Plan + 会话上下文 -> Query Rewrite -> 独立查询 + 多视角查询
-     -> 多查询 BM25 / Embedding 召回 -> 子块折叠为父块
-     -> 单次 RRF -> 独立查询单次 Reranker -> Token Budget
-     -> CRAG evidence score -> 后端双阈值 Grade -> Evidence Gate -> Generate
+简单、无会话的只读问题 -> Fast Path -> 直接构造搜索 Plan
+复杂或多轮问题 -> Planner + PlanPolicy -> Query Rewrite -> 独立查询 + 多视角查询
+     -> 多查询批量 Embedding / BM25 召回 -> 子块折叠为父块
+     -> 单次 RRF -> 独立查询单次 Reranker -> 质量过滤 -> Token Budget
+     -> Fast Path 高置信跳过 CRAG；否则 CRAG evidence score
+     -> 后端双阈值 Grade -> Evidence Gate -> Generate
+     -> Fast Path 低证据时最多恢复一次完整 Query Rewrite
 ```
 
-Query Rewrite 显式接收原问题、会话上下文和 Planner `goal`/`intent`，在一次 LLM 调用中先完成指代消解，再生成多视角查询。索引同时保存稳定父块和细粒度子块。子块参与召回，命中后折叠回父块；不同查询的稀疏、稠密结果全部收集后只执行一次统一融合，并以独立查询完成一次精排，避免旧链路为每个查询重复加载候选和精排。CRAG 显式接收原问题、独立查询、Planner 语义，以及候选标题、来源、Rerank 分数和有限正文；LLM 只生成逐文档 `evidence score`，整体 `grade` 仅保留为诊断字段。后端过滤不合法的文档编号、非数字、非有限值和 `[0,1]` 以外分数，取最高有效分数按 `CRAG_UPPER_THRESHOLD`/`CRAG_LOWER_THRESHOLD` 裁决，默认边界为 `0.7/0.3`；没有有效分数时进入 `ambiguous`。CRAG 分数用于检索纠正，Evidence Gate 则独立使用真实 Rerank 分数和来源数控制生成。最终上下文按 Token 预算装配，最后一个父块允许截断，但来源标识不会丢失。
+Fast Path 只匹配无会话、短、无副作用且不含比较/并行等复杂语义的问题；它仍然经过 Rerank 和 Evidence Gate。已有 Rerank 分数达到快速路径阈值且来源足够时跳过 CRAG；若 CRAG 判定为 `incorrect`，状态关闭快速标记并恢复一次完整 Query Rewrite，恢复后仍失败则结束并拒答。普通链路的 Query Rewrite 显式接收原问题、会话上下文和 Planner `goal`/`intent`，在一次 LLM 调用中先完成指代消解，再生成多视角查询。索引同时保存稳定父块和细粒度子块。子块参与召回，命中后折叠回父块；不同查询的稀疏、稠密结果全部收集后只执行一次统一融合，并以独立查询完成一次精排，避免旧链路为每个查询重复加载候选和精排。CRAG 显式接收原问题、独立查询、Planner 语义，以及候选标题、来源、Rerank 分数和有限正文；LLM 只生成逐文档 `evidence score`，整体 `grade` 仅保留为诊断字段。后端过滤不合法的文档编号、非数字、非有限值和 `[0,1]` 以外分数，取最高有效分数按 `CRAG_UPPER_THRESHOLD`/`CRAG_LOWER_THRESHOLD` 裁决，默认边界为 `0.7/0.3`；没有有效分数或结构化评分失败时 fail closed 为 `incorrect`，禁止直接生成。CRAG 分数用于检索纠正，Evidence Gate 则独立使用真实 Rerank 分数和来源数控制生成。最终上下文按 Token 预算装配，最后一个父块允许截断，但来源标识不会丢失。
 
-父块大小、父块重叠、子块大小和子块重叠均由环境变量配置。当前固定采用父块 `1200/120`、子块 `500/80`，最终最多选择 5 个父块并受 3000 Token 预算约束。该配置是中文技术 Markdown 场景下的工程默认值，不通过分块参数网格搜索宣称算法最优；质量由真实文档统一评测集验证。
+父块大小、父块重叠、子块大小和子块重叠均由环境变量配置。当前固定采用父块 `1200/120`、子块 `500/80`；BM25 与 Embedding 每个查询默认各召回 20 条，统一 RRF 后保留最多 12 条进入 Rerank，最终最多选择 5 个父块并受 3000 Token 预算约束。Rerank 结果再按最低分 `0.35` 和相对最高分差 `0.20` 过滤，但保留最高分候选供 Evidence Gate 判断。该配置是中文技术 Markdown 场景下的工程默认值，不通过分块参数网格搜索宣称算法最优；质量由真实文档统一评测集验证。
+
+查询向量、检索结果和 CRAG 判断均使用线程安全的进程内 LRU/TTL 缓存。查询缓存键包含 Provider、模型和文本；检索缓存键包含查询集合、独立查询、Top-K、Token 预算、筛选配置和当前 Chroma collection count/generation；CRAG 缓存键包含原问题、独立查询、Planner 语义、阈值及前 5 个证据的文档 ID、revision、Rerank 分数和正文哈希。缓存命中会写入 `cache_hit` 统计，TTL 到期、容量淘汰或索引/证据版本变化后自然失效。默认 TTL/容量分别为查询 `60 秒/256 项`、检索 `20 秒/128 项`、CRAG `60 秒/128 项`。
 
 `RAG_V2_ENABLED` 是总回退开关，关闭后恢复原逐查询完整检索；`RAG_PARENT_CHILD_ENABLED` 可以独立关闭父子分块。CRAG、证据门禁、稳定引用和 MCP 确认流程不受开关影响。
 
@@ -127,7 +132,7 @@ Query Rewrite 显式接收原问题、会话上下文和 Planner `goal`/`intent`
 
 ### 检索模型 Provider 与向量边界
 
-`EmbeddingService` 与 `RerankerService` 是检索链路的稳定门面，调用方继续使用 `encode`、`encode_documents` 和 `rerank`；门面根据部署配置选择具体后端：
+`EmbeddingService` 与 `RerankerService` 是检索链路的稳定门面，调用方继续使用 `encode`、`encode_queries`、`encode_documents` 和 `rerank`；门面根据部署配置选择具体后端：
 
 ```text
 EmbeddingService -> LocalEmbeddingBackend
@@ -137,7 +142,7 @@ RerankerService  -> LocalRerankerBackend
                  -> RerankCompatibleBackend
 ```
 
-在线 Embedding 复用 OpenAI SDK，支持批量输入、可选维度、超时和有限重试。返回向量必须与输入数量一致，且每条向量维度相同；配置了固定维度时，服务端返回维度不一致会直接失败。空文本不会发送给模型，结果按原输入位置补回零向量。
+在线 Embedding 复用 OpenAI SDK，支持批量输入、可选维度、超时和有限重试；多查询检索优先一次批量生成缺失的查询向量，缓存命中的查询不会重复发送。返回向量必须与输入数量一致，且每条向量维度相同；配置了固定维度时，服务端返回维度不一致会直接失败。空文本不会发送给模型，结果按原输入位置补回零向量。
 
 Embedding Profile 由 Provider、API URL、模型名和维度共同确定，API Key 不参与也不会进入集合名。默认本地 Provider 继续使用原 `CHROMA_COLLECTION_NAME`；在线 Profile 使用带哈希后缀的独立集合。因此切换模型不会破坏旧集合，也不会因维度冲突向同一集合写入失败。新集合初始为空，部署者需要显式执行全量重建，系统不会自动产生批量在线调用费用。
 
@@ -231,7 +236,7 @@ reported
 
 FastAPI `lifespan` 统一执行 schema 迁移、Agent Run 与索引任务恢复、Worker 启动和退出清理。当前 schema 为 `8`：v7 增加会话标题并回填首条用户消息，v8 增加 `answer_feedbacks` 状态表；迁移可从 v5、v6 或 v7 重复执行且不删除既有数据。每个 HTTP 请求生成或继承 `X-Request-ID`，响应返回 `Server-Timing`、Agent 执行时间线、检索统计和模型用量。相同数据脱敏后写入 `agent_runs`，用于复盘单次请求。
 
-LLM 网关记录主模型和备用模型的 Token、耗时与估算成本。仅连接错误、超时、429 和 5xx 可以触发故障转移；流式输出一旦开始就不再切换，避免把两个模型的内容拼接成同一回答。Langfuse 和 OpenTelemetry 默认关闭，正文采集默认关闭，导出异常不会影响请求。
+LLM 网关按 Planner、Query Rewrite、CRAG、Responder 分阶段选择模型，并记录模型名、Token、耗时、`finish_reason`、截断标记与估算成本。结构化阶段默认使用 Function Calling，兼容性失败时才回退为 JSON Schema 提示词约束；普通回答支持同步或流式生成。仅连接错误、超时、429 和 5xx 可以触发故障转移；流式输出一旦开始就不再切换，避免把两个模型的内容拼接成同一回答。Langfuse 和 OpenTelemetry 默认关闭，正文采集默认关闭，导出异常不会影响请求。
 
 ## 对话记忆
 

@@ -111,7 +111,7 @@ test/
 
 ```text
 用户查询
-  → 简单、单轮、无指代的只读问题：跳过 Planner 与 Query Rewrite
+  → 简单、单轮、无指代的只读问题：Fast Path，跳过 Planner 与 Query Rewrite
   → 复杂问题：Planner + Query Rewrite，生成独立查询与多视角查询
   → 多查询一次批量 Embedding，BM25 / ChromaDB 并发召回
   → 子块折叠为稳定父块
@@ -119,16 +119,19 @@ test/
   → 独立查询单次 Reranker，最多返回 5 条
   → 最低分数 + 相对分差质量筛选
   → Token Budget 上下文装配
-  → 高置信证据直接生成；其余结果进入 CRAG 双阈值裁决
+  → Fast Path 高置信证据直接生成；其余结果进入 CRAG 双阈值裁决
+  → Fast Path 低证据时最多恢复一次完整 Query Rewrite
   → Evidence Gate
   → 带引用回答 / 证据不足拒答
 ```
 
-简单知识查询直接使用原问题检索，省去 Planner、Query Rewrite 和高置信场景下的 CRAG 调用；复杂、多轮或带指代的问题仍保留完整 Agent 链路。Query Rewrite 在一次 LLM 调用中复用会话上下文和 Planner 语义，先完成指代消解，再生成多视角检索表达；多查询向量一次批量生成，BM25 和 ChromaDB 召回并发执行，随后统一融合并只调用一次 Reranker。
+Fast Path 只接受无会话上下文、长度不超过 `FAST_PATH_MAX_QUERY_CHARS`、带问题词或问号、且不包含写入/删除/总结以及比较、同时等复杂表达的只读问题。它仍然进入 LangGraph RAG、Rerank 和 Evidence Gate，不是绕过证据约束；只有已有 Rerank 分数达到 `FAST_PATH_RERANK_MIN_SCORE` 且来源数足够时才跳过 CRAG。若 Fast Path 的 CRAG 结果为 `incorrect`，状态会关闭快速标记并恢复一次完整 Query Rewrite，恢复后仍不相关则结束并拒答。
 
-Rerank 后不直接把固定数量的结果交给生成模型：系统同时使用最低分数和相对最高分差过滤明显低相关候选，并始终保留最高分结果供证据门禁判断。高 Rerank 分数且来源充足时直接生成；其余结果由 CRAG 基于原问题、候选来源和有限正文生成逐文档 `evidence score`。后端不采用模型自报的整体 `grade`，而是过滤无效文档编号、非有限值和越界分数，取最高有效分数按双阈值裁决：默认 `>= 0.7` 为 `correct`、`<= 0.3` 为 `incorrect`、中间区间为 `ambiguous`。无有效分数或模型不可用时保守进入 `ambiguous`。Evidence Gate 仍独立使用真实 Rerank 分数和来源数控制是否允许生成。
+复杂、多轮或带指代的问题保留完整 Agent 链路。Query Rewrite 在一次 LLM 调用中复用会话上下文和 Planner 语义，先完成指代消解，再生成多视角检索表达；多查询向量一次批量生成，BM25 和 ChromaDB 召回并发执行，随后统一融合并只调用一次 Reranker。
 
-子块用于提高召回粒度，父块用于精排、上下文和稳定引用。回答中的来源保留页面、版本、章节和稳定 Chunk ID；音频页面额外支持转写时间范围回溯。查询向量、检索结果和 CRAG 判断分别使用短 TTL 缓存：查询向量按模型与查询隔离，检索结果按查询、索引规模和筛选配置隔离，CRAG 按问题与证据版本隔离；默认 TTL 分别为 60 秒、20 秒和 60 秒。
+Rerank 后不直接把固定数量的结果交给生成模型：系统同时使用最低分数和相对最高分差过滤明显低相关候选，并始终保留最高分结果供证据门禁判断。其余结果由 CRAG 基于原问题、独立查询、Planner 语义、候选来源和有限正文生成逐文档 `evidence score`。后端不采用模型自报的整体 `grade`，而是过滤无效文档编号、非有限值和越界分数，取最高有效分数按双阈值裁决：默认 `>= 0.7` 为 `correct`、`<= 0.3` 为 `incorrect`、中间区间为 `ambiguous`。无有效分数、结构化输出失败或模型不可用时 fail closed 为 `incorrect`，禁止直接生成。Evidence Gate 仍独立使用真实 Rerank 分数和来源数控制是否允许生成。
+
+子块用于提高召回粒度，父块用于精排、上下文和稳定引用。回答中的来源保留页面、版本、章节和稳定 Chunk ID；音频页面额外支持转写时间范围回溯。查询向量、检索结果和 CRAG 判断分别使用线程安全的进程内 LRU/TTL 缓存：查询向量按 Provider、模型与查询隔离，检索结果按查询、原始独立查询、索引 collection count/generation 和筛选配置隔离，CRAG 按问题、Planner 语义、阈值及前 5 个证据的 ID/revision/分数/正文哈希隔离；默认 TTL/容量分别为 `60 秒/256 项`、`20 秒/128 项` 和 `60 秒/128 项`。缓存只优化单进程短期重复请求，不是持久状态。
 
 父块采用 `1200/120`，子块采用 `500/80`；BM25 与 Embedding 每个查询分别召回 20 条，统一 RRF 后保留 12 条进入 Rerank，最终上下文最多 5 个父块，并受 3000 Token 预算约束。Rerank 筛选默认最低分为 `0.35`，与最高分的允许差值为 `0.20`；这些参数是面向当前中文技术 Markdown 语料的工程基线，不宣称算法最优。项目提供证据级 Golden Dataset 生成器和 BM25、Embedding、RRF、Rerank 四级消融入口；私有语料、生成问题和真实报告位于被 Git 忽略的 `data/eval/`，公开仓库仅保留方法、代码与小型示例。
 
@@ -149,7 +152,9 @@ RERANKER_API_KEY=your_vercel_ai_gateway_key
 RERANKER_MODEL=cohere/rerank-v4-fast
 ```
 
-在线 Embedding 使用批量 OpenAI Embeddings 协议；`rerank_compatible` 使用 Cohere/Jina 风格的 `query + documents + top_n` 协议，可直连 Vercel AI Gateway、Jina 或 SiliconFlow，并将响应统一为 `index + score`。`RERANKER_API_URL` 必须填写包含 `/v1/rerank` 的完整地址。不同在线 Embedding 网关、模型或维度会自动使用独立 Chroma 集合，切换后需要在知识库执行一次“重建索引”。系统不会在 Embedding 失败时静默切换模型，因为索引向量与查询向量必须来自同一语义空间；Rerank 可以独立更换，不需要重建索引。
+Agent 的四个 LLM 阶段也可以独立配置。当前 Vercel AI Gateway 基线选择低延迟、支持工具调用的模型：Planner/CRAG/Responder 使用 `openai/gpt-4.1-mini`，Query Rewrite 使用更轻量的 `openai/gpt-4.1-nano`。Embedding 仍使用 `alibaba/qwen3-embedding-8b`、Rerank 仍使用 `cohere/rerank-v4-fast`，切换 Embedding 前必须重建索引。
+
+在线 Embedding 使用批量 OpenAI Embeddings 协议，查询侧会先命中短 TTL 缓存；`rerank_compatible` 使用 Cohere/Jina 风格的 `query + documents + top_n` 协议，可直连 Vercel AI Gateway、Jina 或 SiliconFlow，并将响应统一为 `index + score`。`RERANKER_API_URL` 必须填写包含 `/v1/rerank` 的完整地址。不同在线 Embedding 网关、模型或维度会自动使用独立 Chroma 集合，切换后需要在知识库执行一次“重建索引”。系统不会在 Embedding 失败时静默切换模型，因为索引向量与查询向量必须来自同一语义空间；Rerank 可以独立更换，不需要重建索引。
 
 ## 分层上下文策略
 
@@ -246,7 +251,7 @@ npm audit --omit=dev
 
 当前自动化测试覆盖页面 `409` 冲突、索引失败重试与重启恢复、RAG v2、计划 Schema 与 DAG 校验、风险确认、有限 Replan、分层上下文装配、Token 触发摘要、Agent 事件顺序与断线回放、取消、超时、重复确认、模型故障转移、MCP 安全边界、备份恢复和音频溯源；新增覆盖回答快照与自动复测、重复反馈幂等、草稿失败恢复、索引分阶段重试、会话/正文搜索、在线 Embedding/Rerank 协议适配、Provider 错误脱敏、向量集合隔离及 schema v5-v7 到 v8 的迁移。请以当前提交实际执行上述命令的结果作为验证基线。
 
-当前后端验证基线为 `105 passed, 3 subtests passed`。
+当前后端验证基线为 `108 passed, 3 subtests passed`。
 
 当前面向单用户、本机或可信内网部署，不包含多租户认证、细粒度权限、分布式任务调度和多实例 Agent 状态共享。生产化时需要根据负载迁移 PostgreSQL、共享运行状态、独立任务队列和权限审计体系。
 

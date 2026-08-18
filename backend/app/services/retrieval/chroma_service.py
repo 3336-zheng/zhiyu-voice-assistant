@@ -75,6 +75,8 @@ class ChromaService:
             name=self.collection_name,
             metadata={"hnsw:space": "cosine"}  # 使用余弦相似度
         )
+        # 进程内 generation 能识别“文档数量不变但正文已更新”的缓存失效场景。
+        self._generation = 0
 
         logger.info(
             "ChromaDB 服务初始化完成，集合: %s，Embedding Provider: %s",
@@ -118,6 +120,7 @@ class ChromaService:
             )
 
             logger.debug(f"成功添加向量: note_id={note_id}")
+            self.mark_index_changed()
             return True
         except Exception as e:
             logger.error(f"添加向量失败: {e}")
@@ -160,6 +163,7 @@ class ChromaService:
             )
 
             logger.info(f"成功批量添加 {len(note_ids)} 个向量")
+            self.mark_index_changed()
             return True
         except Exception as e:
             logger.error(f"批量添加向量失败: {e}")
@@ -249,6 +253,7 @@ class ChromaService:
             doc_id = f"note_{note_id}"
             self.collection.delete(ids=[doc_id])
             logger.debug(f"成功删除向量: note_id={note_id}")
+            self.mark_index_changed()
             return True
         except Exception as e:
             logger.error(f"删除向量失败: {e}")
@@ -267,6 +272,7 @@ class ChromaService:
         try:
             self.collection.delete(where=where)
             logger.info(f"成功删除符合条件的向量: {where}")
+            self.mark_index_changed()
             return True
         except Exception as e:
             logger.error(f"按条件删除向量失败: {e}")
@@ -290,6 +296,7 @@ class ChromaService:
                 ]
             })
             logger.info(f"成功删除文档索引: {filename}")
+            self.mark_index_changed()
             return True
         except Exception as e:
             logger.error(f"删除文档索引失败: {e}")
@@ -401,6 +408,7 @@ class ChromaService:
             )
 
             logger.debug(f"成功更新向量: note_id={note_id}")
+            self.mark_index_changed()
             return True
         except Exception as e:
             logger.error(f"更新向量失败: {e}")
@@ -441,6 +449,7 @@ class ChromaService:
             )
 
             logger.debug(f"成功 upsert 向量: note_id={note_id}")
+            self.mark_index_changed()
             return True
         except Exception as e:
             logger.error(f"upsert 向量失败: {e}")
@@ -460,11 +469,20 @@ class ChromaService:
                 name=self.collection_name,
                 metadata={"hnsw:space": "cosine"}
             )
+            self.mark_index_changed()
             logger.warning(f"已清空集合: {self.collection_name}")
             return True
         except Exception as e:
             logger.error(f"清空集合失败: {e}")
             return False
+
+    def mark_index_changed(self) -> None:
+        """标记绕过本服务直接写入 Chroma 的索引变更。"""
+        self._generation += 1
+
+    def get_generation(self) -> int:
+        """返回当前进程内索引 generation。"""
+        return self._generation
 
 
 # 全局服务实例

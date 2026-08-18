@@ -97,6 +97,7 @@ class CRAGGraderService:
                 "max_score": None,
                 "upper_threshold": self.upper_threshold,
                 "lower_threshold": self.lower_threshold,
+                "grading_failed": False,
             }
 
         cache_key = self._cache_key(
@@ -112,14 +113,15 @@ class CRAGGraderService:
             return cached
 
         if not self.llm_service:
-            logger.warning("LLM 服务不可用，跳过 CRAG 评分")
+            logger.warning("LLM 服务不可用，CRAG 安全拒答")
             return {
-                "grade": RelevanceGrade.AMBIGUOUS,
+                "grade": RelevanceGrade.INCORRECT,
                 "scores": [],
-                "reasoning": "LLM 服务不可用，无法取得有效证据分数",
+                "reasoning": "LLM 服务不可用，无法取得有效证据分数，禁止直接生成答案",
                 "max_score": None,
                 "upper_threshold": self.upper_threshold,
                 "lower_threshold": self.lower_threshold,
+                "grading_failed": True,
             }
 
         try:
@@ -169,10 +171,52 @@ class CRAGGraderService:
                 }
             ]
 
-            response = self.llm_service.chat_json(
-                messages=messages,
-                temperature=0.1
-            )
+            parameters = {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "grade": {
+                        "type": "string",
+                        "enum": [item.value for item in RelevanceGrade],
+                    },
+                    "scores": {
+                        "type": "array",
+                        "maxItems": min(5, len(documents)),
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "doc_id": {"type": "integer", "minimum": 0},
+                                "grade": {
+                                    "type": "string",
+                                    "enum": [item.value for item in RelevanceGrade],
+                                },
+                                "score": {"type": "number", "minimum": 0, "maximum": 1},
+                            },
+                            "required": ["doc_id", "score"],
+                        },
+                    },
+                    "reasoning": {"type": "string", "maxLength": 500},
+                },
+                "required": ["grade", "scores", "reasoning"],
+            }
+            structured_call = getattr(self.llm_service, "structured_call", None)
+            if callable(structured_call):
+                response = structured_call(
+                    messages,
+                    name="grade_retrieval_evidence",
+                    description="为候选文档返回证据支持度评分",
+                    parameters=parameters,
+                    temperature=0.1,
+                    max_tokens=700,
+                    model=settings.llm_crag_model or settings.llm_model,
+                    trace_name="agent.crag_grade",
+                )
+            else:
+                response = self.llm_service.chat_json(
+                    messages=messages,
+                    temperature=0.1,
+                )
 
             # 后端只使用候选文档范围内的有效分数做裁决，不信任 LLM 直接返回的 grade。
             scores = self._normalize_scores(response.get("scores", []), len(documents))
@@ -200,26 +244,28 @@ class CRAGGraderService:
                 "lower_threshold": self.lower_threshold,
                 "model_grade": model_grade or None,
                 "cache_hit": False,
+                "grading_failed": False,
             }
             self._cache.set(cache_key, result)
             return result
 
         except Exception as e:
             logger.error(f"CRAG 评分失败: {e}")
-            # 失败时默认返回 ambiguous，触发重试
+            # 评分失败时必须 fail closed，不能把未经验证的候选交给生成模型。
             return {
-                "grade": RelevanceGrade.AMBIGUOUS,
+                "grade": RelevanceGrade.INCORRECT,
                 "scores": [],
-                "reasoning": f"评分失败: {str(e)}",
+                "reasoning": f"评分失败，禁止直接生成答案: {str(e)}",
                 "max_score": None,
                 "upper_threshold": self.upper_threshold,
                 "lower_threshold": self.lower_threshold,
+                "grading_failed": True,
             }
 
     def _classify_score(self, max_score: Optional[float]) -> RelevanceGrade:
         """按双阈值将最高有效证据分数映射为 CRAG 等级。"""
         if max_score is None:
-            return RelevanceGrade.AMBIGUOUS
+            return RelevanceGrade.INCORRECT
         if max_score >= self.upper_threshold:
             return RelevanceGrade.CORRECT
         if max_score <= self.lower_threshold:
@@ -343,7 +389,9 @@ class CRAGGraderService:
             refined = self.llm_service.chat(
                 messages=messages,
                 temperature=0.3,
-                max_tokens=500
+                max_tokens=400,
+                model=settings.llm_crag_model or settings.llm_model,
+                trace_name="agent.crag_refine",
             )
 
             logger.info(f"知识精炼完成: 输入文档数={len(documents)}, 输出长度={len(refined)}")

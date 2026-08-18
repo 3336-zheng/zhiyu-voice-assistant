@@ -443,8 +443,9 @@ class PlanExecuteAgent:
             "plan": plan,
             "fast_path": fast_path,
             "skip_query_rewrite": fast_path,
-            "fast_path_recovery_attempted": False,
-            "fast_path_recovery_pending": False,
+            "retrieval_recovery_attempted": False,
+            "retrieval_recovery_pending": False,
+            "crag_grading_failed": False,
             "retrieval_query": None,
             "rewritten_queries": [],
             "search_results": None,
@@ -458,7 +459,8 @@ class PlanExecuteAgent:
             "answer": None,
             "sources": None,
             "confidence": 0.0,
-            "evidence_status": "not_applicable",
+            # 检索流程默认处于“证据不足”，只有 generate_node 通过门禁后才改为 sufficient。
+            "evidence_status": "insufficient",
             "evidence_score": None,
             "evidence_source_count": 0,
             "evidence_reason": None,
@@ -477,7 +479,9 @@ class PlanExecuteAgent:
         answer = final_state.get("answer")
         if not answer and final_state.get("relevance_grade") == "incorrect":
             answer = "现有 Wiki 中没有找到足以支持回答的证据，请补充相关页面或缩小查询范围。"
-        evidence_status = final_state.get("evidence_status", evidence.status)
+        evidence_status = final_state.get("evidence_status") or evidence.status
+        if final_state.get("relevance_grade") == "incorrect":
+            evidence_status = "insufficient"
         return AgentResponse(
             query=user_query,
             response=answer or "现有 Wiki 证据不足，暂时无法回答该问题。",
@@ -518,7 +522,13 @@ class PlanExecuteAgent:
             run.session_id = response.session_id
             run.query = response.query
             run.intent = response.plan.intent.value if response.plan else None
-            run.status = "success" if response.confidence > 0 else "failed"
+            # “证据不足但已安全拒答”是正常完成，不应被追踪接口误报为 500。
+            run.status = (
+                "completed"
+                if response.confidence > 0
+                or response.evidence_status in {"sufficient", "insufficient"}
+                else "failed"
+            )
             run.execution_time_ms = response.execution_time_ms
             run.timeline = response.timeline
             run.retrieval_stats = response.retrieval_stats

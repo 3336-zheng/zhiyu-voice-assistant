@@ -316,6 +316,9 @@ class DocIndexService:
                 documents=[chunk["text"]],
                 metadatas=[metadata]
             )
+        mark_index_changed = getattr(self.chroma_service, "mark_index_changed", None)
+        if callable(mark_index_changed):
+            mark_index_changed()
 
         # 写入 BM25
         for i, chunk in enumerate(chunks):

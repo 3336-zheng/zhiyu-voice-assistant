@@ -29,8 +29,12 @@ QUESTION_MARKERS = (
     "含义",
     "是什么",
 )
-MUTATION_MARKERS = re.compile(
-    r"创建|新增|更新|修改|删除|写入|保存|记录|导出|上传|重命名|替换|清空|取消|确认|总结|归纳|生成复习|整理成"
+# 只拦截命令式变更；“保存什么”“记录的作用”这类知识问句仍走只读快速路径。
+MUTATION_MARKERS = (
+    re.compile(r"^(?:请|帮我)?(?:创建|新增|更新|修改|删除|写入|保存|记录|导出|上传|重命名|替换|清空|取消|确认)"),
+    re.compile(r"(?:把|将|帮我把).{0,80}(?:创建|新增|更新|修改|删除|写入|保存|记录|导出|上传|重命名|替换|清空)"),
+    re.compile(r"(?:保存|写入|记录|添加|更新|修改|删除|替换|重命名).{0,40}(?:到|进|为|成)(?:知识库|笔记|页面|文档|Wiki)"),
+    re.compile(r"(?:总结|归纳|生成复习|整理成)"),
 )
 COMPLEX_MARKERS = re.compile(
     r"比较|对比|分别|同时|以及|并且|结合|如果|然后|优缺点|差异|完整流程|详细说明"
@@ -47,7 +51,7 @@ def is_fast_path_query(
     normalized = re.sub(r"\s+", "", query or "")
     if not normalized or len(normalized) > settings.fast_path_max_query_chars:
         return False
-    if MUTATION_MARKERS.search(normalized):
+    if any(marker.search(normalized) for marker in MUTATION_MARKERS):
         return False
     if COMPLEX_MARKERS.search(normalized):
         return False

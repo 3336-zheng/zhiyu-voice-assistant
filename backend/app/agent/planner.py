@@ -58,6 +58,46 @@ PLAN_GENERATION_PROMPT = """你是本地优先 AI Wiki 的 Planner。把用户�
 """
 
 
+def _plan_output_schema(capabilities: Sequence[ToolCapability]) -> Dict[str, Any]:
+    """为当前工具目录生成受限的 Planner 输出 Schema。"""
+    tool_names = [item.name.value for item in capabilities]
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "goal": {"type": "string"},
+            "intent": {
+                "type": "string",
+                "enum": [item.value for item in IntentType],
+            },
+            "steps": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "step_id": {"type": "integer", "minimum": 1},
+                        "tool_name": {"type": "string", "enum": tool_names},
+                        "parameters": {"type": "object"},
+                        "description": {"type": "string"},
+                        "depends_on": {
+                            "type": "array",
+                            "items": {"type": "integer", "minimum": 1},
+                        },
+                        "expected_output": {"type": "string"},
+                        "success_criteria": {"type": "string"},
+                    },
+                    "required": ["step_id", "tool_name", "parameters", "description"],
+                },
+            },
+            "reasoning": {"type": "string", "maxLength": 500},
+        },
+        "required": ["goal", "intent", "steps"],
+    }
+
+
 class Planner:
     """动态生成结构化计划，并保留确定性规则降级。"""
 
@@ -190,7 +230,25 @@ class Planner:
         )
         messages = assembled.messages
         logger.info("[planner] 上下文装配统计: %s", assembled.stats())
-        result = self.llm_service.chat_json(messages=messages, temperature=0.1)
+        structured_call = getattr(self.llm_service, "structured_call", None)
+        if callable(structured_call):
+            result = structured_call(
+                messages,
+                name="submit_agent_plan",
+                description="提交当前工具目录允许的最小可执行计划",
+                parameters=_plan_output_schema(capabilities),
+                temperature=0.1,
+                max_tokens=settings.llm_max_tokens,
+                model=settings.llm_planner_model or settings.llm_model,
+                trace_name="agent.plan",
+            )
+        else:
+            # 保留测试替身和旧扩展的兼容入口。
+            result = self.llm_service.chat_json(
+                messages=messages,
+                temperature=0.1,
+                max_tokens=settings.llm_max_tokens,
+            )
         steps = result.get("steps")
         if not isinstance(steps, list):
             raise PlanValidationError("LLM 未返回 steps 数组")

@@ -31,8 +31,9 @@ class AgentState(TypedDict):
     plan: Optional[Plan]
     fast_path: bool
     skip_query_rewrite: bool
-    fast_path_recovery_attempted: bool
-    fast_path_recovery_pending: bool
+    retrieval_recovery_attempted: bool
+    retrieval_recovery_pending: bool
+    crag_grading_failed: bool
     retrieval_query: Optional[str]  # 消歧后供检索、Rerank 和 CRAG 共用的独立查询
     rewritten_queries: List[str]  # P1-5: 改写后的查询
     search_results: Optional[List[Dict]]
@@ -125,7 +126,7 @@ def query_rewrite_node(state: AgentState) -> AgentState:
         return result
 
     rewrite_service = get_query_rewrite_service()
-    recovery_pending = state.get("fast_path_recovery_pending", False)
+    recovery_pending = state.get("retrieval_recovery_pending", False)
     plan = state.get("plan")
     goal = plan.goal if plan else None
     intent = plan.intent.value if plan else None
@@ -139,6 +140,7 @@ def query_rewrite_node(state: AgentState) -> AgentState:
             context=state.get("context", []),
             goal=goal,
             intent=intent,
+            force_refresh=recovery_pending,
         )
         retrieval_query = rewritten_queries[0] if rewritten_queries else goal or query
 
@@ -148,10 +150,10 @@ def query_rewrite_node(state: AgentState) -> AgentState:
             "retrieval_query": retrieval_query,
             "rewritten_queries": rewritten_queries,
             "iter_count": state.get("iter_count", 0) + 1,
-            "fast_path_recovery_attempted": state.get(
-                "fast_path_recovery_attempted", False
+            "retrieval_recovery_attempted": state.get(
+                "retrieval_recovery_attempted", False
             ) or recovery_pending,
-            "fast_path_recovery_pending": False,
+            "retrieval_recovery_pending": False,
         }
 
     except AgentRunCancelled:
@@ -166,10 +168,10 @@ def query_rewrite_node(state: AgentState) -> AgentState:
             "retrieval_query": goal or query,
             "rewritten_queries": [goal or query],
             "iter_count": state.get("iter_count", 0) + 1,
-            "fast_path_recovery_attempted": state.get(
-                "fast_path_recovery_attempted", False
+            "retrieval_recovery_attempted": state.get(
+                "retrieval_recovery_attempted", False
             ) or recovery_pending,
-            "fast_path_recovery_pending": False,
+            "retrieval_recovery_pending": False,
         }
     finally:
         record_timing("agent.query_rewrite", (time.perf_counter() - started) * 1000)
@@ -307,6 +309,8 @@ def grade_node(state: AgentState) -> AgentState:
                 return {
                     **state,
                     "relevance_grade": RelevanceGrade.CORRECT.value,
+                    "crag_grading_failed": False,
+                    "retrieval_recovery_pending": False,
                     "crag_max_score": None,
                     "crag_upper_threshold": settings.crag_upper_threshold,
                     "crag_lower_threshold": settings.crag_lower_threshold,
@@ -351,7 +355,17 @@ def grade_node(state: AgentState) -> AgentState:
             "lower_threshold": grade_result.get("lower_threshold"),
             "score_count": len(grade_result.get("scores") or []),
             "model_grade": grade_result.get("model_grade"),
+            "grading_failed": grade_result.get("grading_failed", False),
         }
+
+        max_score = grade_result.get("max_score")
+        recovery_allowed = (
+            grade == RelevanceGrade.INCORRECT
+            and not grade_result.get("grading_failed", False)
+            and max_score is not None
+            and max_score > settings.crag_recovery_min_score
+            and not state.get("retrieval_recovery_attempted", False)
+        )
 
         return {
             **state,
@@ -362,11 +376,11 @@ def grade_node(state: AgentState) -> AgentState:
             "skip_query_rewrite": state.get("skip_query_rewrite", False)
             if grade != RelevanceGrade.INCORRECT
             else False,
-            "fast_path_recovery_attempted": state.get(
-                "fast_path_recovery_attempted", False
+            "retrieval_recovery_attempted": state.get(
+                "retrieval_recovery_attempted", False
             ),
-            "fast_path_recovery_pending": state.get("fast_path", False)
-            and grade == RelevanceGrade.INCORRECT,
+            "retrieval_recovery_pending": recovery_allowed,
+            "crag_grading_failed": grade_result.get("grading_failed", False),
             "crag_max_score": grade_result.get("max_score"),
             "crag_upper_threshold": grade_result.get("upper_threshold"),
             "crag_lower_threshold": grade_result.get("lower_threshold"),
@@ -380,10 +394,12 @@ def grade_node(state: AgentState) -> AgentState:
     except Exception as e:
         status = "failed"
         logger.error(f"[graph] CRAG 评分失败: {e}")
-        # 失败时默认 ambiguous，触发重试
+        # 评分失败时关闭恢复和生成，避免把未经证实的候选交给 Responder。
         return {
             **state,
-            "relevance_grade": "ambiguous",
+            "relevance_grade": RelevanceGrade.INCORRECT.value,
+            "retrieval_recovery_pending": False,
+            "crag_grading_failed": True,
             "crag_max_score": None,
             "crag_upper_threshold": grader_service.upper_threshold,
             "crag_lower_threshold": grader_service.lower_threshold,
@@ -429,11 +445,9 @@ def generate_node(state: AgentState) -> AgentState:
             status = "failed"
             return {**state, "error": "没有执行计划", "answer": "抱歉，无法处理您的请求。"}
 
-        # 如果有精炼后的内容，使用精炼内容
+        # 精炼内容作为带来源的辅助证据传入，保留原始页面以便引用可追溯。
         if refined_content:
-            logger.info("[graph] 使用精炼后的内容生成答案")
-            # 构建虚拟的检索结果
-            search_results = [{"content": refined_content, "rerank_score": 1.0}]
+            logger.info("[graph] 使用精炼内容辅助生成答案，保留原始来源")
 
         # 构建执行结果
         from backend.app.agent.models import ExecutionResult, ToolResult
@@ -454,7 +468,10 @@ def generate_node(state: AgentState) -> AgentState:
             total_steps=len(plan.steps),
             success=True,
             execution_log=[],
-            final_data={"search_results": search_results} if search_results else {}
+            final_data={
+                "search_results": search_results,
+                "refined_content": refined_content,
+            } if search_results else {},
         )
 
         # 生成回复
@@ -526,8 +543,8 @@ def should_continue(state: AgentState) -> str:
         logger.info("[graph] CRAG 评分 ambiguous，继续生成（使用精炼内容）")
         return "generate"
     elif grade == "incorrect":
-        if state.get("fast_path_recovery_attempted"):
-            logger.info("[graph] 快速路径恢复后仍为 incorrect，直接结束并拒答")
+        if not state.get("retrieval_recovery_pending"):
+            logger.info("[graph] 没有允许的恢复检索，直接结束并拒答")
             return "end"
         logger.info("[graph] CRAG 评分 incorrect，需要改写重检")
         return "rewrite"

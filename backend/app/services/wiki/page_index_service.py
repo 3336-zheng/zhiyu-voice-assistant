@@ -153,6 +153,9 @@ class PageIndexService:
             documents=texts,
             metadatas=metadatas,
         )
+        mark_index_changed = getattr(self.chroma_service, "mark_index_changed", None)
+        if callable(mark_index_changed):
+            mark_index_changed()
         for chunk_id, text, metadata in zip(ids, texts, metadatas):
             self.bm25_service.add_document(
                 chunk_id,

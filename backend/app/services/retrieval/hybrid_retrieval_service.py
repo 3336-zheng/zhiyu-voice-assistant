@@ -316,16 +316,17 @@ class HybridRetrievalService:
                     outcomes[index][source] = results
         return outcomes
 
-    def _index_version(self) -> int:
-        """取得可用的向量集合计数，用于避免索引更新后命中旧缓存。"""
+    def _index_version(self) -> str:
+        """组合集合计数与 generation，识别同数量内容更新。"""
         try:
             count = self.chroma_service.collection.count()
-            return int(count)
+            generation = getattr(self.chroma_service, "get_generation", lambda: 0)()
+            return f"{int(count)}:{int(generation)}"
         except Exception:
             getter = getattr(self.bm25_service, "get_document_count", None)
             if callable(getter):
-                return int(getter())
-            return len(getattr(self.bm25_service, "corpus", {}) or {})
+                return f"{int(getter())}:bm25"
+            return f"{len(getattr(self.bm25_service, 'corpus', {}) or {})}:bm25"
 
     def _retrieval_cache_key(
         self,

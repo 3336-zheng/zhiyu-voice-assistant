@@ -131,6 +131,9 @@ def record_model_usage(
     fallback_used: bool = False,
     success: bool = True,
     error_type: Optional[str] = None,
+    operation: Optional[str] = None,
+    finish_reason: Optional[str] = None,
+    truncated: bool = False,
 ) -> None:
     """记录一次模型尝试，不包含提示词、答案或密钥。"""
     usage = _model_usage.get()
@@ -148,6 +151,9 @@ def record_model_usage(
             "fallback_used": bool(fallback_used),
             "success": bool(success),
             "error_type": error_type,
+            "operation": operation,
+            "finish_reason": finish_reason,
+            "truncated": bool(truncated),
         }
     )
 
@@ -163,6 +169,7 @@ def get_model_usage() -> Dict[str, Any]:
         "total_tokens": sum(item["total_tokens"] for item in calls),
         "estimated_cost": round(sum(item["estimated_cost"] for item in calls), 8),
         "fallback_used": any(item["fallback_used"] for item in calls),
+        "truncated": any(item.get("truncated", False) for item in calls),
     }
 
 

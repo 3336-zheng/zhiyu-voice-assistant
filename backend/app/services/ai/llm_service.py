@@ -123,8 +123,11 @@ class LLMService:
         fallback_used: bool,
         response: Any = None,
         error: Optional[Exception] = None,
+        operation: Optional[str] = None,
+        finish_reason: Optional[str] = None,
     ) -> None:
         prompt_tokens, completion_tokens, total_tokens = self._usage_values(response)
+        resolved_finish_reason = finish_reason or self._finish_reason(response)
         record_model_usage(
             provider=provider,
             model=model,
@@ -140,10 +143,28 @@ class LLMService:
             fallback_used=fallback_used,
             success=error is None,
             error_type=type(error).__name__ if error else None,
+            operation=operation,
+            finish_reason=resolved_finish_reason,
+            truncated=resolved_finish_reason == "length",
         )
 
-    def _chat_completion(self, kwargs: Dict[str, Any]) -> tuple[Any, str, bool]:
-        attempts = [(self.client, self.model, "primary", False)]
+    @staticmethod
+    def _finish_reason(response: Any) -> Optional[str]:
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return None
+        value = getattr(choices[0], "finish_reason", None)
+        return str(value) if value else None
+
+    def _chat_completion(
+        self,
+        kwargs: Dict[str, Any],
+        *,
+        model: Optional[str] = None,
+        operation: Optional[str] = None,
+    ) -> tuple[Any, str, bool]:
+        primary_model = (model or "").strip() or self.model
+        attempts = [(self.client, primary_model, "primary", False)]
         if self.fallback_client is not None:
             attempts.append((self.fallback_client, self.fallback_model, "fallback", True))
 
@@ -161,6 +182,7 @@ class LLMService:
                     duration_ms=duration_ms,
                     fallback_used=fallback_used,
                     response=response,
+                    operation=operation,
                 )
                 return response, model, fallback_used
             except AgentRunCancelled:
@@ -173,6 +195,7 @@ class LLMService:
                     duration_ms=duration_ms,
                     fallback_used=fallback_used,
                     error=exc,
+                    operation=operation,
                 )
                 last_error = exc
                 can_fallback = index == 0 and len(attempts) > 1 and self._is_retryable_error(exc)
@@ -236,7 +259,8 @@ class LLMService:
         temperature: float = None,
         max_tokens: int = None,
         response_format: Dict = None,
-        trace_name: str = None
+        trace_name: str = None,
+        model: str = None,
     ) -> str:
         """
         发送对话请求
@@ -262,11 +286,23 @@ class LLMService:
             if response_format:
                 kwargs["response_format"] = response_format
 
-            response, used_model, fallback_used = self._chat_completion(kwargs)
-            content = response.choices[0].message.content
+            response, used_model, fallback_used = self._chat_completion(
+                kwargs,
+                model=model,
+                operation=trace_name,
+            )
+            content = response.choices[0].message.content or ""
             duration_ms = int((time.time() - start_time) * 1000)
+            finish_reason = self._finish_reason(response)
 
             logger.debug(f"LLM 调用成功，回复长度: {len(content)}，耗时: {duration_ms}ms")
+            if finish_reason == "length":
+                logger.warning(
+                    "LLM 输出达到 Token 上限: operation=%s, model=%s, length=%s",
+                    trace_name or "chat",
+                    used_model,
+                    len(content),
+                )
 
             self._trace_langfuse(
                 trace_name,
@@ -289,6 +325,8 @@ class LLMService:
         messages: List[Dict[str, str]],
         temperature: float = None,
         max_tokens: int = None,
+        model: str = None,
+        trace_name: str = None,
     ) -> Dict[str, Any]:
         """
         发送对话请求并返回 JSON 格式结果
@@ -309,6 +347,8 @@ class LLMService:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     response_format=response_format,
+                    model=model,
+                    trace_name=trace_name,
                 )
                 self._json_response_format_supported = True
             except RuntimeError as exc:
@@ -323,12 +363,16 @@ class LLMService:
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    model=model,
+                    trace_name=trace_name,
                 )
         else:
             content = self.chat(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                model=model,
+                trace_name=trace_name,
             )
 
         try:
@@ -360,6 +404,8 @@ class LLMService:
         parameters: Dict[str, Any],
         temperature: float = 0,
         max_tokens: int = None,
+        model: str = None,
+        trace_name: str = None,
     ) -> Dict[str, Any]:
         """强制调用一个 OpenAI 兼容函数，并返回经过 JSON 解析的参数。"""
         function_name = (name or "").strip()
@@ -385,7 +431,11 @@ class LLMService:
             },
         }
         try:
-            response, _, _ = self._chat_completion(kwargs)
+            response, _, _ = self._chat_completion(
+                kwargs,
+                model=model,
+                operation=trace_name,
+            )
             tool_calls = response.choices[0].message.tool_calls or []
             if len(tool_calls) != 1 or tool_calls[0].function.name != function_name:
                 raise RuntimeError("模型未按要求返回唯一函数调用")
@@ -396,11 +446,65 @@ class LLMService:
         except json.JSONDecodeError as exc:
             raise RuntimeError("Function Calling 返回了无效 JSON 参数") from exc
 
+    def structured_call(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        name: str,
+        description: str,
+        parameters: Dict[str, Any],
+        temperature: float = 0,
+        max_tokens: int = None,
+        model: str = None,
+        trace_name: str = None,
+    ) -> Dict[str, Any]:
+        """优先使用 Function Calling，网关不兼容时回退到 JSON 输出。"""
+        mode = settings.llm_structured_output_mode
+        if mode != "json":
+            try:
+                return self.call_function(
+                    messages,
+                    name=name,
+                    description=description,
+                    parameters=parameters,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    model=model,
+                    trace_name=trace_name,
+                )
+            except AgentRunCancelled:
+                raise
+            except Exception as exc:
+                if mode == "function_call":
+                    raise
+                logger.warning(
+                    "Function Calling 失败，降级为 JSON 输出: operation=%s, error=%s",
+                    trace_name or name,
+                    str(exc)[:240],
+                )
+
+        schema_instruction = {
+            "role": "system",
+            "content": (
+                "严格返回一个符合下列 JSON Schema 的 JSON 对象，不要输出代码块或额外说明：\n"
+                + json.dumps(parameters, ensure_ascii=False)
+            ),
+        }
+        return self.chat_json(
+            [schema_instruction, *messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            model=model,
+            trace_name=trace_name,
+        )
+
     def stream_chat(
         self,
         messages: List[Dict[str, str]],
         temperature: float = None,
-        max_tokens: int = None
+        max_tokens: int = None,
+        model: str = None,
+        trace_name: str = None,
     ) -> Generator[str, None, None]:
         """
         流式对话请求
@@ -413,7 +517,8 @@ class LLMService:
         Yields:
             str: 增量 token
         """
-        attempts = [(self.client, self.model, "primary", False)]
+        primary_model = (model or "").strip() or self.model
+        attempts = [(self.client, primary_model, "primary", False)]
         if self.fallback_client is not None:
             attempts.append((self.fallback_client, self.fallback_model, "fallback", True))
 
@@ -429,11 +534,14 @@ class LLMService:
             started = time.perf_counter()
             emitted = False
             final_chunk = None
+            finish_reason = None
             try:
                 stream = client.chat.completions.create(**kwargs)
                 for chunk in stream:
                     final_chunk = chunk
-                    if chunk.choices and chunk.choices[0].delta.content:
+                    if chunk.choices and getattr(chunk.choices[0], "finish_reason", None):
+                        finish_reason = chunk.choices[0].finish_reason
+                    if chunk.choices and getattr(chunk.choices[0].delta, "content", None):
                         emitted = True
                         yield chunk.choices[0].delta.content
                 self._record_attempt(
@@ -442,7 +550,15 @@ class LLMService:
                     duration_ms=(time.perf_counter() - started) * 1000,
                     fallback_used=fallback_used,
                     response=final_chunk,
+                    operation=trace_name,
+                    finish_reason=finish_reason,
                 )
+                if finish_reason == "length":
+                    logger.warning(
+                        "LLM 流式输出达到 Token 上限: operation=%s, model=%s",
+                        trace_name or "stream_chat",
+                        model,
+                    )
                 return
             except AgentRunCancelled:
                 raise
@@ -453,6 +569,7 @@ class LLMService:
                     duration_ms=(time.perf_counter() - started) * 1000,
                     fallback_used=fallback_used,
                     error=exc,
+                    operation=trace_name,
                 )
                 can_fallback = (
                     not emitted

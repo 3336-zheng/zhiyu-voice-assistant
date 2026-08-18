@@ -33,8 +33,11 @@ class LLMService:
         self.temperature = settings.llm_temperature
         self.fallback_client = None
         self.fallback_model = settings.llm_fallback_model.strip()
-        # None 表示尚未探测；False 表示当前网关不支持 response_format。
-        self._json_response_format_supported: Optional[bool] = None
+        # disabled 避免已知不兼容网关在首个请求上浪费一次往返；auto 仍可探测。
+        mode = settings.llm_response_format_mode
+        self._json_response_format_supported: Optional[bool] = (
+            None if mode == "auto" else mode == "enabled"
+        )
         if settings.llm_fallback_enabled and self.fallback_model:
             self.fallback_client = OpenAI(
                 api_key=settings.llm_fallback_api_key or settings.llm_api_key,

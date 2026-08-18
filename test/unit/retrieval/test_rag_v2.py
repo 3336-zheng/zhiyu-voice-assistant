@@ -3,12 +3,22 @@
 import unittest
 
 from backend.app.services.retrieval.hybrid_retrieval_service import HybridRetrievalService
+from backend.app.agent.fast_path import is_fast_path_query
 
 
 class FakeEmbedding:
     @staticmethod
     def encode(query):
         return [float(len(query))]
+
+
+class FakeBatchEmbedding:
+    def __init__(self):
+        self.calls = 0
+
+    def encode_queries(self, queries):
+        self.calls += 1
+        return [[float(len(query))] for query in queries]
 
 
 class FakeBM25:
@@ -125,6 +135,69 @@ class RagV2TestCase(unittest.TestCase):
         self.assertEqual(used, 30)
         self.assertEqual(len(selected), 1)
         self.assertTrue(selected[0]["context_truncated"])
+
+    def test_filter_reranked_results_keeps_close_scores_and_drops_outliers(self):
+        filtered = self.service.filter_reranked_results(
+            [
+                {"index": 0, "score": 0.90},
+                {"index": 1, "score": 0.81},
+                {"index": 2, "score": 0.72},
+                {"index": 3, "score": 0.41},
+                {"index": 4, "score": 0.12},
+            ],
+            final_top_k=5,
+            min_score=0.35,
+            score_margin=0.20,
+        )
+        self.assertEqual([item["index"] for item in filtered], [0, 1, 2])
+
+    def test_filter_reranked_results_keeps_best_low_score_for_evidence_gate(self):
+        filtered = self.service.filter_reranked_results(
+            [{"index": 0, "score": 0.24}, {"index": 1, "score": 0.10}],
+            final_top_k=5,
+            min_score=0.35,
+            score_margin=0.20,
+        )
+        self.assertEqual([item["index"] for item in filtered], [0])
+
+    def test_fast_path_only_accepts_simple_read_queries(self):
+        self.assertTrue(is_fast_path_query("Markdown 作为知识主数据有哪些优势？"))
+        self.assertFalse(is_fast_path_query("比较父子分块和 RRF，并说明什么时候触发重检？"))
+        self.assertFalse(is_fast_path_query("请把这段内容总结成复习卡片"))
+        self.assertFalse(
+            is_fast_path_query(
+                "这个结论对吗？",
+                [{"role": "user", "content": "上文提到父子分块"}],
+            )
+        )
+
+    def test_multi_query_uses_one_batch_embedding_and_short_candidate_list(self):
+        embedding = FakeBatchEmbedding()
+        service = HybridRetrievalService(
+            embedding_service=embedding,
+            bm25_service=FakeBM25(),
+            chroma_service=FakeChroma(),
+            rrf_service=FakeRRF(),
+            reranker_service=FakeReranker(),
+        )
+
+        outcome = service.search_multi(
+            ["原始问题", "改写问题"],
+            original_query="原始问题",
+            top_k=5,
+            token_budget=100,
+        )
+        cached = service.search_multi(
+            ["原始问题", "改写问题"],
+            original_query="原始问题",
+            top_k=5,
+            token_budget=100,
+        )
+
+        self.assertEqual(embedding.calls, 1)
+        self.assertFalse(outcome["stats"]["cache_hit"])
+        self.assertTrue(cached["stats"]["cache_hit"])
+        self.assertLessEqual(outcome["stats"]["reranked_candidates"], 12)
 
 
 if __name__ == "__main__":

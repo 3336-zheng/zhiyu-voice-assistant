@@ -245,7 +245,9 @@ def test_default_retrieval_settings_match_fixed_engineering_profile():
     assert settings.rag_parent_chunk_overlap_chars == 120
     assert settings.rag_child_chunk_chars == 500
     assert settings.rag_child_chunk_overlap_chars == 80
-    assert settings.bm25_top_k == 30
-    assert settings.embedding_top_k == 30
+    assert settings.bm25_top_k == 20
+    assert settings.embedding_top_k == 20
     assert settings.rrf_top_k == 30
     assert settings.rag_final_top_k == 5
+    assert settings.retrieval_rerank_min_score == 0.35
+    assert settings.retrieval_rerank_score_margin == 0.20

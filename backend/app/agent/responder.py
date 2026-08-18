@@ -170,13 +170,17 @@ class Responder:
         logger.info("[responder] 上下文装配统计: %s", assembled.stats())
 
         if token_callback is None:
-            return self.llm_service.chat(messages=messages, temperature=0.7, max_tokens=1000)
+            return self.llm_service.chat(
+                messages=messages,
+                temperature=0.7,
+                max_tokens=settings.llm_response_max_tokens,
+            )
 
         chunks = []
         for chunk in self.llm_service.stream_chat(
             messages=messages,
             temperature=0.7,
-            max_tokens=1000,
+            max_tokens=settings.llm_response_max_tokens,
         ):
             chunks.append(chunk)
             token_callback(chunk)

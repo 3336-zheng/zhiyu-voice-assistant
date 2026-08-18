@@ -56,9 +56,13 @@ class Settings(BaseSettings):
 
     # 混合检索配置（新增）
     rrf_k: float = 60.0  # RRF 融合常数
-    rrf_top_k: int = 30  # 融合后候选数
-    bm25_top_k: int = 30  # BM25 检索数量
-    embedding_top_k: int = 30  # Embedding 检索数量
+    rrf_top_k: int = 30  # 兼容旧混合检索入口的融合候选数
+    bm25_top_k: int = 20  # BM25 检索数量
+    embedding_top_k: int = 20  # Embedding 检索数量
+    rag_rerank_candidate_top_k: int = Field(default=12, ge=5, le=100)
+    retrieval_rerank_min_score: float = Field(default=0.35, ge=0.0, le=1.0)
+    retrieval_rerank_score_margin: float = Field(default=0.20, ge=0.0, le=1.0)
+    retrieval_max_workers: int = Field(default=8, ge=2, le=32)
 
     # RAG v2 配置。关闭后继续使用原有的逐查询完整检索链路。
     rag_v2_enabled: bool = True
@@ -91,7 +95,8 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_api_url: str = "https://ai-gateway.vercel.sh/v1"
     llm_model: str = "deepseek/deepseek-v4-flash"
-    llm_max_tokens: int = 2048
+    llm_max_tokens: int = Field(default=1024, ge=128, le=16_000)
+    llm_response_max_tokens: int = Field(default=768, ge=128, le=8_000)
     llm_context_window_tokens: int = Field(default=16_000, ge=4_096)
     llm_temperature: float = 0.7
     llm_timeout_seconds: float = 60.0
@@ -103,6 +108,7 @@ class Settings(BaseSettings):
     llm_output_cost_per_million: float = 0.0
     llm_fallback_input_cost_per_million: float = 0.0
     llm_fallback_output_cost_per_million: float = 0.0
+    llm_response_format_mode: Literal["disabled", "auto", "enabled"] = "disabled"
 
     # 对话记忆配置（新增）
     memory_max_history: int = 20  # 最大保留对话轮数
@@ -157,6 +163,20 @@ class Settings(BaseSettings):
     # CRAG 证据相关性双阈值。最终等级由后端根据最高有效证据分数裁决。
     crag_upper_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
     crag_lower_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+
+    # 简单只读查询快速路径。
+    fast_path_enabled: bool = True
+    fast_path_max_query_chars: int = Field(default=160, ge=20, le=2_000)
+    fast_path_rerank_min_score: float = Field(default=0.75, ge=0.0, le=1.0)
+    fast_path_min_sources: int = Field(default=1, ge=1, le=20)
+
+    # 远程查询短 TTL 缓存，索引内容变化时由 collection count 参与检索缓存键。
+    query_embedding_cache_ttl_seconds: float = Field(default=60.0, ge=0.0, le=3_600)
+    query_embedding_cache_max_entries: int = Field(default=256, ge=0, le=10_000)
+    retrieval_cache_ttl_seconds: float = Field(default=20.0, ge=0.0, le=3_600)
+    retrieval_cache_max_entries: int = Field(default=128, ge=0, le=10_000)
+    crag_cache_ttl_seconds: float = Field(default=60.0, ge=0.0, le=3_600)
+    crag_cache_max_entries: int = Field(default=128, ge=0, le=10_000)
 
     # MCP 外部研究。默认关闭，仅允许显式配置的 stdio Server 与两个只读工具。
     mcp_research_enabled: bool = False

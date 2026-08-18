@@ -4,7 +4,10 @@
 """
 from typing import List, Dict, Optional, Any
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import json
 import logging
+import math
 import re
 from urllib.parse import quote
 
@@ -16,6 +19,7 @@ from backend.app.services.ai.embedding_service import get_embedding_service
 from backend.app.services.ai.reranker_service import get_reranker_service
 from backend.app.services.retrieval.token_budget_service import estimate_tokens, truncate_text
 from backend.app.core.observability import timed_stage
+from backend.app.core.ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
 AUDIO_SOURCE_PATTERN = re.compile(r"^audio:(\d+)")
@@ -82,6 +86,10 @@ class HybridRetrievalService:
         )
         self.reranker_service = (
             reranker_service if reranker_service is not None else get_reranker_service()
+        )
+        self._retrieval_cache: TTLCache[str, Dict[str, Any]] = TTLCache(
+            settings.retrieval_cache_ttl_seconds,
+            settings.retrieval_cache_max_entries,
         )
 
     def _fetch_doc_chunks(self, doc_ids: List[str]) -> Dict[str, Dict]:
@@ -174,6 +182,54 @@ class HybridRetrievalService:
                 break
         return selected, used_tokens
 
+    @staticmethod
+    def filter_reranked_results(
+        reranked: List[Dict[str, Any]],
+        *,
+        final_top_k: int,
+        min_score: Optional[float] = None,
+        score_margin: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """过滤明显低相关结果，同时保留最高分证据供证据门禁判断。"""
+        if final_top_k <= 0:
+            return []
+
+        minimum = (
+            settings.retrieval_rerank_min_score
+            if min_score is None
+            else min_score
+        )
+        margin = (
+            settings.retrieval_rerank_score_margin
+            if score_margin is None
+            else score_margin
+        )
+        valid = []
+        for item in reranked:
+            if not isinstance(item, dict):
+                continue
+            try:
+                score = float(item["score"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not math.isfinite(score):
+                continue
+            normalized = dict(item)
+            normalized["score"] = score
+            valid.append(normalized)
+
+        if not valid:
+            return []
+
+        valid.sort(key=lambda item: item["score"], reverse=True)
+        best_score = valid[0]["score"]
+        threshold = max(float(minimum), best_score - float(margin))
+        selected = [item for item in valid if item["score"] >= threshold]
+        # 无论模型分数多低都保留最高分，避免把低相关结果误判为“无结果”。
+        if not selected:
+            selected = valid[:1]
+        return selected[:final_top_k]
+
     def _recall(self, query: str, bm25_top_k: int, embedding_top_k: int) -> Dict[str, Any]:
         """并行执行单个查询的稀疏与稠密召回，不做融合和精排。"""
         with timed_stage("retrieval.embedding"):
@@ -201,6 +257,98 @@ class HybridRetrievalService:
                 embedding_results = future_embedding.result()
         return {"bm25": bm25_results, "embedding": embedding_results}
 
+    def _encode_queries(self, queries: List[str]) -> List[List[float]]:
+        """优先使用批量查询向量，兼容旧的单条测试替身。"""
+        encoder = getattr(self.embedding_service, "encode_queries", None)
+        if callable(encoder):
+            return encoder(queries)
+        encoder = getattr(self.embedding_service, "encode_batch", None)
+        if callable(encoder):
+            return encoder(queries)
+        with ThreadPoolExecutor(
+            max_workers=min(settings.retrieval_max_workers, max(1, len(queries)))
+        ) as executor:
+            futures = [executor.submit(self.embedding_service.encode, query) for query in queries]
+            return [future.result() for future in futures]
+
+    def _recall_many(
+        self,
+        queries: List[str],
+        bm25_top_k: int,
+        embedding_top_k: int,
+    ) -> List[Dict[str, Any]]:
+        """批量生成向量，并发执行所有查询的 BM25 与向量召回。"""
+        with timed_stage("retrieval.embedding"):
+            query_embeddings = self._encode_queries(queries)
+
+        outcomes = [{"bm25": [], "embedding": []} for _ in queries]
+
+        def bm25_search(index: int) -> tuple[int, str, list]:
+            try:
+                return index, "bm25", self.bm25_service.search(
+                    queries[index], top_k=bm25_top_k
+                )
+            except Exception as exc:
+                logger.error("BM25 检索失败: %s", exc)
+                return index, "bm25", []
+
+        def embedding_search(index: int) -> tuple[int, str, list]:
+            try:
+                return index, "embedding", self.chroma_service.search(
+                    query_embeddings[index], top_k=embedding_top_k
+                )
+            except Exception as exc:
+                logger.error("Embedding 检索失败: %s", exc)
+                return index, "embedding", []
+
+        with timed_stage("retrieval.recall"):
+            max_workers = min(
+                settings.retrieval_max_workers,
+                max(2, len(queries) * 2),
+            )
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = []
+                for index in range(len(queries)):
+                    futures.append(executor.submit(bm25_search, index))
+                    futures.append(executor.submit(embedding_search, index))
+                for future in futures:
+                    index, source, results = future.result()
+                    outcomes[index][source] = results
+        return outcomes
+
+    def _index_version(self) -> int:
+        """取得可用的向量集合计数，用于避免索引更新后命中旧缓存。"""
+        try:
+            count = self.chroma_service.collection.count()
+            return int(count)
+        except Exception:
+            getter = getattr(self.bm25_service, "get_document_count", None)
+            if callable(getter):
+                return int(getter())
+            return len(getattr(self.bm25_service, "corpus", {}) or {})
+
+    def _retrieval_cache_key(
+        self,
+        queries: List[str],
+        original_query: Optional[str],
+        final_top_k: int,
+        context_budget: int,
+    ) -> str:
+        payload = {
+            "queries": queries,
+            "original_query": original_query or "",
+            "final_top_k": final_top_k,
+            "context_budget": context_budget,
+            "bm25_top_k": settings.bm25_top_k,
+            "embedding_top_k": settings.embedding_top_k,
+            "rerank_candidate_top_k": settings.rag_rerank_candidate_top_k,
+            "rerank_min_score": settings.retrieval_rerank_min_score,
+            "rerank_score_margin": settings.retrieval_rerank_score_margin,
+            "index_version": self._index_version(),
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
     def search_multi(
         self,
         queries: List[str],
@@ -215,11 +363,27 @@ class HybridRetrievalService:
 
         final_top_k = top_k or settings.rag_final_top_k
         context_budget = token_budget or settings.rag_context_token_budget
+        cache_key = self._retrieval_cache_key(
+            normalized_queries,
+            original_query,
+            final_top_k,
+            context_budget,
+        )
+        cached = self._retrieval_cache.get(cache_key)
+        if cached is not None:
+            cached_stats = dict(cached.get("stats") or {})
+            cached_stats["cache_hit"] = True
+            return {"results": cached.get("results", []), "stats": cached_stats}
+
         recall_lists: List[List[tuple[str, float]]] = []
         bm25_count = 0
         embedding_count = 0
-        for query in normalized_queries:
-            recalled = self._recall(query, settings.bm25_top_k, settings.embedding_top_k)
+        recalled_items = self._recall_many(
+            normalized_queries,
+            settings.bm25_top_k,
+            settings.embedding_top_k,
+        )
+        for recalled in recalled_items:
             bm25_count += len(recalled["bm25"])
             embedding_count += len(recalled["embedding"])
             recall_lists.extend(
@@ -242,13 +406,18 @@ class HybridRetrievalService:
                     "selected_results": 0,
                     "context_tokens": 0,
                     "token_budget": context_budget,
+                    "cache_hit": False,
                 },
             }
 
+        rerank_candidate_top_k = max(
+            final_top_k,
+            settings.rag_rerank_candidate_top_k,
+        )
         with timed_stage("retrieval.fusion"):
             fused = self.rrf_service.fuse_multi(
                 populated_lists,
-                top_k=max(settings.rrf_top_k, final_top_k),
+                top_k=rerank_candidate_top_k,
             )
         doc_ids = [doc_id for doc_id, _ in fused]
         with timed_stage("retrieval.fetch_chunks"):
@@ -284,7 +453,7 @@ class HybridRetrievalService:
                 )
 
         if not candidates:
-            return {"results": [], "stats": {"query_count": len(normalized_queries)}}
+            return {"results": [], "stats": {"query_count": len(normalized_queries), "cache_hit": False}}
 
         rerank_query = original_query or normalized_queries[0]
         with timed_stage("retrieval.rerank"):
@@ -293,6 +462,10 @@ class HybridRetrievalService:
                 documents=[item["content"] for item in candidates],
                 top_k=min(final_top_k, len(candidates)),
             )
+        reranked = self.filter_reranked_results(
+            reranked,
+            final_top_k=final_top_k,
+        )
 
         formatted = []
         for rank, rerank_item in enumerate(reranked, start=1):
@@ -314,12 +487,16 @@ class HybridRetrievalService:
             "embedding_hits": embedding_count,
             "fused_candidates": len(fused),
             "reranked_candidates": len(candidates),
+            "quality_filtered_candidates": len(reranked),
             "selected_results": len(selected),
             "context_tokens": used_tokens,
             "token_budget": context_budget,
+            "cache_hit": False,
         }
         logger.info("RAG v2 检索完成: %s", stats)
-        return {"results": selected, "stats": stats}
+        outcome = {"results": selected, "stats": stats}
+        self._retrieval_cache.set(cache_key, outcome)
+        return outcome
 
     @staticmethod
     def _normalize_tags(tags: Any) -> List[str]:
@@ -500,6 +677,10 @@ class HybridRetrievalService:
                     documents=[doc["content"] for doc in candidate_docs],
                     top_k=min(top_k, len(candidate_docs))
                 )
+            rerank_results = self.filter_reranked_results(
+                rerank_results,
+                final_top_k=top_k,
+            )
 
             # Step 6: 组装最终结果
             final_results = []
@@ -685,6 +866,10 @@ class HybridRetrievalService:
                 query=query,
                 documents=[doc["content"] for doc in candidate_docs],
                 top_k=min(top_k, len(candidate_docs))
+            )
+            rerank_results = self.filter_reranked_results(
+                rerank_results,
+                final_top_k=top_k,
             )
 
             # 组装结果

@@ -4,10 +4,13 @@ CRAG (Corrective RAG) 评分服务
 """
 import logging
 import math
+import hashlib
+import json
 from typing import List, Dict, Optional
 from enum import Enum
 
 from backend.app.core.config import settings
+from backend.app.core.ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,10 @@ class CRAGGraderService:
         )
         if not 0.0 <= self.lower_threshold < self.upper_threshold <= 1.0:
             raise ValueError("CRAG 阈值必须满足 0 <= lower < upper <= 1")
+        self._cache: TTLCache[str, Dict] = TTLCache(
+            settings.crag_cache_ttl_seconds,
+            settings.crag_cache_max_entries,
+        )
 
     @property
     def llm_service(self):
@@ -91,6 +98,18 @@ class CRAGGraderService:
                 "upper_threshold": self.upper_threshold,
                 "lower_threshold": self.lower_threshold,
             }
+
+        cache_key = self._cache_key(
+            query,
+            documents,
+            retrieval_query=retrieval_query,
+            goal=goal,
+            intent=intent,
+        )
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            cached["cache_hit"] = True
+            return cached
 
         if not self.llm_service:
             logger.warning("LLM 服务不可用，跳过 CRAG 评分")
@@ -172,7 +191,7 @@ class CRAGGraderService:
                 reasoning[:50],
             )
 
-            return {
+            result = {
                 "grade": grade,
                 "scores": scores,
                 "reasoning": reasoning,
@@ -180,7 +199,10 @@ class CRAGGraderService:
                 "upper_threshold": self.upper_threshold,
                 "lower_threshold": self.lower_threshold,
                 "model_grade": model_grade or None,
+                "cache_hit": False,
             }
+            self._cache.set(cache_key, result)
+            return result
 
         except Exception as e:
             logger.error(f"CRAG 评分失败: {e}")
@@ -227,6 +249,39 @@ class CRAGGraderService:
                 continue
             normalized.append({"doc_id": doc_id, "score": score})
         return normalized
+
+    def _cache_key(
+        self,
+        query: str,
+        documents: List[Dict],
+        *,
+        retrieval_query: Optional[str],
+        goal: Optional[str],
+        intent: Optional[str],
+    ) -> str:
+        """以问题、语义上下文和证据版本生成稳定的 CRAG 缓存键。"""
+        evidence = []
+        for document in documents[:5]:
+            content = str(document.get("content", ""))
+            evidence.append(
+                {
+                    "doc_id": document.get("doc_id") or document.get("id"),
+                    "revision": document.get("page_revision"),
+                    "score": document.get("rerank_score", document.get("score")),
+                    "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                }
+            )
+        payload = {
+            "query": query,
+            "retrieval_query": retrieval_query or "",
+            "goal": goal or "",
+            "intent": intent or "",
+            "upper": self.upper_threshold,
+            "lower": self.lower_threshold,
+            "evidence": evidence,
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def refine_documents(
         self,

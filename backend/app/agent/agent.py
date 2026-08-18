@@ -8,7 +8,8 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from backend.app.agent.models import AgentResponse, Plan
+from backend.app.agent.models import AgentResponse, Plan, ToolName
+from backend.app.agent.fast_path import build_fast_search_plan, is_fast_path_query
 from backend.app.agent.planner import get_planner
 from backend.app.agent.executor import get_executor
 from backend.app.agent.plan_policy import PlanPolicy
@@ -121,38 +122,56 @@ class PlanExecuteAgent:
                     logger.warning(f"获取对话历史失败: {e}")
 
             self._raise_if_cancelled(cancel_check)
-            self._emit_event(
-                event_callback,
-                AgentEventType.STAGE_STARTED,
-                {"stage": "agent.plan"},
-            )
-            plan_status = "completed"
-            try:
-                with timed_stage("agent.plan"):
-                    policy = self._get_plan_policy()
-                    capabilities = policy.capabilities()
-                    plan = await asyncio.to_thread(
-                        self.planner.plan,
-                        user_query,
-                        context,
-                        capabilities,
-                    )
+            policy = self._get_plan_policy()
+            fast_path = is_fast_path_query(user_query, context)
+            if fast_path:
+                self._emit_event(
+                    event_callback,
+                    AgentEventType.STAGE_STARTED,
+                    {"stage": "agent.fast_path"},
+                )
+                with timed_stage("agent.fast_path"):
                     plan = policy.validate(
-                        plan,
-                        [capability.name for capability in capabilities],
+                        build_fast_search_plan(user_query),
+                        [ToolName.SEARCH_KNOWLEDGE_BASE],
                     )
-            except AgentRunCancelled:
-                plan_status = "cancelled"
-                raise
-            except Exception:
-                plan_status = "failed"
-                raise
-            finally:
                 self._emit_event(
                     event_callback,
                     AgentEventType.STAGE_COMPLETED,
-                    {"stage": "agent.plan", "status": plan_status},
+                    {"stage": "agent.fast_path", "status": "completed"},
                 )
+            else:
+                self._emit_event(
+                    event_callback,
+                    AgentEventType.STAGE_STARTED,
+                    {"stage": "agent.plan"},
+                )
+                plan_status = "completed"
+                try:
+                    with timed_stage("agent.plan"):
+                        capabilities = policy.capabilities()
+                        plan = await asyncio.to_thread(
+                            self.planner.plan,
+                            user_query,
+                            context,
+                            capabilities,
+                        )
+                        plan = policy.validate(
+                            plan,
+                            [capability.name for capability in capabilities],
+                        )
+                except AgentRunCancelled:
+                    plan_status = "cancelled"
+                    raise
+                except Exception:
+                    plan_status = "failed"
+                    raise
+                finally:
+                    self._emit_event(
+                        event_callback,
+                        AgentEventType.STAGE_COMPLETED,
+                        {"stage": "agent.plan", "status": plan_status},
+                    )
             self._raise_if_cancelled(cancel_check)
             decision = policy.decide(plan)
             if decision.requires_confirmation:
@@ -173,6 +192,7 @@ class PlanExecuteAgent:
                     start_time,
                     event_callback,
                     cancel_check,
+                    fast_path=fast_path,
                 )
             else:
                 response = await self._run_tool_plan(
@@ -410,6 +430,7 @@ class PlanExecuteAgent:
         start_time: float,
         event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        fast_path: bool = False,
     ) -> AgentResponse:
         """执行只读的 Agentic RAG 图。"""
         from backend.app.agent.graph import get_agent_graph
@@ -420,6 +441,10 @@ class PlanExecuteAgent:
             "session_id": session_id,
             "context": context,
             "plan": plan,
+            "fast_path": fast_path,
+            "skip_query_rewrite": fast_path,
+            "fast_path_recovery_attempted": False,
+            "fast_path_recovery_pending": False,
             "retrieval_query": None,
             "rewritten_queries": [],
             "search_results": None,

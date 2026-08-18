@@ -29,6 +29,10 @@ class AgentState(TypedDict):
 
     # 中间状态
     plan: Optional[Plan]
+    fast_path: bool
+    skip_query_rewrite: bool
+    fast_path_recovery_attempted: bool
+    fast_path_recovery_pending: bool
     retrieval_query: Optional[str]  # 消歧后供检索、Rerank 和 CRAG 共用的独立查询
     rewritten_queries: List[str]  # P1-5: 改写后的查询
     search_results: Optional[List[Dict]]
@@ -100,15 +104,32 @@ def query_rewrite_node(state: AgentState) -> AgentState:
     logger.info("[graph] Query 改写节点：生成多个视角的查询...")
     _raise_if_cancelled(state)
     _emit_stage(state, AgentEventType.STAGE_STARTED, "agent.query_rewrite")
-    rewrite_service = get_query_rewrite_service()
-
     query = state["query"]
+    started = time.perf_counter()
+    status = "completed"
+    if state.get("skip_query_rewrite"):
+        logger.info("[graph] 快速路径跳过 Query Rewrite")
+        result = {
+            **state,
+            "retrieval_query": query,
+            "rewritten_queries": [query],
+            "iter_count": state.get("iter_count", 0) + 1,
+        }
+        record_timing("agent.query_rewrite", (time.perf_counter() - started) * 1000)
+        _emit_stage(
+            state,
+            AgentEventType.STAGE_COMPLETED,
+            "agent.query_rewrite",
+            "skipped",
+        )
+        return result
+
+    rewrite_service = get_query_rewrite_service()
+    recovery_pending = state.get("fast_path_recovery_pending", False)
     plan = state.get("plan")
     goal = plan.goal if plan else None
     intent = plan.intent.value if plan else None
 
-    started = time.perf_counter()
-    status = "completed"
     try:
         # 使用 RAG-Fusion 策略
         rewritten_queries = rewrite_service.rewrite_query(
@@ -127,6 +148,10 @@ def query_rewrite_node(state: AgentState) -> AgentState:
             "retrieval_query": retrieval_query,
             "rewritten_queries": rewritten_queries,
             "iter_count": state.get("iter_count", 0) + 1,
+            "fast_path_recovery_attempted": state.get(
+                "fast_path_recovery_attempted", False
+            ) or recovery_pending,
+            "fast_path_recovery_pending": False,
         }
 
     except AgentRunCancelled:
@@ -141,6 +166,10 @@ def query_rewrite_node(state: AgentState) -> AgentState:
             "retrieval_query": goal or query,
             "rewritten_queries": [goal or query],
             "iter_count": state.get("iter_count", 0) + 1,
+            "fast_path_recovery_attempted": state.get(
+                "fast_path_recovery_attempted", False
+            ) or recovery_pending,
+            "fast_path_recovery_pending": False,
         }
     finally:
         record_timing("agent.query_rewrite", (time.perf_counter() - started) * 1000)
@@ -253,6 +282,37 @@ def grade_node(state: AgentState) -> AgentState:
     started = time.perf_counter()
     status = "completed"
     try:
+        # 快速路径先用已有 Rerank 分数和来源数量做确定性门控，高置信结果不再调用 CRAG LLM。
+        if state.get("fast_path"):
+            evidence = assess_evidence(search_results)
+            if (
+                evidence.status == "sufficient"
+                and evidence.score is not None
+                and evidence.score >= settings.fast_path_rerank_min_score
+                and evidence.source_count >= settings.fast_path_min_sources
+            ):
+                logger.info(
+                    "[graph] 快速路径跳过 CRAG: rerank_score=%.3f, sources=%s",
+                    evidence.score,
+                    evidence.source_count,
+                )
+                retrieval_stats = dict(state.get("retrieval_stats") or {})
+                retrieval_stats["crag"] = {
+                    "skipped": True,
+                    "reason": "high_rerank_and_sufficient_sources",
+                    "max_score": None,
+                    "upper_threshold": settings.crag_upper_threshold,
+                    "lower_threshold": settings.crag_lower_threshold,
+                }
+                return {
+                    **state,
+                    "relevance_grade": RelevanceGrade.CORRECT.value,
+                    "crag_max_score": None,
+                    "crag_upper_threshold": settings.crag_upper_threshold,
+                    "crag_lower_threshold": settings.crag_lower_threshold,
+                    "retrieval_stats": retrieval_stats,
+                }
+
         # 评估文档相关性
         grade_result = grader_service.grade_documents(
             query,
@@ -296,6 +356,17 @@ def grade_node(state: AgentState) -> AgentState:
         return {
             **state,
             "relevance_grade": grade.value,
+            "fast_path": state.get("fast_path", False)
+            if grade != RelevanceGrade.INCORRECT
+            else False,
+            "skip_query_rewrite": state.get("skip_query_rewrite", False)
+            if grade != RelevanceGrade.INCORRECT
+            else False,
+            "fast_path_recovery_attempted": state.get(
+                "fast_path_recovery_attempted", False
+            ),
+            "fast_path_recovery_pending": state.get("fast_path", False)
+            and grade == RelevanceGrade.INCORRECT,
             "crag_max_score": grade_result.get("max_score"),
             "crag_upper_threshold": grade_result.get("upper_threshold"),
             "crag_lower_threshold": grade_result.get("lower_threshold"),
@@ -455,6 +526,9 @@ def should_continue(state: AgentState) -> str:
         logger.info("[graph] CRAG 评分 ambiguous，继续生成（使用精炼内容）")
         return "generate"
     elif grade == "incorrect":
+        if state.get("fast_path_recovery_attempted"):
+            logger.info("[graph] 快速路径恢复后仍为 incorrect，直接结束并拒答")
+            return "end"
         logger.info("[graph] CRAG 评分 incorrect，需要改写重检")
         return "rewrite"
 

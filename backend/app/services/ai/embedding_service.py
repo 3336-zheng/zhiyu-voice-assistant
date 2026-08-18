@@ -10,6 +10,7 @@ from typing import Any, List, Optional, Protocol
 from urllib.parse import urlsplit
 
 from backend.app.core.config import settings
+from backend.app.core.ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,10 @@ class EmbeddingService:
 
     def __init__(self, backend: Optional[EmbeddingBackend] = None) -> None:
         self.backend = backend or self._build_backend()
+        self._query_cache: TTLCache[str, List[float]] = TTLCache(
+            settings.query_embedding_cache_ttl_seconds,
+            settings.query_embedding_cache_max_entries,
+        )
 
     @staticmethod
     def _build_backend() -> EmbeddingBackend:
@@ -229,7 +234,43 @@ class EmbeddingService:
         normalized = (text or "").strip()
         if not normalized:
             return []
-        return self._validated(self.backend.encode_batch([normalized]), 1)[0]
+        return self.encode_queries([normalized])[0]
+
+    def encode_queries(self, texts: List[str]) -> List[List[float]]:
+        """批量生成查询向量，并只缓存查询侧结果。"""
+        normalized = [(text or "").strip() for text in texts]
+        positions = [index for index, text in enumerate(normalized) if text]
+        if not positions:
+            dimension = self.dimension or 0
+            return [[0.0] * dimension for _ in normalized]
+
+        result: List[Optional[List[float]]] = [None] * len(normalized)
+        missing_texts: List[str] = []
+        missing_positions: List[int] = []
+        for position in positions:
+            key = f"{self.provider_name}:{self.model_name}:{normalized[position]}"
+            cached = self._query_cache.get(key)
+            if cached is None:
+                missing_texts.append(normalized[position])
+                missing_positions.append(position)
+            else:
+                result[position] = cached
+
+        if missing_texts:
+            vectors = self._validated(
+                self.backend.encode_batch(missing_texts),
+                len(missing_texts),
+            )
+            for position, text, vector in zip(missing_positions, missing_texts, vectors):
+                result[position] = vector
+                key = f"{self.provider_name}:{self.model_name}:{text}"
+                self._query_cache.set(key, vector)
+
+        dimension = self.dimension or next(
+            (len(vector) for vector in result if vector),
+            0,
+        )
+        return [vector if vector is not None else [0.0] * dimension for vector in result]
 
     def encode_documents(self, texts: List[str]) -> List[List[float]]:
         normalized = [(text or "").strip() for text in texts]

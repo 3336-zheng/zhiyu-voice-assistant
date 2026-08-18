@@ -29,6 +29,7 @@ class AgentState(TypedDict):
 
     # 中间状态
     plan: Optional[Plan]
+    retrieval_query: Optional[str]  # 消歧后供检索、Rerank 和 CRAG 共用的独立查询
     rewritten_queries: List[str]  # P1-5: 改写后的查询
     search_results: Optional[List[Dict]]
     execution_results: Optional[Dict[str, Any]]
@@ -99,6 +100,9 @@ def query_rewrite_node(state: AgentState) -> AgentState:
     rewrite_service = get_query_rewrite_service()
 
     query = state["query"]
+    plan = state.get("plan")
+    goal = plan.goal if plan else None
+    intent = plan.intent.value if plan else None
 
     started = time.perf_counter()
     status = "completed"
@@ -107,12 +111,17 @@ def query_rewrite_node(state: AgentState) -> AgentState:
         rewritten_queries = rewrite_service.rewrite_query(
             query,
             strategy=RewriteStrategy.RAG_FUSION,
-            num_queries=3
+            num_queries=3,
+            context=state.get("context", []),
+            goal=goal,
+            intent=intent,
         )
+        retrieval_query = rewritten_queries[0] if rewritten_queries else goal or query
 
         logger.info("[graph] Query 改写完成: 改写数=%s", len(rewritten_queries) - 1)
         return {
             **state,
+            "retrieval_query": retrieval_query,
             "rewritten_queries": rewritten_queries,
             "iter_count": state.get("iter_count", 0) + 1,
         }
@@ -123,10 +132,11 @@ def query_rewrite_node(state: AgentState) -> AgentState:
     except Exception as e:
         status = "failed"
         logger.error(f"[graph] Query 改写失败: {e}")
-        # 失败时使用原始查询
+        # 失败时优先使用 Planner 已解析目标
         return {
             **state,
-            "rewritten_queries": [query],
+            "retrieval_query": goal or query,
+            "rewritten_queries": [goal or query],
             "iter_count": state.get("iter_count", 0) + 1,
         }
     finally:
@@ -155,6 +165,7 @@ def retrieve_node(state: AgentState) -> AgentState:
     executor = get_executor()
 
     rewritten_queries = state.get("rewritten_queries", [state["query"]])
+    retrieval_query = state.get("retrieval_query") or state["query"]
 
     started = time.perf_counter()
     status = "completed"
@@ -162,7 +173,7 @@ def retrieve_node(state: AgentState) -> AgentState:
         if settings.rag_v2_enabled:
             outcome = executor.hybrid_retrieval.search_multi(
                 rewritten_queries,
-                original_query=state["query"],
+                original_query=retrieval_query,
                 top_k=settings.rag_final_top_k,
                 token_budget=settings.rag_context_token_budget,
             )
@@ -230,13 +241,23 @@ def grade_node(state: AgentState) -> AgentState:
     grader_service = get_crag_grader_service()
 
     query = state["query"]
+    retrieval_query = state.get("retrieval_query") or query
+    plan = state.get("plan")
+    goal = plan.goal if plan else None
+    intent = plan.intent.value if plan else None
     search_results = state.get("search_results", [])
 
     started = time.perf_counter()
     status = "completed"
     try:
         # 评估文档相关性
-        grade_result = grader_service.grade_documents(query, search_results)
+        grade_result = grader_service.grade_documents(
+            query,
+            search_results,
+            retrieval_query=retrieval_query,
+            goal=goal,
+            intent=intent,
+        )
 
         grade = grade_result["grade"]
         reasoning = grade_result["reasoning"]
@@ -246,7 +267,13 @@ def grade_node(state: AgentState) -> AgentState:
         # 如果是 ambiguous，执行知识精炼
         refined_content = None
         if grade == RelevanceGrade.AMBIGUOUS:
-            refined_content = grader_service.refine_documents(query, search_results)
+            refined_content = grader_service.refine_documents(
+                query,
+                search_results,
+                retrieval_query=retrieval_query,
+                goal=goal,
+                intent=intent,
+            )
             logger.info(f"[graph] 知识精炼完成: 长度={len(refined_content)}")
 
         return {

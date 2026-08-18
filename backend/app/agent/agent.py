@@ -420,6 +420,7 @@ class PlanExecuteAgent:
             "session_id": session_id,
             "context": context,
             "plan": plan,
+            "retrieval_query": None,
             "rewritten_queries": [],
             "search_results": None,
             "execution_results": None,

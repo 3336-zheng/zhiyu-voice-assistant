@@ -6,6 +6,9 @@ import logging
 from typing import List, Dict, Optional
 from enum import Enum
 
+from backend.app.core.config import settings
+from backend.app.services.memory.context_assembler import ContextAssembler
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,6 +28,11 @@ class QueryRewriteService:
     def __init__(self):
         """初始化"""
         self._llm_service = None
+        self.context_assembler = ContextAssembler(
+            context_window_tokens=settings.llm_context_window_tokens,
+            history_token_budget=settings.memory_context_token_budget,
+            summary_token_budget=settings.memory_summary_token_budget,
+        )
 
     @property
     def llm_service(self):
@@ -41,7 +49,10 @@ class QueryRewriteService:
         self,
         query: str,
         strategy: RewriteStrategy = RewriteStrategy.RAG_FUSION,
-        num_queries: int = 3
+        num_queries: int = 3,
+        context: Optional[List[Dict[str, str]]] = None,
+        goal: Optional[str] = None,
+        intent: Optional[str] = None,
     ) -> List[str]:
         """
         改写查询
@@ -50,25 +61,40 @@ class QueryRewriteService:
             query: 原始查询
             strategy: 改写策略
             num_queries: 生成的查询数量（RAG-Fusion）
+            context: 会话上下文，用于消解指代和省略
+            goal: Planner 提取的用户目标
+            intent: Planner 提取的结构化意图
 
         Returns:
-            List[str]: 改写后的查询列表（包含原始查询）
+            List[str]: 以消歧后的独立查询开头的检索查询列表
         """
         if strategy == RewriteStrategy.NONE:
-            return [query]
+            return [self._fallback_query(query, goal)]
 
         try:
             if strategy == RewriteStrategy.HYDE:
-                return self._hyde_rewrite(query)
+                return self._hyde_rewrite(query, context, goal, intent)
             elif strategy == RewriteStrategy.RAG_FUSION:
-                return self._rag_fusion_rewrite(query, num_queries)
+                return self._rag_fusion_rewrite(
+                    query,
+                    num_queries,
+                    context,
+                    goal,
+                    intent,
+                )
             else:
-                return [query]
+                return [self._fallback_query(query, goal)]
         except Exception as e:
             logger.error(f"Query 改写失败: {e}")
-            return [query]
+            return [self._fallback_query(query, goal)]
 
-    def _hyde_rewrite(self, query: str) -> List[str]:
+    def _hyde_rewrite(
+        self,
+        query: str,
+        context: Optional[List[Dict[str, str]]] = None,
+        goal: Optional[str] = None,
+        intent: Optional[str] = None,
+    ) -> List[str]:
         """
         HyDE 改写：生成假设答案，用假设答案检索
 
@@ -80,26 +106,26 @@ class QueryRewriteService:
         """
         if not self.llm_service:
             logger.warning("LLM 服务不可用，跳过 HyDE 改写")
-            return [query]
+            return [self._fallback_query(query, goal)]
 
         try:
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是一个知识库检索助手。请根据用户的问题，生成一个假设性的答案。\n"
-                        "要求：\n"
-                        "1. 答案应该是你对问题的推测，不需要完全准确\n"
-                        "2. 使用与问题相同的语言风格\n"
-                        "3. 包含可能的关键词和概念\n"
-                        "4. 长度适中（50-150字）"
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": f"问题：{query}\n\n请生成一个假设性的答案："
-                }
-            ]
+            messages = self._assemble_messages(
+                system_content=(
+                    "你是一个知识库检索助手。根据会话上下文、用户当前问题和 Planner 目标，"
+                    "先理解完整检索意图，再生成一个用于检索的假设性答案。\n"
+                    "要求：\n"
+                    "1. 解析代词、省略和承接关系，不得改变用户原意\n"
+                    "2. 答案只是检索假设，不需要完全准确\n"
+                    "3. 使用与问题相同的语言风格，并包含可能的关键词和概念\n"
+                    "4. 长度适中（50-150字）"
+                ),
+                query=query,
+                context=context,
+                goal=goal,
+                intent=intent,
+                instruction="请生成一个假设性的答案：",
+                output_token_reserve=200,
+            )
 
             hypothetical_answer = self.llm_service.chat(
                 messages=messages,
@@ -112,13 +138,20 @@ class QueryRewriteService:
                 len(query),
                 len(hypothetical_answer),
             )
-            return [query, hypothetical_answer]
+            return [self._fallback_query(query, goal), hypothetical_answer]
 
         except Exception as e:
             logger.error(f"HyDE 改写失败: {e}")
-            return [query]
+            return [self._fallback_query(query, goal)]
 
-    def _rag_fusion_rewrite(self, query: str, num_queries: int = 3) -> List[str]:
+    def _rag_fusion_rewrite(
+        self,
+        query: str,
+        num_queries: int = 3,
+        context: Optional[List[Dict[str, str]]] = None,
+        goal: Optional[str] = None,
+        intent: Optional[str] = None,
+    ) -> List[str]:
         """
         RAG-Fusion 改写：生成多个视角的查询
 
@@ -131,52 +164,84 @@ class QueryRewriteService:
         """
         if not self.llm_service:
             logger.warning("LLM 服务不可用，跳过 RAG-Fusion 改写")
-            return [query]
+            return [self._fallback_query(query, goal)]
 
         try:
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        f"你是一个查询改写助手。请将用户的查询改写为 {num_queries} 个不同视角的查询。\n"
-                        "要求：\n"
-                        "1. 保持原始查询的核心意图\n"
-                        "2. 从不同角度、不同粒度提问\n"
-                        "3. 使用同义词、近义词替换\n"
-                        "4. 每行一个查询，不要编号\n"
-                        "5. 使用与原始查询相同的语言"
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": f"原始查询：{query}\n\n请改写为 {num_queries} 个不同视角的查询："
-                }
-            ]
-
-            response = self.llm_service.chat(
-                messages=messages,
-                temperature=0.7,
-                max_tokens=300
+            messages = self._assemble_messages(
+                system_content=(
+                    f"你是一个查询改写助手。请基于会话上下文、用户当前问题和 Planner 目标，"
+                    f"生成一个可独立理解的查询及 {num_queries} 个不同视角的检索查询。\n"
+                    "要求：\n"
+                    "1. standalone_query 必须消解代词、省略和承接关系，脱离对话也能理解\n"
+                    "2. 保持用户核心意图，不补充上下文中不存在的事实\n"
+                    "3. queries 从不同角度和粒度表达，并覆盖关键实体及同义词\n"
+                    "4. 使用与用户当前问题相同的语言\n"
+                    "5. 只返回 JSON 对象："
+                    '{"standalone_query":"独立查询","queries":["查询1","查询2"]}'
+                ),
+                query=query,
+                context=context,
+                goal=goal,
+                intent=intent,
+                instruction="请完成指代消解并生成多视角检索查询：",
+                output_token_reserve=300,
             )
 
-            # 解析改写后的查询
-            rewritten_queries = [q.strip() for q in response.strip().split("\n") if q.strip()]
+            response = self.llm_service.chat_json(
+                messages=messages,
+                temperature=0.3,
+                max_tokens=300,
+            )
 
-            # 过滤掉空查询和与原始查询完全相同的查询
-            rewritten_queries = [q for q in rewritten_queries if q and q != query]
+            standalone_query = str(
+                response.get("standalone_query") or self._fallback_query(query, goal)
+            ).strip()
+            variants = response.get("queries", [])
+            if not isinstance(variants, list):
+                variants = []
+            candidates = [standalone_query, *(str(item).strip() for item in variants)]
+            result = list(dict.fromkeys(item for item in candidates if item))[:num_queries + 1]
+            if not result:
+                result = [self._fallback_query(query, goal)]
 
-            # 确保不超过指定数量
-            rewritten_queries = rewritten_queries[:num_queries]
-
-            # 原始查询放在第一位
-            result = [query] + rewritten_queries
-
-            logger.info("RAG-Fusion 改写完成: 改写数=%s", len(rewritten_queries))
+            logger.info("RAG-Fusion 改写完成: 改写数=%s", max(0, len(result) - 1))
             return result
 
         except Exception as e:
             logger.error(f"RAG-Fusion 改写失败: {e}")
-            return [query]
+            return [self._fallback_query(query, goal)]
+
+    def _assemble_messages(
+        self,
+        *,
+        system_content: str,
+        query: str,
+        context: Optional[List[Dict[str, str]]],
+        goal: Optional[str],
+        intent: Optional[str],
+        instruction: str,
+        output_token_reserve: int,
+    ) -> List[Dict[str, str]]:
+        """在统一 Token 预算内装配历史、Planner 目标与当前问题。"""
+        task_lines = [f"用户当前问题：{query}"]
+        if goal:
+            task_lines.append(f"Planner 解析目标：{goal}")
+        if intent:
+            task_lines.append(f"Planner 结构化意图：{intent}")
+        task_lines.append(instruction)
+        assembled = self.context_assembler.assemble(
+            system_messages=[{"role": "system", "content": system_content}],
+            history=context,
+            current_messages=[{"role": "user", "content": "\n".join(task_lines)}],
+            output_token_reserve=output_token_reserve,
+        )
+        logger.info("Query 改写上下文装配统计: %s", assembled.stats())
+        return assembled.messages
+
+    @staticmethod
+    def _fallback_query(query: str, goal: Optional[str]) -> str:
+        """模型不可用时优先复用 Planner 已解析目标。"""
+        return (goal or query).strip()
 
 
 # 全局实例

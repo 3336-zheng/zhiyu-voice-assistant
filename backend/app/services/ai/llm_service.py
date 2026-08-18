@@ -282,7 +282,8 @@ class LLMService:
     def chat_json(
         self,
         messages: List[Dict[str, str]],
-        temperature: float = None
+        temperature: float = None,
+        max_tokens: int = None,
     ) -> Dict[str, Any]:
         """
         发送对话请求并返回 JSON 格式结果
@@ -290,6 +291,7 @@ class LLMService:
         Args:
             messages: 对话消息列表
             temperature: 温度参数
+            max_tokens: 最大生成 Token 数
 
         Returns:
             Dict: 解析后的 JSON 结果
@@ -297,6 +299,7 @@ class LLMService:
         content = self.chat(
             messages=messages,
             temperature=temperature,
+            max_tokens=max_tokens,
             response_format={"type": "json_object"}
         )
 

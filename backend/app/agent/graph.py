@@ -42,6 +42,10 @@ class AgentState(TypedDict):
     crag_max_score: Optional[float]
     crag_upper_threshold: Optional[float]
     crag_lower_threshold: Optional[float]
+    crag_coverage: Optional[str]
+    crag_support_count: int
+    crag_partial_count: int
+    crag_incorrect_count: int
     refined_content: Optional[str]  # P1-6: 精炼后的内容
     retrieval_stats: Optional[Dict[str, Any]]
 
@@ -329,6 +333,50 @@ def grade_node(state: AgentState) -> AgentState:
         grade = grade_result["grade"]
         reasoning = grade_result["reasoning"]
 
+        score_by_doc_id = {
+            item["doc_id"]: item for item in grade_result.get("scores", [])
+        }
+        scored_results = []
+        for doc_id, document in enumerate(search_results[:5]):
+            score_item = score_by_doc_id.get(doc_id)
+            if score_item is None:
+                continue
+            scored_results.append(
+                {
+                    **document,
+                    "crag_score": score_item["score"],
+                    "crag_verdict": score_item["verdict"],
+                    "crag_reason": score_item.get("reason", ""),
+                }
+            )
+
+        support_results = [
+            item
+            for item in scored_results
+            if item["crag_verdict"] == "support"
+        ]
+        partial_results = [
+            item
+            for item in scored_results
+            if item["crag_verdict"] == "partial"
+        ]
+        incorrect_results = [
+            item
+            for item in scored_results
+            if item["crag_verdict"] == "incorrect"
+        ]
+        if grade == RelevanceGrade.CORRECT:
+            accepted_results = support_results
+        elif grade == RelevanceGrade.AMBIGUOUS:
+            accepted_results = [
+                item
+                for item in scored_results
+                if item["crag_verdict"]
+                in {"support", "partial"}
+            ]
+        else:
+            accepted_results = []
+
         logger.info(
             "[graph] CRAG 评分完成: grade=%s, max_score=%s, 理由='%s...'",
             grade.value,
@@ -341,7 +389,7 @@ def grade_node(state: AgentState) -> AgentState:
         if grade == RelevanceGrade.AMBIGUOUS:
             refined_content = grader_service.refine_documents(
                 query,
-                search_results,
+                accepted_results,
                 retrieval_query=retrieval_query,
                 goal=goal,
                 intent=intent,
@@ -356,6 +404,11 @@ def grade_node(state: AgentState) -> AgentState:
             "score_count": len(grade_result.get("scores") or []),
             "model_grade": grade_result.get("model_grade"),
             "grading_failed": grade_result.get("grading_failed", False),
+            "coverage": grade_result.get("coverage"),
+            "support_count": len(support_results),
+            "partial_count": len(partial_results),
+            "incorrect_count": len(incorrect_results),
+            "accepted_count": len(accepted_results),
         }
 
         max_score = grade_result.get("max_score")
@@ -384,6 +437,11 @@ def grade_node(state: AgentState) -> AgentState:
             "crag_max_score": grade_result.get("max_score"),
             "crag_upper_threshold": grade_result.get("upper_threshold"),
             "crag_lower_threshold": grade_result.get("lower_threshold"),
+            "crag_coverage": grade_result.get("coverage"),
+            "crag_support_count": len(support_results),
+            "crag_partial_count": len(partial_results),
+            "crag_incorrect_count": len(incorrect_results),
+            "search_results": accepted_results,
             "refined_content": refined_content,
             "retrieval_stats": retrieval_stats,
         }
@@ -403,6 +461,11 @@ def grade_node(state: AgentState) -> AgentState:
             "crag_max_score": None,
             "crag_upper_threshold": grader_service.upper_threshold,
             "crag_lower_threshold": grader_service.lower_threshold,
+            "crag_coverage": "none",
+            "crag_support_count": 0,
+            "crag_partial_count": 0,
+            "crag_incorrect_count": len(state.get("search_results") or []),
+            "search_results": [],
         }
     finally:
         record_timing("agent.crag_grade", (time.perf_counter() - started) * 1000)

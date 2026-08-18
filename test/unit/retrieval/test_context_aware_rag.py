@@ -28,6 +28,16 @@ class RecordingJSONLLM:
         return self.payload
 
 
+class RecordingStructuredLLM:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+
+    def structured_call(self, messages, **kwargs):
+        self.calls.append({"messages": messages, **kwargs})
+        return self.payload
+
+
 class RecordingRewriteService:
     def __init__(self):
         self.kwargs = None
@@ -62,9 +72,37 @@ class RecordingGrader:
         self.kwargs = {"query": query, "documents": documents, **kwargs}
         return {
             "grade": RelevanceGrade.CORRECT,
-            "scores": [],
+            "scores": [
+                {
+                    "doc_id": 0,
+                    "score": 0.93,
+                    "verdict": "support",
+                    "reason": "候选证据直接支持检索目标",
+                }
+            ],
             "reasoning": "候选证据支持检索目标",
+            "max_score": 0.93,
+            "coverage": "complete",
+            "support_doc_ids": [0],
+            "partial_doc_ids": [],
+            "incorrect_doc_ids": [],
+            "upper_threshold": 0.7,
+            "lower_threshold": 0.3,
+            "grading_failed": False,
         }
+
+
+class StaticGrader:
+    def __init__(self, payload):
+        self.payload = payload
+        self.refine_inputs = []
+
+    def grade_documents(self, query, documents, **kwargs):
+        return self.payload
+
+    def refine_documents(self, query, documents, **kwargs):
+        self.refine_inputs.append(documents)
+        return "support 已确认核心事实；partial 仅补充未完整说明的边界。"
 
 
 def make_plan():
@@ -176,10 +214,13 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
 
     def test_crag_prompt_contains_resolved_intent_and_document_metadata(self):
         service = CRAGGraderService()
-        llm = RecordingJSONLLM(
+        llm = RecordingStructuredLLM(
             {
                 "grade": "correct",
-                "scores": [{"doc_id": 0, "grade": "correct", "score": 0.93}],
+                "coverage": "complete",
+                "scores": [
+                    {"doc_id": 0, "score": 0.93, "reason": "正文直接支持"}
+                ],
                 "reasoning": "文档直接给出了方言识别实验结果",
             }
         )
@@ -210,26 +251,32 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
         self.assertIn("标题：Whisper 潮汕话微调实验", prompt)
         self.assertIn("来源：/api/pages/12", prompt)
         self.assertIn("Rerank 分数：0.91", prompt)
-        self.assertIn("max_score >= 0.70 -> correct", prompt)
-        self.assertIn("0.30 < max_score < 0.70 -> ambiguous", prompt)
-        self.assertIn("max_score <= 0.30 -> incorrect", prompt)
+        self.assertIn("必须为每个候选文档恰好输出一次评分", prompt)
+        self.assertIn("coverage", prompt)
+        scores_schema = llm.calls[0]["parameters"]["properties"]["scores"]
+        self.assertEqual(scores_schema["minItems"], 1)
+        self.assertEqual(scores_schema["maxItems"], 1)
         self.assertEqual(result["max_score"], 0.93)
+        self.assertEqual(result["support_doc_ids"], [0])
 
-    def test_crag_uses_double_thresholds_and_ignores_model_grade(self):
+    def test_crag_uses_double_thresholds_coverage_and_ignores_model_grade(self):
         documents = [{"title": "证据", "content": "与问题相关"}]
         cases = [
-            (0.70, RelevanceGrade.CORRECT),
-            (0.50, RelevanceGrade.AMBIGUOUS),
-            (0.30, RelevanceGrade.INCORRECT),
+            (0.70, "complete", RelevanceGrade.CORRECT, "support"),
+            (0.50, "partial", RelevanceGrade.AMBIGUOUS, "partial"),
+            (0.30, "none", RelevanceGrade.INCORRECT, "incorrect"),
         ]
 
-        for score, expected_grade in cases:
+        for score, coverage, expected_grade, expected_verdict in cases:
             with self.subTest(score=score):
                 service = CRAGGraderService(upper_threshold=0.7, lower_threshold=0.3)
                 llm = RecordingJSONLLM(
                     {
                         "grade": "incorrect",
-                        "scores": [{"doc_id": 0, "score": score}],
+                        "coverage": coverage,
+                        "scores": [
+                            {"doc_id": 0, "score": score, "reason": "测试"}
+                        ],
                         "reasoning": "测试",
                     }
                 )
@@ -240,16 +287,54 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
                 self.assertEqual(result["grade"], expected_grade)
                 self.assertEqual(result["max_score"], score)
                 self.assertEqual(result["model_grade"], "incorrect")
+                self.assertEqual(result["scores"][0]["verdict"], expected_verdict)
+
+    def test_three_support_two_partial_use_coverage_for_overall_grade(self):
+        documents = [
+            {"title": f"证据 {index}", "content": f"正文 {index}"}
+            for index in range(5)
+        ]
+        score_values = [0.90, 0.82, 0.74, 0.62, 0.45]
+
+        for coverage, expected_grade in (
+            ("complete", RelevanceGrade.CORRECT),
+            ("partial", RelevanceGrade.AMBIGUOUS),
+        ):
+            with self.subTest(coverage=coverage):
+                service = CRAGGraderService()
+                service._llm_service = RecordingJSONLLM(
+                    {
+                        "grade": "correct",
+                        "coverage": coverage,
+                        "scores": [
+                            {
+                                "doc_id": index,
+                                "score": score,
+                                "reason": "测试证据",
+                            }
+                            for index, score in enumerate(score_values)
+                        ],
+                        "reasoning": "三个直接证据，两个部分证据",
+                    }
+                )
+
+                result = service.grade_documents("复杂问题", documents)
+
+                self.assertEqual(result["grade"], expected_grade)
+                self.assertEqual(result["support_doc_ids"], [0, 1, 2])
+                self.assertEqual(result["partial_doc_ids"], [3, 4])
+                self.assertEqual(result["incorrect_doc_ids"], [])
 
     def test_crag_discards_invalid_and_out_of_range_scores(self):
         service = CRAGGraderService()
         service._llm_service = RecordingJSONLLM(
             {
                 "grade": "correct",
+                "coverage": "complete",
                 "scores": [
-                    {"doc_id": 99, "score": 1.0},
-                    {"doc_id": 0, "score": "not-a-number"},
-                    {"doc_id": 0, "score": 1.2},
+                    {"doc_id": 99, "score": 1.0, "reason": "越界"},
+                    {"doc_id": 0, "score": "not-a-number", "reason": "非法"},
+                    {"doc_id": 0, "score": 1.2, "reason": "重复"},
                 ],
                 "reasoning": "无效输出",
             }
@@ -261,11 +346,41 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
         self.assertEqual(result["grade"], RelevanceGrade.INCORRECT)
         self.assertIsNone(result["max_score"])
         self.assertEqual(result["scores"], [])
+        self.assertTrue(result["grading_failed"])
+
+    def test_crag_fails_closed_when_any_candidate_score_is_missing(self):
+        service = CRAGGraderService()
+        service._llm_service = RecordingJSONLLM(
+            {
+                "grade": "correct",
+                "coverage": "complete",
+                "scores": [
+                    {"doc_id": 0, "score": 0.9, "reason": "只返回一个候选"}
+                ],
+                "reasoning": "漏掉第二个候选",
+            }
+        )
+
+        result = service.grade_documents(
+            "问题",
+            [{"content": "证据一"}, {"content": "证据二"}],
+        )
+
+        self.assertEqual(result["grade"], RelevanceGrade.INCORRECT)
+        self.assertTrue(result["grading_failed"])
 
     def test_grade_node_forwards_planner_semantics_to_crag(self):
         grader = RecordingGrader()
         state = make_state()
         state["retrieval_query"] = "Whisper 在中文方言语音识别上的表现如何？"
+        state["search_results"] = [
+            {
+                "page_id": "whisper-page",
+                "title": "Whisper 实验",
+                "content": "Whisper 方言实验结果。",
+                "rerank_score": 0.91,
+            }
+        ]
 
         with patch(
             "backend.app.agent.graph.get_crag_grader_service",
@@ -277,6 +392,98 @@ class ContextAwareCRAGTestCase(unittest.TestCase):
         self.assertEqual(grader.kwargs["retrieval_query"], state["retrieval_query"])
         self.assertEqual(grader.kwargs["goal"], state["plan"].goal)
         self.assertEqual(grader.kwargs["intent"], "search")
+        self.assertEqual(result["search_results"][0]["crag_verdict"], "support")
+
+    def test_grade_node_only_injects_support_when_coverage_is_complete(self):
+        scores = [
+            {"doc_id": 0, "score": 0.91, "verdict": "support", "reason": "直接"},
+            {"doc_id": 1, "score": 0.82, "verdict": "support", "reason": "直接"},
+            {"doc_id": 2, "score": 0.74, "verdict": "support", "reason": "直接"},
+            {"doc_id": 3, "score": 0.60, "verdict": "partial", "reason": "部分"},
+            {"doc_id": 4, "score": 0.20, "verdict": "incorrect", "reason": "无关"},
+        ]
+        grader = StaticGrader(
+            {
+                "grade": RelevanceGrade.CORRECT,
+                "scores": scores,
+                "reasoning": "support 已完整覆盖",
+                "max_score": 0.91,
+                "coverage": "complete",
+                "upper_threshold": 0.7,
+                "lower_threshold": 0.3,
+                "grading_failed": False,
+            }
+        )
+        state = make_state()
+        state["search_results"] = [
+            {
+                "page_id": f"page-{index}",
+                "title": f"文档 {index}",
+                "content": f"正文 {index}",
+                "rerank_score": 0.9 - index * 0.05,
+            }
+            for index in range(5)
+        ]
+
+        with patch(
+            "backend.app.agent.graph.get_crag_grader_service",
+            return_value=grader,
+        ):
+            result = grade_node(state)
+
+        self.assertEqual(
+            [item["page_id"] for item in result["search_results"]],
+            ["page-0", "page-1", "page-2"],
+        )
+        self.assertEqual(result["crag_support_count"], 3)
+        self.assertEqual(result["crag_partial_count"], 1)
+        self.assertEqual(result["crag_incorrect_count"], 1)
+        self.assertEqual(grader.refine_inputs, [])
+
+    def test_grade_node_refines_support_and_partial_when_coverage_is_partial(self):
+        scores = [
+            {"doc_id": 0, "score": 0.91, "verdict": "support", "reason": "直接"},
+            {"doc_id": 1, "score": 0.82, "verdict": "support", "reason": "直接"},
+            {"doc_id": 2, "score": 0.74, "verdict": "support", "reason": "直接"},
+            {"doc_id": 3, "score": 0.60, "verdict": "partial", "reason": "部分"},
+            {"doc_id": 4, "score": 0.45, "verdict": "partial", "reason": "部分"},
+        ]
+        grader = StaticGrader(
+            {
+                "grade": RelevanceGrade.AMBIGUOUS,
+                "scores": scores,
+                "reasoning": "support 只覆盖部分问题",
+                "max_score": 0.91,
+                "coverage": "partial",
+                "upper_threshold": 0.7,
+                "lower_threshold": 0.3,
+                "grading_failed": False,
+            }
+        )
+        state = make_state()
+        state["search_results"] = [
+            {
+                "page_id": f"page-{index}",
+                "title": f"文档 {index}",
+                "content": f"正文 {index}",
+                "rerank_score": 0.9 - index * 0.05,
+            }
+            for index in range(5)
+        ]
+
+        with patch(
+            "backend.app.agent.graph.get_crag_grader_service",
+            return_value=grader,
+        ):
+            result = grade_node(state)
+
+        self.assertEqual(len(result["search_results"]), 5)
+        self.assertEqual(len(grader.refine_inputs), 1)
+        self.assertEqual(
+            [item["crag_verdict"] for item in grader.refine_inputs[0]],
+            ["support", "support", "support", "partial", "partial"],
+        )
+        self.assertIn("partial 仅补充", result["refined_content"])
 
     def test_insufficient_evidence_returns_without_calling_responder(self):
         class FailingResponder:

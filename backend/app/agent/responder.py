@@ -31,7 +31,9 @@ RESPONSE_GENERATION_PROMPT = """你是一个个人 Wiki 知识助手的回复生
 8. 普通问答控制在 500 个中文字符以内；信息不足时明确拒答，不要为了完整而扩写
 9. 多子问题必须逐项核对证据；没有直接证据的部分明确写“当前证据未说明”，不得用其他证据补齐
 10. 禁止使用“可能”“推测”“暗示”等措辞生成证据之外的因果、关联或结论
-11. 适当使用 markdown 格式增强可读性"""
+11. CRAG 标记为 support 的文档可以支撑核心结论；partial 只能补充边界，不能独立支撑确定性结论
+12. 证据精炼是 support 与 partial 的对照摘要，必须回到原始文档核对，不能把精炼文本当作新来源
+13. 适当使用 markdown 格式增强可读性"""
 
 
 class Responder:
@@ -202,13 +204,28 @@ class Responder:
             refined_content = result.final_data.get("refined_content")
             if search_results:
                 lines.append(f"找到 {len(search_results)} 条相关笔记：")
+                support_count = sum(
+                    item.get("crag_verdict") == "support" for item in search_results
+                )
+                partial_count = sum(
+                    item.get("crag_verdict") == "partial" for item in search_results
+                )
+                if support_count or partial_count:
+                    lines.append(
+                        f"证据结构：support {support_count} 条，partial {partial_count} 条"
+                    )
                 if refined_content:
-                    lines.append(f"证据精炼：{refined_content}")
+                    lines.append(f"证据对照摘要（以原始文档为准）：{refined_content}")
                 for i, item in enumerate(search_results[:8], 1):
                     title = item.get("title", "无标题")
                     score = item.get("rerank_score", 0)
                     content = item.get("content", "")
                     lines.append(f"{i}. {title} (相关度: {score:.2f})")
+                    if item.get("crag_verdict"):
+                        lines.append(
+                            "   CRAG: "
+                            f"{item['crag_verdict']} / {item.get('crag_score', 0):.2f}"
+                        )
                     lines.append(f"   内容: {content}")
             else:
                 lines.append("未找到相关内容。")

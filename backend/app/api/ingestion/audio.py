@@ -1,233 +1,134 @@
-"""
-音频管理API
-"""
+"""音频上传、转写与回放 API。"""
+
+import asyncio
 import os
-import sys
-import uuid
 import logging
-import shutil
-import subprocess
 from pathlib import Path
+
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
 from fastapi.responses import FileResponse
-
-logger = logging.getLogger(__name__)
 from sqlalchemy.orm import Session
+
 from backend.app.core.database import get_db
 from backend.app.core.config import settings
-from backend.app.services.ingestion.whisper_service import get_asr_service, get_available_asr_providers
+from backend.app.services.ingestion.asr_service import (
+    ASRAlreadyRunningError,
+    ASRConfigurationError,
+    ASRExecutionError,
+    ASRInputError,
+    ASRProviderNotFoundError,
+    ASRTimeoutError,
+    get_asr_execution_service,
+    get_available_asr_providers,
+)
+from backend.app.services.ingestion.audio_processing import (
+    AudioProcessingError,
+    AudioTooLargeError,
+    normalize_upload,
+)
 from backend.app.services.ai.llm_service import get_llm_service
 from backend.app.models import Audio
 
 
-def _find_ffmpeg() -> str:
-    """查找 ffmpeg 可执行文件路径"""
-    # 优先从 PATH 中查找
-    ffmpeg_path = shutil.which("ffmpeg")
-    if ffmpeg_path:
-        return ffmpeg_path
-    # 尝试当前 Python 环境的常见位置
-    python_dir = Path(sys.executable).parent
-    candidates = [
-        python_dir / "ffmpeg.exe",
-        python_dir / "Library" / "bin" / "ffmpeg.exe",
-        python_dir.parent / "Library" / "bin" / "ffmpeg.exe",
-    ]
-    for c in candidates:
-        if c.exists():
-            return str(c)
-    raise FileNotFoundError(
-        "找不到 ffmpeg，请确保已安装并在 PATH 中，"
-        "或在当前 conda 环境中执行: conda install -c conda-forge ffmpeg"
-    )
-
-def log(msg):
-    logger.info(msg)
-
-def get_absolute_upload_path(filename: str) -> str:
-    """获取文件的绝对路径"""
-    upload_dir = Path(settings.get_upload_dir())
-    return str(upload_dir / filename)
-
-
-def is_wav_file(file_path: str) -> bool:
-    """通过文件头检测是否为真正的 WAV 文件"""
-    try:
-        with open(file_path, "rb") as f:
-            header = f.read(12)
-            # WAV 文件头: RIFF....WAVE
-            return header[:4] == b"RIFF" and header[8:12] == b"WAVE"
-    except Exception:
-        return False
-
-
-def convert_to_wav(input_path: str, output_path: str) -> str:
-    """
-    使用 ffmpeg 将音频文件转换为 16-bit PCM WAV（16kHz 单声道）。
-    直接输出到 output_path，不原地替换，避免 Windows 文件锁定问题。
-    """
-    try:
-        ffmpeg_bin = _find_ffmpeg()
-        cmd = [
-            ffmpeg_bin, "-y", "-i", input_path,
-            "-acodec", "pcm_s16le",
-            "-ar", "16000",
-            "-ac", "1",
-            output_path
-        ]
-        result = subprocess.run(
-            cmd, capture_output=True, timeout=60
-        )
-        if result.returncode != 0:
-            stderr_text = result.stderr.decode("utf-8", errors="replace")[:300]
-            log(f"[Convert] ffmpeg 转换失败: {stderr_text}")
-            raise RuntimeError(f"ffmpeg 转换失败: {stderr_text[:200]}")
-
-        log(f"[Convert] 已转换为标准 WAV: {output_path}")
-        return output_path
-    except subprocess.TimeoutExpired:
-        log(f"[Convert] ffmpeg 转换超时")
-        if os.path.exists(output_path):
-            os.remove(output_path)
-        raise RuntimeError("音频转换超时")
-    except Exception:
-        if os.path.exists(output_path):
-            os.remove(output_path)
-        raise
-
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def _read_upload(file: UploadFile) -> bytes:
+    chunks = []
+    total_size = 0
+    while chunk := await file.read(1024 * 1024):
+        total_size += len(chunk)
+        if total_size > settings.max_file_size:
+            raise AudioTooLargeError("原始音频超过大小限制")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 @router.post("/upload/")
 async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """
-    上传音频文件
-    """
-    log(f"[Upload] 收到上传请求: filename={file.filename}, content_type={file.content_type}")
+    """校验上传内容，并统一保存为标准 WAV。"""
+    logger.info("收到音频上传请求: filename=%s", file.filename)
     try:
-        # 检查文件名是否有效
         if not file.filename:
-            log(f"[Upload] 文件名为空")
             raise HTTPException(status_code=400, detail="文件名为空，请确保文件有正确的扩展名")
         original_name = Path(file.filename.replace("\\", "/")).name
         if not original_name or original_name in {".", ".."}:
             raise HTTPException(status_code=400, detail="文件名不合法")
 
-        # 检查文件类型
         allowed_extensions = settings.get_allowed_extensions()
-        log(f"[Upload] 允许的扩展名: {allowed_extensions}")
-        if not any(original_name.lower().endswith(ext) for ext in allowed_extensions):
-            log(f"[Upload] 文件格式不支持: {original_name}")
-            raise HTTPException(status_code=400, detail=f"不支持的文件格式: {original_name}，允许: {settings.allowed_extensions}")
-
-        # 获取绝对路径（最终 WAV 路径，统一用 .wav 后缀）
-        upload_dir = Path(settings.get_upload_dir())
+        if Path(original_name).suffix.lower() not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"不支持的文件格式，允许: {settings.allowed_extensions}",
+            )
         stem = Path(original_name).stem
         if not stem or stem in {".", ".."}:
             raise HTTPException(status_code=400, detail="文件名不合法")
-        final_path = str(upload_dir / f"{stem}.wav")
-        # 原始文件路径（保留原始扩展名，用于保存未转换的文件）
-        raw_path = str(upload_dir / original_name)
-        log(f"[Upload] 最终路径: {final_path}")
+        content = await _read_upload(file)
+        artifact = await asyncio.to_thread(
+            normalize_upload,
+            original_name,
+            content,
+            settings.get_upload_dir(),
+            settings.max_file_size,
+            settings.audio_normalize_timeout_seconds,
+            settings.audio_probe_timeout_seconds,
+        )
 
-        # 读取文件内容
-        content = await file.read()
-        log(f"[Upload] 文件大小: {len(content)} 字节")
-
-        # 检查文件是否为空
-        if len(content) == 0:
-            log(f"[Upload] 文件内容为空")
-            raise HTTPException(status_code=400, detail="上传的文件内容为空")
-
-        # 检查文件大小
-        if len(content) > settings.max_file_size:
-            max_mb = settings.max_file_size // (1024 * 1024)
-            raise HTTPException(status_code=413, detail=f"文件大小超过限制（最大 {max_mb}MB）")
-
-        # 保存原始文件到磁盘
-        with open(raw_path, "wb") as buffer:
-            buffer.write(content)
-        log(f"[Upload] 原始文件已保存: {raw_path}")
-
-        # 检测并转换音频格式（确保下游 Whisper 拿到标准 WAV）
-        if is_wav_file(raw_path):
-            # 已是 WAV，直接使用
-            file_path = final_path
-            if raw_path != final_path:
-                # 如果原始文件名不是 .wav（理论上不会），重命名
-                if os.path.exists(final_path):
-                    os.remove(final_path)
-                os.rename(raw_path, final_path)
-            else:
-                # 文件名就是 .wav，覆盖旧文件
-                pass
-        else:
-            log(f"[Upload] 检测到非 WAV 格式，开始 ffmpeg 转换...")
-            # 删除旧的最终文件（如果存在）
-            if os.path.exists(final_path) and final_path != raw_path:
-                try:
-                    os.remove(final_path)
-                except PermissionError:
-                    log(f"[Upload] 旧 WAV 文件被占用")
-            # 转换：原始文件 -> 最终 WAV 路径
-            file_path = convert_to_wav(raw_path, final_path)
-            # 删除原始非 WAV 文件
-            if raw_path != final_path and os.path.exists(raw_path):
-                try:
-                    os.remove(raw_path)
-                except Exception:
-                    pass  # 临时文件删除失败不影响主流程
-
-        # 读取最终文件大小
-        with open(file_path, "rb") as f:
-            content = f.read()
-        log(f"[Upload] 最终文件大小: {len(content)} 字节")
-
-        # 最终文件名（统一为 .wav）
-        final_filename = f"{stem}.wav"
-
-        # 检查是否已存在同名文件记录（按 stem 匹配，兼容不同扩展名上传）
+        compatible_names = {f"{stem}{extension}" for extension in allowed_extensions}
+        compatible_names.add(artifact.filename)
         existing_audio = db.query(Audio).filter(
-            Audio.filename.like(f"{stem}.%")
+            Audio.filename.in_(compatible_names)
         ).first()
-        log(f"[Upload] 数据库已有记录: {existing_audio is not None}")
-
         if existing_audio:
-            # 更新已有记录
-            existing_audio.filename = final_filename
+            existing_audio.filename = artifact.filename
             existing_audio.original_filename = original_name
-            existing_audio.file_path = file_path
-            existing_audio.file_size = len(content)
+            existing_audio.file_path = artifact.file_path
+            existing_audio.file_size = artifact.file_size
             existing_audio.transcription = None
             existing_audio.transcription_segments = []
             existing_audio.language = None
-            existing_audio.duration = None
-            log(f"[Upload] 更新记录 id={existing_audio.id}")
+            existing_audio.duration = artifact.duration
             db.commit()
             db.refresh(existing_audio)
-            log(f"[Upload] 更新成功")
-            return {"message": "文件更新成功", "audio_id": existing_audio.id, "filename": final_filename}
-        else:
-            # 创建新记录
-            audio = Audio(
-                filename=final_filename,
-                original_filename=original_name,
-                file_path=file_path,
-                file_size=len(content)
-            )
-            db.add(audio)
-            log(f"[Upload] 创建新记录")
-            db.commit()
-            db.refresh(audio)
-            log(f"[Upload] 创建成功 id={audio.id}")
-            return {"message": "文件上传成功", "audio_id": audio.id, "filename": final_filename}
+            return {
+                "message": "文件更新成功",
+                "audio_id": existing_audio.id,
+                "filename": artifact.filename,
+                "duration": artifact.duration,
+            }
+
+        audio = Audio(
+            filename=artifact.filename,
+            original_filename=original_name,
+            file_path=artifact.file_path,
+            file_size=artifact.file_size,
+            duration=artifact.duration,
+        )
+        db.add(audio)
+        db.commit()
+        db.refresh(audio)
+        return {
+            "message": "文件上传成功",
+            "audio_id": audio.id,
+            "filename": artifact.filename,
+            "duration": artifact.duration,
+        }
+    except AudioTooLargeError as exc:
+        max_mb = settings.max_file_size // (1024 * 1024)
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件大小超过限制（规范化前后均不得超过 {max_mb}MB）",
+        ) from exc
+    except AudioProcessingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HTTPException:
-        log(f"[Upload] HTTP异常")
         raise
-    except Exception as e:
-        log(f"[Upload] 未知异常: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"[上传失败] {type(e).__name__}: {str(e)}")
+    except Exception as exc:
+        logger.exception("音频上传失败")
+        raise HTTPException(status_code=500, detail="音频上传失败") from exc
+
 
 @router.delete("/{audio_id}")
 async def delete_audio(audio_id: int, db: Session = Depends(get_db)):
@@ -241,68 +142,50 @@ async def delete_audio(audio_id: int, db: Session = Depends(get_db)):
     if file_path and os.path.exists(file_path):
         try:
             os.remove(file_path)
-            log(f"[Delete] 已删除音频文件: {file_path}")
+            logger.info("已删除音频文件: audio_id=%s", audio_id)
         except Exception as e:
-            log(f"[Delete] 删除文件失败: {e}")
-            raise HTTPException(status_code=500, detail=f"文件删除失败: {str(e)}")
+            logger.exception("删除音频文件失败: audio_id=%s", audio_id)
+            raise HTTPException(status_code=500, detail="文件删除失败") from e
 
     # 删除数据库记录
     db.delete(audio)
     db.commit()
 
-    log(f"[Delete] 音频删除成功: id={audio_id}")
     return {"message": "音频删除成功", "audio_id": audio_id}
 
 
 @router.post("/transcribe/{audio_id}")
 async def transcribe_audio(
     audio_id: int,
-    provider: str = Query(None, description="ASR 引擎: whisper 或 dashscope，不传则使用默认配置"),
+    provider: str | None = Query(None, description="ASR Provider，不传则使用默认配置"),
     db: Session = Depends(get_db),
 ):
-    """
-    转录音频文件
-
-    Args:
-        provider: 可选的 ASR 引擎选择（whisper/dashscope）
-    """
-    log(f"[Transcribe] 收到转录请求: audio_id={audio_id}, provider={provider}")
+    """在线程中执行同步 ASR，并持久化统一结果。"""
     try:
-        # 获取音频记录
         audio = db.query(Audio).filter(Audio.id == audio_id).first()
         if not audio:
-            log(f"[Transcribe] 音频记录不存在: id={audio_id}")
             raise HTTPException(status_code=404, detail="音频文件未找到")
 
-        log(f"[Transcribe] 音频记录: filename={audio.filename}, file_path={audio.file_path}")
-
-        # 确保文件路径是绝对路径（兼容旧的相对路径记录）
         file_path = audio.file_path
         if file_path and not os.path.isabs(file_path):
             file_path = os.path.abspath(file_path)
-            log(f"[Transcribe] 相对路径转绝对路径: {audio.file_path} -> {file_path}")
-            # 更新数据库中的路径
             audio.file_path = file_path
             db.commit()
 
         if not file_path or not os.path.exists(file_path):
-            log(f"[Transcribe] 音频文件不存在: {file_path}")
-            raise HTTPException(status_code=404, detail=f"音频文件不存在: {file_path}")
+            raise HTTPException(status_code=404, detail="音频文件不存在")
 
-        # 使用工厂函数获取 ASR 服务
-        asr_service = get_asr_service(provider)
-        engine_name = type(asr_service).__name__
-        log(f"[Transcribe] 使用 ASR 引擎: {engine_name}, 开始转录...")
-        result = asr_service.transcribe(file_path)
-        log(f"[Transcribe] 转录完成: {result['transcription'][:50]}...")
+        result = await get_asr_execution_service().transcribe(
+            audio_id=audio_id,
+            audio_path=file_path,
+            provider=provider,
+        )
 
-        # 更新音频记录
         audio.transcription = result["transcription"]
         audio.transcription_segments = result.get("segments", [])
         audio.language = result["language"]
         audio.duration = result.get("duration", audio.duration)
         db.commit()
-        log(f"[Transcribe] 数据库已更新")
 
         return {
             "message": "转录成功",
@@ -311,16 +194,25 @@ async def transcribe_audio(
             "segments": result.get("segments", []),
             "duration": result.get("duration"),
             "transcribe_time": result["transcribe_time"],
-            "rtf": result["rtf"]
+            "rtf": result["rtf"],
         }
+    except ASRAlreadyRunningError as exc:
+        raise HTTPException(status_code=409, detail="该音频正在转写，请勿重复提交") from exc
+    except ASRProviderNotFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ASRInputError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except ASRConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ASRTimeoutError as exc:
+        raise HTTPException(status_code=504, detail="语音转写超时，请稍后重试") from exc
+    except ASRExecutionError as exc:
+        raise HTTPException(status_code=502, detail="语音转写服务暂时不可用") from exc
     except HTTPException:
-        log(f"[Transcribe] HTTP异常")
         raise
-    except Exception as e:
-        log(f"[Transcribe] 未知异常: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"转录失败: {str(e)}")
+    except Exception as exc:
+        logger.exception("转写结果持久化失败: audio_id=%s", audio_id)
+        raise HTTPException(status_code=500, detail="转写结果保存失败") from exc
 
 
 @router.get("/{audio_id}/transcript")
@@ -389,7 +281,7 @@ async def polish_transcription(audio_id: int, db: Session = Depends(get_db)):
     对已转录的文本做口语清理（去口头禅、补标点、修正明显错误）
     不改变原意，不增删实质内容
     """
-    log(f"[Polish] 收到润色请求: audio_id={audio_id}")
+    logger.info("收到转录润色请求: audio_id=%s", audio_id)
     try:
         audio = db.query(Audio).filter(Audio.id == audio_id).first()
         if not audio:
@@ -428,7 +320,12 @@ async def polish_transcription(audio_id: int, db: Session = Depends(get_db)):
         ]
 
         polished = llm.chat(messages=messages, max_tokens=2000, temperature=0.3)
-        log(f"[Polish] 润色完成，原文 {len(raw_text)} 字 -> 润色后 {len(polished)} 字")
+        logger.info(
+            "转录润色完成: audio_id=%s raw_length=%s polished_length=%s",
+            audio_id,
+            len(raw_text),
+            len(polished),
+        )
 
         return {
             "success": True,
@@ -437,8 +334,8 @@ async def polish_transcription(audio_id: int, db: Session = Depends(get_db)):
         }
     except HTTPException:
         raise
-    except Exception as e:
-        log(f"[Polish] 润色异常: {type(e).__name__}: {e}")
+    except Exception:
+        logger.exception("转录润色失败: audio_id=%s", audio_id)
         # 润色失败时返回原始文本，不影响使用
         return {
             "success": False,

@@ -83,13 +83,23 @@ class Settings(BaseSettings):
     agent_plan_max_steps: int = Field(default=6, ge=1, le=20)
     agent_max_replans: int = Field(default=1, ge=0, le=3)
 
-    # ASR 引擎配置（whisper=本地, dashscope=百炼API）
-    asr_provider: str = "whisper"  # 默认使用本地 Whisper
+    # ASR 引擎配置
+    asr_provider: Literal["whisper", "dashscope", "mimo"] = "whisper"
+    asr_timeout_seconds: float = Field(default=180.0, gt=0, le=3_600)
+    audio_normalize_timeout_seconds: float = Field(default=120.0, gt=0, le=3_600)
+    audio_probe_timeout_seconds: float = Field(default=15.0, gt=0, le=300)
 
     # 百炼 DashScope ASR 配置
     dashscope_asr_api_key: str = ""
     dashscope_asr_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_asr_model: str = "paraformer-realtime-v2"
+
+    # 小米 MiMo ASR 配置
+    mimo_asr_api_key: str = ""
+    mimo_asr_api_url: str = "https://api.xiaomimimo.com/v1"
+    mimo_asr_model: str = "mimo-v2.5-asr"
+    mimo_asr_request_timeout_seconds: float = Field(default=120.0, gt=0, le=3_600)
+    mimo_asr_max_base64_bytes: int = Field(default=10 * 1024 * 1024, ge=1_024)
 
     # LLM 配置（Vercel AI Gateway 的 OpenAI 兼容接口）
     llm_api_key: str = ""

@@ -297,10 +297,15 @@ class APIIntegrationTestCase(unittest.TestCase):
             files={"file": ("../../escape.wav", audio_path.read_bytes(), "audio/wav")},
         )
         self.assertEqual(traversal.status_code, 200)
+        self.assertAlmostEqual(traversal.json()["duration"], 4.0, places=1)
         db = self.session_factory()
         try:
             uploaded = db.query(Audio).filter(Audio.filename == "escape.wav").one()
             self.assertEqual(Path(uploaded.file_path).resolve().parent, Path(settings.upload_dir).resolve())
+            with wave.open(uploaded.file_path, "rb") as normalized:
+                self.assertEqual(normalized.getframerate(), 16_000)
+                self.assertEqual(normalized.getnchannels(), 1)
+                self.assertEqual(normalized.getsampwidth(), 2)
             outside_path = self.root / "outside.wav"
             outside_path.write_bytes(audio_path.read_bytes())
             outside = Audio(

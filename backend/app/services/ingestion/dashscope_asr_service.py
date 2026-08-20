@@ -5,8 +5,9 @@
 import os
 import time
 import logging
-import librosa
+
 from backend.app.core.config import settings
+from backend.app.services.ingestion.audio_processing import probe_duration
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class DashScopeASRService:
         self.model = settings.dashscope_asr_model
         logger.info(f"DashScope ASR 服务初始化完成，模型: {self.model}")
 
-    def transcribe(self, audio_path: str, language: str = "zh") -> dict:
+    def transcribe(self, audio_path: str, language: str = "auto") -> dict:
         """
         转录音频文件
 
@@ -71,13 +72,7 @@ class DashScopeASRService:
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"音频文件不存在: {audio_path}")
 
-        # 获取音频时长
-        try:
-            audio_duration = librosa.get_duration(path=audio_path)
-            logger.info(f"[DashScope ASR] 音频时长: {audio_duration:.2f}秒")
-        except Exception as e:
-            logger.error(f"[DashScope ASR] 获取音频时长失败: {e}", exc_info=True)
-            raise RuntimeError(f"无法读取音频文件: {audio_path}") from e
+        audio_duration = probe_duration(audio_path, settings.audio_probe_timeout_seconds)
 
         # 获取音频格式和采样率
         audio_format = self._detect_format(audio_path)
@@ -143,8 +138,8 @@ class DashScopeASRService:
             raise
         except Exception as e:
             transcribe_time = time.time() - start_time
-            logger.error(f"[DashScope ASR] 转录异常 ({transcribe_time:.1f}秒): {e}", exc_info=True)
-            raise RuntimeError(f"DashScope ASR 转录失败: {str(e)}") from e
+            logger.error("[DashScope ASR] 转录异常 (%.1f秒)", transcribe_time, exc_info=True)
+            raise RuntimeError("DashScope ASR 转录失败") from e
 
     def _detect_format(self, audio_path: str) -> str:
         """根据文件扩展名检测音频格式"""
@@ -164,12 +159,8 @@ class DashScopeASRService:
             return info.samplerate
         except Exception:
             pass
-        try:
-            sr = librosa.get_samplerate(audio_path)
-            return int(sr)
-        except Exception:
-            logger.warning(f"[DashScope ASR] 无法获取采样率，使用默认 16000")
-            return 16000
+        logger.warning("[DashScope ASR] 无法获取采样率，使用默认 16000")
+        return 16000
 
 
 # 全局服务实例

@@ -27,8 +27,11 @@ async def check_models():
     """检查模型实际加载状态"""
     models = {}
 
-    # 当前 ASR 引擎配置
+    from backend.app.services.ingestion.asr_service import get_available_asr_providers
+
+    providers = get_available_asr_providers()
     models["asr_provider"] = settings.asr_provider
+    models["asr_providers"] = providers
 
     # Whisper（仅当使用本地 Whisper 时加载）
     if settings.asr_provider == "whisper":
@@ -40,17 +43,6 @@ async def check_models():
             models["whisper"] = f"error: {str(e)[:100]}"
     else:
         models["whisper"] = "skipped (使用 API 引擎)"
-
-    # DashScope ASR
-    if settings.asr_provider == "dashscope":
-        try:
-            from backend.app.services.ingestion.dashscope_asr_service import get_dashscope_asr_service
-            svc = get_dashscope_asr_service()
-            models["dashscope_asr"] = "ready" if svc.api_key else "no_api_key"
-        except Exception as e:
-            models["dashscope_asr"] = f"error: {str(e)[:100]}"
-    else:
-        models["dashscope_asr"] = "skipped (使用本地引擎)"
 
     # Embedding
     try:

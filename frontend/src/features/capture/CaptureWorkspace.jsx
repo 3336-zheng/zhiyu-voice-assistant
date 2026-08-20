@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Check,
   FileAudio,
@@ -21,11 +21,31 @@ export default function CaptureWorkspace({ notify, onSaved }) {
   const [segments, setSegments] = useState([])
   const [summary, setSummary] = useState('')
   const [provider, setProvider] = useState('whisper')
+  const [providers, setProviders] = useState([
+    { id: 'whisper', name: '本地 Whisper', available: true },
+  ])
   const [stage, setStage] = useState('idle')
   const [recording, setRecording] = useState(false)
   const recorderRef = useRef(null)
   const chunksRef = useRef([])
   const fileRef = useRef(null)
+
+  useEffect(() => {
+    let active = true
+    api('/audio/asr-providers').then((result) => {
+      if (!active) return
+      const nextProviders = result.providers || []
+      setProviders(nextProviders)
+      setProvider((current) => {
+        if (nextProviders.some((item) => item.id === current && item.available)) return current
+        const configuredDefault = nextProviders.find(
+          (item) => item.id === result.default && item.available,
+        )
+        return configuredDefault?.id || nextProviders.find((item) => item.available)?.id || current
+      })
+    }).catch(() => {})
+    return () => { active = false }
+  }, [])
 
   async function uploadAudio(file) {
     if (!file) return
@@ -157,7 +177,13 @@ export default function CaptureWorkspace({ notify, onSaved }) {
           <div className="capture-actions-row">
             <button className="secondary-button" type="button" onClick={() => fileRef.current?.click()}><FileUp size={16} /> 上传音频</button>
             <input ref={fileRef} hidden type="file" accept="audio/*,.webm" onChange={(event) => uploadAudio(event.target.files?.[0])} />
-            <select value={provider} onChange={(event) => setProvider(event.target.value)} aria-label="转写引擎"><option value="whisper">本地 Whisper</option><option value="dashscope">DashScope</option></select>
+            <select value={provider} onChange={(event) => setProvider(event.target.value)} aria-label="转写引擎" disabled={busy}>
+              {providers.map((item) => (
+                <option key={item.id} value={item.id} disabled={!item.available}>
+                  {item.name}{item.available ? '' : '（未配置）'}
+                </option>
+              ))}
+            </select>
             <button className="primary-button" type="button" disabled={!audioId || busy} onClick={transcribeAudio}>{stage === 'transcribing' ? <LoaderCircle size={16} className="spin" /> : <Play size={16} />} 转写</button>
           </div>
         </section>

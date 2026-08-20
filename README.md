@@ -35,6 +35,7 @@
 | **受控 MCP 研究** | Search/Fetch 白名单、URL/来源校验、来源快照、研究草稿 | 本地证据不足时可查外部资料，但不自动越权写库 |
 | **确认式知识写入** | 预览 → 确认 → 幂等执行 | 防止模型误写、重复确认和网络重试产生副作用 |
 | **回答纠错闭环** | 回答反馈、证据快照、研究草稿、确认修订、同步索引、原题复测 | 将一次性问答变成可追踪、可恢复的知识改进流程 |
+| **可靠语音采集** | 全格式统一规范化、真实时长探测、同步 ASR 线程隔离、单机去重与本地单并发、三种 Provider | 避免模型推理阻塞事件循环，并在本地隐私、中文转写和云端识别之间切换 |
 | **可观测与可恢复** | Request ID、结构化 JSON 日志、阶段时间线、错误码、模型用量、持久化索引任务 | 从前端请求编号定位完整链路，判断慢在哪里、错在哪里、是否可重试 |
 
 ## 一眼看懂架构
@@ -79,7 +80,7 @@ Agent Run / 事件      执行状态：支持续传、终态回放和重启收�
 | 数据与文件 | SQLite、SQLAlchemy 同步 Session、UTF-8 Markdown、YAML Front Matter |
 | 混合检索 | BM25、Jieba、ChromaDB、RRF、本地 BGE / OpenAI 兼容 Embedding、本地 BGE / Cohere 兼容 Rerank |
 | Agent 与外部研究 | Capability Registry、Plan-and-Execute、有限 Replan、CRAG、MCP Python SDK、OpenAI 兼容模型接口 |
-| 多模态采集 | faster-whisper、DashScope ASR、pdfplumber、python-docx |
+| 多模态采集 | ffmpeg/ffprobe、faster-whisper、DashScope ASR、MiMo-V2.5-ASR、pdfplumber、python-docx |
 | 可观测性 | Request ID、JSON 日志轮转、运行追踪工作台、Server-Timing、Langfuse、OpenTelemetry |
 | 工程化 | Pytest、GitHub Actions、Docker 多阶段构建 |
 
@@ -106,6 +107,28 @@ test/
 ```
 
 业务代码按领域归档，API 只负责协议适配，跨资源事务留在 Service，通用基础设施集中在 `core`；测试目录镜像业务边界，便于从故障模块直接定位对应测试。
+
+## 语音采集链路
+
+```text
+WAV / MP3 / FLAC / OGG / WebM
+  → ffprobe 校验真实时长
+  → ffmpeg 统一为 16kHz、单声道、16-bit PCM WAV
+  → 复检时长与转换后大小
+  → asyncio.to_thread 隔离同步 Provider
+  → Whisper / DashScope / MiMo
+  → 统一转写结果 → 可编辑笔记 → Wiki
+```
+
+ASR 调度层对同一 `audio_id` 做进程内运行去重，重复提交返回冲突；本地 Whisper 只允许一个实际推理任务运行。接口超时或客户端断开后，底层同步线程可能无法立即中止，因此占用标记与 Whisper 并发槽会保留到真实调用结束，避免后台残留推理与新请求重叠。Provider 异常只在服务端日志中记录，前端返回稳定的脱敏错误。
+
+| Provider | 适用场景 | 当前边界 |
+| --- | --- | --- |
+| 本地 Whisper | 隐私优先、离线使用、需要片段时间戳 | 单并发，速度取决于本机 CPU/GPU |
+| DashScope | 中文课堂和在线转写 | 依赖外部服务与网络，保留句子时间戳 |
+| Xiaomi MiMo-V2.5-ASR | 中英、方言、噪声及远场录音 | 规范化 WAV 以 Base64 发送，编码后上限 10 MB；官方非流式响应不提供片段时间戳 |
+
+三种实现遵循相同的内部结果契约，路由不包含厂商协议。`ASR_PROVIDER` 只设置默认项，React 前端会读取后端 Provider 状态并禁用未配置选项；启用 MiMo 时需要在本地 `.env` 设置 `MIMO_ASR_API_KEY` 和对应的 `MIMO_ASR_API_URL`，密钥不进入版本控制。Token Plan 的 `tp-` Key 必须使用套餐页面提供的专属 Base URL；按量计费的 `sk-` Key 才使用公共 `https://api.xiaomimimo.com/v1` 地址。
 
 ## RAG 链路
 
@@ -250,11 +273,11 @@ npm run build
 npm audit --omit=dev
 ```
 
-当前自动化测试覆盖页面 `409` 冲突、索引失败重试与重启恢复、RAG v2、计划 Schema 与 DAG 校验、风险确认、有限 Replan、分层上下文装配、Token 触发摘要、Agent 事件顺序与断线回放、取消、超时、重复确认、模型故障转移、MCP 安全边界、备份恢复和音频溯源；新增覆盖回答快照与自动复测、重复反馈幂等、草稿失败恢复、索引分阶段重试、会话/正文搜索、在线 Embedding/Rerank 协议适配、Provider 错误脱敏、向量集合隔离及 schema v5-v7 到 v8 的迁移。请以当前提交实际执行上述命令的结果作为验证基线。
+当前自动化测试覆盖页面 `409` 冲突、索引失败重试与重启恢复、RAG v2、计划 Schema 与 DAG 校验、风险确认、有限 Replan、分层上下文装配、Token 触发摘要、Agent 事件顺序与断线回放、取消、超时、重复确认、模型故障转移、MCP 安全边界、备份恢复和音频溯源；新增覆盖回答快照与自动复测、重复反馈幂等、草稿失败恢复、索引分阶段重试、会话/正文搜索、在线 Embedding/Rerank 协议适配、ASR 去重/超时/单并发、MiMo 协议映射、Provider 错误脱敏、向量集合隔离及 schema v5-v7 到 v8 的迁移。请以当前提交实际执行上述命令的结果作为验证基线。
 
-当前后端验证基线为 `112 passed, 5 subtests passed`。
+当前后端验证基线为 `119 passed, 5 subtests passed`。
 
-当前面向单用户、本机或可信内网部署，不包含多租户认证、细粒度权限、分布式任务调度和多实例 Agent 状态共享。生产化时需要根据负载迁移 PostgreSQL、共享运行状态、独立任务队列和权限审计体系。
+当前面向单用户、本机或可信内网部署，不包含多租户认证、细粒度权限、分布式任务调度和多实例 Agent/ASR 状态共享。ASR 去重与并发限制只在当前进程有效，HTTP 请求仍会等待转写完成；长录音或多实例部署应进一步迁移到持久化任务队列。生产化时还需要根据负载迁移 PostgreSQL、共享运行状态和权限审计体系。
 
 ## 项目文档
 

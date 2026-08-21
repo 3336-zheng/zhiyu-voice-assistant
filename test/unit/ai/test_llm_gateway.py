@@ -58,6 +58,7 @@ class LLMGatewayTestCase(unittest.TestCase):
             self.timings_token,
             self.timeline_token,
             self.usage_token,
+            self.context_token,
         ) = start_request("llm-fallback-test")
 
     def tearDown(self):
@@ -66,6 +67,7 @@ class LLMGatewayTestCase(unittest.TestCase):
             self.timings_token,
             self.timeline_token,
             self.usage_token,
+            self.context_token,
         )
         (
             settings.llm_fallback_input_cost_per_million,

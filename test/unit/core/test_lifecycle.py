@@ -54,6 +54,7 @@ class LifecycleTestCase(unittest.IsolatedAsyncioTestCase):
             timings_token,
             timeline_token,
             usage_token,
+            context_token,
         ) = start_request("unit-request-001")
         self.assertEqual(request_id, "unit-request-001")
         with timed_stage("agent.evidence"):
@@ -63,7 +64,13 @@ class LifecycleTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(timings["agent.evidence"]["total_ms"], 0)
         self.assertEqual(get_execution_timeline()[0]["stage"], "agent.evidence")
         self.assertEqual(get_model_usage()["call_count"], 0)
-        reset_request(request_token, timings_token, timeline_token, usage_token)
+        reset_request(
+            request_token,
+            timings_token,
+            timeline_token,
+            usage_token,
+            context_token,
+        )
         self.assertIsNone(get_request_id())
         self.assertEqual(get_stage_timings(), {})
 

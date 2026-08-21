@@ -1,8 +1,10 @@
 """RAG v2 父块折叠、统一融合与 Token 预算测试。"""
 
 import unittest
+from unittest.mock import patch
 
 from backend.app.services.retrieval.hybrid_retrieval_service import HybridRetrievalService
+from backend.app.services.retrieval.chroma_service import ChromaService
 from backend.app.agent.fast_path import is_fast_path_query
 
 
@@ -200,6 +202,29 @@ class RagV2TestCase(unittest.TestCase):
         self.assertFalse(outcome["stats"]["cache_hit"])
         self.assertTrue(cached["stats"]["cache_hit"])
         self.assertLessEqual(outcome["stats"]["reranked_candidates"], 12)
+
+
+class ChromaSearchResilienceTestCase(unittest.TestCase):
+    def test_search_skips_missing_metadata_without_dropping_valid_results(self):
+        service = ChromaService.__new__(ChromaService)
+
+        class Collection:
+            @staticmethod
+            def query(**kwargs):
+                return {
+                    "ids": [["stale-0", "page:p1:revision:1:chunk:0"]],
+                    "distances": [[0.2, 0.4]],
+                    "metadatas": [[None, {"source_type": "wiki_page"}]],
+                    "documents": [["旧内容", "有效内容"]],
+                }
+
+        service.collection = Collection()
+
+        with patch("backend.app.services.retrieval.chroma_service.logger.warning") as warning:
+            result = service.search([0.1, 0.2], top_k=2)
+
+        self.assertEqual(result, [("page:p1:revision:1:chunk:0", 0.6)])
+        warning.assert_called_once()
 
 
 if __name__ == "__main__":

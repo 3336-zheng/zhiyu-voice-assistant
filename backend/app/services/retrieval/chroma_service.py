@@ -195,30 +195,48 @@ class ChromaService:
                 include=["metadatas", "distances", "documents"]
             )
 
-            # 提取结果
+            # 提取结果。历史索引可能包含空 metadata 或不完整的并行数组，
+            # 单条脏数据不能让整个向量召回失败。
             doc_scores = []
-            if results["ids"] and len(results["ids"]) > 0:
-                ids = results["ids"][0]
-                distances = results["distances"][0]
-                metadatas = results["metadatas"][0] if results["metadatas"] else []
+            skipped_metadata = 0
+            ids_groups = results.get("ids") or []
+            if ids_groups and ids_groups[0]:
+                ids = ids_groups[0]
+                distance_groups = results.get("distances") or []
+                metadata_groups = results.get("metadatas") or []
+                distances = distance_groups[0] if distance_groups else []
+                metadatas = metadata_groups[0] if metadata_groups else []
 
                 for i, chroma_id in enumerate(ids):
+                    metadata = metadatas[i] if i < len(metadatas) else None
+                    distance = distances[i] if i < len(distances) else None
+                    if not isinstance(metadata, dict) or not isinstance(distance, (int, float)):
+                        skipped_metadata += 1
+                        continue
+
                     # 使用 ChromaDB 的 doc_id（即存储时的 id）
-                    source_type = metadatas[i].get("source_type", "note")
+                    source_type = metadata.get("source_type", "note")
                     if source_type in {"doc", "wiki_page"}:
                         # 文档块和 Wiki 页面块直接使用 ChromaDB 的稳定 ID
                         doc_id = chroma_id
                     else:
                         # 笔记：转换为 "note_{note_id}" 格式
-                        note_id = metadatas[i].get("note_id")
+                        note_id = metadata.get("note_id")
                         if note_id is not None:
                             doc_id = f"note_{note_id}"
                         else:
+                            skipped_metadata += 1
                             continue
                     # ChromaDB 返回的是距离（越小越相似），转换为相似度分数
-                    distance = distances[i]
                     similarity = 1.0 - distance
                     doc_scores.append((doc_id, similarity))
+
+            if skipped_metadata:
+                logger.warning(
+                    "向量检索跳过无效结果: skipped=%s, requested_top_k=%s",
+                    skipped_metadata,
+                    top_k,
+                )
 
             return doc_scores
         except Exception as e:

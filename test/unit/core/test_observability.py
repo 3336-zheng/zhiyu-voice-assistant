@@ -56,6 +56,7 @@ class ObservabilityTestCase(unittest.TestCase):
             timings_token,
             timeline_token,
             usage_token,
+            context_token,
         ) = start_request("observability-log-001")
         try:
             record = logging.LogRecord(
@@ -84,7 +85,13 @@ class ObservabilityTestCase(unittest.TestCase):
             self.assertNotIn("query-sensitive", rendered)
             self.assertIn("[REDACTED]", rendered)
         finally:
-            reset_request(request_token, timings_token, timeline_token, usage_token)
+            reset_request(
+                request_token,
+                timings_token,
+                timeline_token,
+                usage_token,
+                context_token,
+            )
 
     def test_failed_stage_is_available_by_request_id(self):
         (
@@ -93,6 +100,7 @@ class ObservabilityTestCase(unittest.TestCase):
             timings_token,
             timeline_token,
             usage_token,
+            context_token,
         ) = start_request("observability-trace-001")
         try:
             with self.assertRaises(TimeoutError):
@@ -106,7 +114,13 @@ class ObservabilityTestCase(unittest.TestCase):
                 total_ms=12.5,
             )
         finally:
-            reset_request(request_token, timings_token, timeline_token, usage_token)
+            reset_request(
+                request_token,
+                timings_token,
+                timeline_token,
+                usage_token,
+                context_token,
+            )
 
         trace = get_recent_trace(request_id)
         self.assertIsNotNone(trace)

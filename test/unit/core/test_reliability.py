@@ -44,7 +44,7 @@ class ReliabilityTestCase(unittest.TestCase):
 
             class FakeLLM:
                 @staticmethod
-                def chat(messages, max_tokens=300):
+                def chat(messages, max_tokens=300, **kwargs):
                     return "增量摘要"
 
             try:

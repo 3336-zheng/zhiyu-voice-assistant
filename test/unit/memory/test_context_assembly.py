@@ -18,6 +18,7 @@ from backend.app.agent.models import (
 from backend.app.agent.planner import Planner
 from backend.app.agent.responder import Responder
 from backend.app.agent.tool_registry import AgentToolRegistry
+from backend.app.core.config import settings
 from backend.app.core.database import Base
 from backend.app.services.memory.context_assembler import (
     ContextAssembler,
@@ -165,7 +166,10 @@ class ModelContextIntegrationTestCase(unittest.TestCase):
         responder.generate_response("现在几点", make_time_plan(), execution, self.history)
 
         self.assertTrue(any("长期摘要" in item["content"] for item in llm.messages))
-        self.assertEqual(execution.context_stats["model_context"]["output_reserved_tokens"], 1_000)
+        self.assertEqual(
+            execution.context_stats["model_context"]["output_reserved_tokens"],
+            settings.llm_response_max_tokens,
+        )
 
 
 class MemoryTokenTriggerTestCase(unittest.TestCase):
@@ -181,7 +185,7 @@ class MemoryTokenTriggerTestCase(unittest.TestCase):
 
             class FakeLLM:
                 @staticmethod
-                def chat(messages, max_tokens=600):
+                def chat(messages, max_tokens=600, **kwargs):
                     return "## 用户目标\n准备面试\n## 未完成事项\n继续整理"
 
             try:

@@ -26,7 +26,16 @@ class StreamingAgent:
     def __init__(self):
         self.call_count = 0
 
-    async def run(self, query, session_id, db, event_callback, cancel_check, raise_errors):
+    async def run(
+        self,
+        query,
+        session_id,
+        db,
+        event_callback,
+        cancel_check,
+        raise_errors,
+        allow_external_research=False,
+    ):
         self.call_count += 1
         event_callback(AgentEventType.STAGE_STARTED, {"stage": "agent.generation"})
         event_callback(AgentEventType.TOKEN, {"content": "智"})
@@ -48,7 +57,16 @@ class BlockingAgent:
     def __init__(self):
         self.started = asyncio.Event()
 
-    async def run(self, query, session_id, db, event_callback, cancel_check, raise_errors):
+    async def run(
+        self,
+        query,
+        session_id,
+        db,
+        event_callback,
+        cancel_check,
+        raise_errors,
+        allow_external_research=False,
+    ):
         self.started.set()
         while True:
             if cancel_check():
@@ -57,7 +75,16 @@ class BlockingAgent:
 
 
 class SlowAgent:
-    async def run(self, query, session_id, db, event_callback, cancel_check, raise_errors):
+    async def run(
+        self,
+        query,
+        session_id,
+        db,
+        event_callback,
+        cancel_check,
+        raise_errors,
+        allow_external_research=False,
+    ):
         await asyncio.sleep(10)
 
 

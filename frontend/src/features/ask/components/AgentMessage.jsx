@@ -16,6 +16,54 @@ import AnswerFeedbackPanel from './AnswerFeedbackPanel'
 import MarkdownView from '../../../shared/components/MarkdownView'
 import { formatCost, formatTime, stageLabel } from '../utils/agentPresentation'
 
+function citationLabel(value) {
+  return String(value || '')
+    .replace(/\\([\[\]\(\)])/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\s*>\s*/g, ' · ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function orderedSources(sources) {
+  const seen = new Set()
+  return [...(sources || [])]
+    .sort((left, right) => {
+      const leftScore = Number(left.rerank_score ?? left.score ?? 0)
+      const rightScore = Number(right.rerank_score ?? right.score ?? 0)
+      return rightScore - leftScore
+    })
+    .filter((source) => {
+      const key = source.chunk_id || source.id || (
+        String(source.page_id || '') + ':' + String(source.section_path || source.section_title || '')
+      )
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
+function sourcePageId(source) {
+  if (source?.page_id) return String(source.page_id)
+  if (source?.pageId) return String(source.pageId)
+  const sourceUrlId = source?.source_url?.match(/\/api\/pages\/([^/?#]+)/)?.[1]
+  if (sourceUrlId) return sourceUrlId
+  const chunkId = String(source?.chunk_id || source?.id || '')
+  return chunkId.match(/^page:([0-9a-f-]{36}):/)?.[1] || null
+}
+
+function sourceTitle(source) {
+  const candidates = [
+    source?.title,
+    source?.page_title,
+    source?.filename?.replace(/\.md$/i, ''),
+    source?.source_uri?.split('/').pop(),
+    source?.section_path,
+    source?.section_title,
+  ]
+  return candidates.map(citationLabel).find(Boolean) || '知识库页面'
+}
+
 export default function AgentMessage({
   message,
   onPrepareSave,
@@ -25,12 +73,15 @@ export default function AgentMessage({
   onConfirmFeedback,
   onFlagResponse,
   onRetryFeedback,
+  onOpenSource,
 }) {
+  const citationSources = orderedSources(message.sources)
+
   return (
     <article id={`message-${message.id}`} className={`message ${message.role}`}>
       <div className="message-role">{message.role === 'user' ? '你' : <><MessageSquareText size={14} /> 智语</>}</div>
       <div className="message-body">
-        {message.role === 'assistant' ? <MarkdownView content={message.content} /> : message.content}
+        {message.role === 'assistant' ? <MarkdownView content={message.content} stripCitationAppendix /> : message.content}
         {message.role === 'assistant' && message.evidenceStatus === 'insufficient' && (
           <div className="evidence-warning" role="status">
             <strong>证据不足，未生成推测性答案</strong>
@@ -91,22 +142,35 @@ export default function AgentMessage({
             </div>
           </div>
         )}
-        {message.sources?.length > 0 && (
+        {citationSources.length > 0 && (
           <div className="citation-list">
             <span>引用来源</span>
-            {message.sources.map((source) => (
-              <div className="citation-item" key={source.chunk_id || source.id}>
-                <a href={source.source_url || '#'} target="_blank" rel="noreferrer">
-                  <strong>{source.title}</strong>
-                  <small>{source.section_path || source.section_title || '页面正文'}</small>
-                </a>
-                {source.audio_url && (
-                  <a className="audio-citation" href={source.audio_url} target="_blank" rel="noreferrer">
-                    <Headphones size={13} /> 原始录音 {formatTime(source.audio_start)}
+            {citationSources.map((source) => {
+              const pageId = sourcePageId(source)
+              return (
+                <div className="citation-item" key={source.chunk_id || source.id}>
+                  <a
+                    href={source.source_url || '#'}
+                    target={pageId ? undefined : '_blank'}
+                    rel={pageId ? undefined : 'noreferrer'}
+                    onClick={(event) => {
+                      if (pageId && onOpenSource) {
+                        event.preventDefault()
+                        onOpenSource(pageId)
+                      }
+                    }}
+                  >
+                    <strong>{sourceTitle(source)}</strong>
+                    <small>{citationLabel(source.section_path || source.section_title) || '页面正文'}</small>
                   </a>
-                )}
-              </div>
-            ))}
+                  {source.audio_url && (
+                    <a className="audio-citation" href={source.audio_url} target="_blank" rel="noreferrer">
+                      <Headphones size={13} /> 原始录音 {formatTime(source.audio_start)}
+                    </a>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
         {message.role === 'assistant' && (message.timeline?.length > 0 || message.retrievalStats) && (

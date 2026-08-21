@@ -12,6 +12,10 @@ import yaml
 
 from backend.app.models.wiki import WikiPage
 from .page_errors import PageValidationError
+from .markdown_normalizer import (
+    clean_page_title,
+    normalize_heading_links,
+)
 
 
 def _isoformat(value: Optional[datetime]) -> Optional[str]:
@@ -100,7 +104,7 @@ class WikiFileStore:
 
     @staticmethod
     def validate_title(title: str) -> str:
-        title = (title or "").strip()
+        title = clean_page_title(title)
         if not title:
             raise PageValidationError("页面标题不能为空")
         if len(title) > 255:
@@ -115,7 +119,7 @@ class WikiFileStore:
             raise PageValidationError("页面内容不能为空")
         if not isinstance(content, str):
             raise PageValidationError("页面内容必须是字符串")
-        return content.rstrip()
+        return normalize_heading_links(content).rstrip()
 
     @staticmethod
     def validate_page_id(page_id: str) -> None:
@@ -250,7 +254,7 @@ class WikiFileStore:
     def legacy_title_content(path: Path, raw: str) -> tuple[str, str]:
         lines = raw.splitlines()
         if lines and lines[0].startswith("# "):
-            title = lines[0][2:].strip() or path.stem
+            title = clean_page_title(lines[0][2:]) or path.stem
             content = "\n".join(lines[1:]).lstrip()
-            return title, content
-        return path.stem, raw
+            return title, normalize_heading_links(content)
+        return clean_page_title(path.stem), normalize_heading_links(raw)

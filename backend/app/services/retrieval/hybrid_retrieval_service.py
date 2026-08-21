@@ -18,6 +18,7 @@ from backend.app.services.retrieval.rrf_service import get_rrf_service
 from backend.app.services.ai.embedding_service import get_embedding_service
 from backend.app.services.ai.reranker_service import get_reranker_service
 from backend.app.services.retrieval.token_budget_service import estimate_tokens, truncate_text
+from backend.app.services.wiki.markdown_normalizer import clean_markdown_link_label
 from backend.app.core.observability import timed_stage
 from backend.app.core.ttl_cache import TTLCache
 
@@ -407,6 +408,7 @@ class HybridRetrievalService:
                     "selected_results": 0,
                     "context_tokens": 0,
                     "token_budget": context_budget,
+                    "context_truncated": False,
                     "cache_hit": False,
                 },
             }
@@ -454,7 +456,16 @@ class HybridRetrievalService:
                 )
 
         if not candidates:
-            return {"results": [], "stats": {"query_count": len(normalized_queries), "cache_hit": False}}
+            return {
+                "results": [],
+                "stats": {
+                    "query_count": len(normalized_queries),
+                    "context_tokens": 0,
+                    "token_budget": context_budget,
+                    "context_truncated": False,
+                    "cache_hit": False,
+                },
+            }
 
         rerank_query = original_query or normalized_queries[0]
         with timed_stage("retrieval.rerank"):
@@ -492,6 +503,10 @@ class HybridRetrievalService:
             "selected_results": len(selected),
             "context_tokens": used_tokens,
             "token_budget": context_budget,
+            "context_truncated": (
+                len(selected) < len(formatted)
+                or any(item.get("context_truncated", False) for item in selected)
+            ),
             "cache_hit": False,
         }
         logger.info("RAG v2 检索完成: %s", stats)
@@ -518,9 +533,21 @@ class HybridRetrievalService:
     ) -> Dict[str, Any]:
         """统一返回可追溯的页面、版本、章节和原文片段。"""
         page_id = metadata.get("page_id")
-        section_title = metadata.get("section_title", "")
-        page_title = metadata.get("page_title")
-        title = page_title or section_title or metadata.get("filename", doc.get("title", ""))
+        if not page_id:
+            page_id = re.match(
+                r"^page:([0-9a-f-]{36}):",
+                str(doc.get("doc_id", "")),
+            )
+            page_id = page_id.group(1) if page_id else None
+        section_title = clean_markdown_link_label(metadata.get("section_title", ""))
+        section_path = clean_markdown_link_label(
+            metadata.get("section_path", section_title)
+        )
+        page_title = clean_markdown_link_label(metadata.get("page_title", ""))
+        fallback_title = clean_markdown_link_label(
+            metadata.get("filename", doc.get("title", ""))
+        )
+        title = page_title or section_title or fallback_title or page_id or "知识库页面"
         source_url = None
         if page_id:
             source_url = f"/api/pages/{page_id}"
@@ -542,7 +569,7 @@ class HybridRetrievalService:
             "source_url": source_url,
             "filename": metadata.get("filename", ""),
             "section_title": section_title,
-            "section_path": metadata.get("section_path", section_title),
+            "section_path": section_path or section_title,
             score_name: score,
             "rank": rank,
         }

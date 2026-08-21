@@ -19,6 +19,7 @@ from backend.app.agent.models import (
 from backend.app.agent.plan_policy import PlanPolicy, PlanValidationError
 from backend.app.agent.tool_registry import AgentToolRegistry
 from backend.app.core.config import settings
+from backend.app.core.observability import record_context_usage
 from backend.app.services.memory.context_assembler import ContextAssembler
 
 logger = logging.getLogger(__name__)
@@ -230,6 +231,11 @@ class Planner:
         )
         messages = assembled.messages
         logger.info("[planner] 上下文装配统计: %s", assembled.stats())
+        record_context_usage(
+            "agent.replan" if replan_feedback else "agent.plan",
+            assembled.stats(),
+        )
+        trace_name = "agent.replan" if replan_feedback else "agent.plan"
         structured_call = getattr(self.llm_service, "structured_call", None)
         if callable(structured_call):
             result = structured_call(
@@ -240,7 +246,7 @@ class Planner:
                 temperature=0.1,
                 max_tokens=settings.llm_max_tokens,
                 model=settings.llm_planner_model or settings.llm_model,
-                trace_name="agent.plan",
+                trace_name=trace_name,
             )
         else:
             # 保留测试替身和旧扩展的兼容入口。

@@ -43,7 +43,8 @@ function headingsFrom(content) {
   })
 }
 
-export default function WikiWorkspace({ notify }) {
+export default function WikiWorkspace({ notify, openPage }) {
+  const openPageId = openPage?.pageId || null
   const [pages, setPages] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedId, setSelectedId] = useState(null)
@@ -72,6 +73,8 @@ export default function WikiWorkspace({ notify }) {
       if (requestSequence !== pageRequestSequence.current) return
       setPages(data.results || [])
       setSelectedId((previous) => {
+        // 来源跳转必须优先于列表默认项，即使目标页被当前搜索或筛选条件隐藏。
+        if (openPageId) return openPageId
         if (previous && data.results?.some((page) => page.id === previous)) return previous
         return data.results?.[0]?.id || null
       })
@@ -81,7 +84,7 @@ export default function WikiWorkspace({ notify }) {
     } finally {
       if (requestSequence === pageRequestSequence.current) setLoading(false)
     }
-  }, [notebookFilter, notify, searchQuery, tagFilter])
+  }, [notebookFilter, notify, openPageId, searchQuery, tagFilter])
 
   const loadPage = useCallback(async (pageId) => {
     if (!pageId) {
@@ -116,6 +119,10 @@ export default function WikiWorkspace({ notify }) {
   useEffect(() => {
     loadPage(selectedId)
   }, [loadPage, selectedId])
+
+  useEffect(() => {
+    if (openPageId) setSelectedId(openPageId)
+  }, [openPageId])
 
   const notebooks = useMemo(
     () => [...new Set(pages.map((page) => page.notebook).filter(Boolean))].sort(),

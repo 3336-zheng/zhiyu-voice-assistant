@@ -116,6 +116,7 @@ class AgentResponse(BaseModel):
     timeline: List[Dict[str, Any]] = Field(default_factory=list)
     retrieval_stats: Optional[Dict[str, Any]] = None
     model_usage: Optional[Dict[str, Any]] = None
+    token_budget: Optional[Dict[str, Any]] = None
     timestamp: datetime
     execution_time_ms: Optional[int] = None
 

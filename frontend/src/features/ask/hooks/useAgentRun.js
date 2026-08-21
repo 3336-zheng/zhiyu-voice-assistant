@@ -16,7 +16,7 @@ function wait(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 }
 
-export default function useAgentRun(notify) {
+export default function useAgentRun(notify, { allowExternalResearch = false } = {}) {
   const [query, setQuery] = useState('')
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(false)
@@ -122,7 +122,11 @@ export default function useAgentRun(notify) {
         const options = firstConnection
           ? {
               method: 'POST',
-              body: JSON.stringify({ query: text, session_id: sessionId }),
+              body: JSON.stringify({
+                query: text,
+                session_id: sessionId,
+                allow_external_research: allowExternalResearch,
+              }),
             }
           : { headers: { 'Last-Event-ID': String(lastSequence) } }
         let streamError = null

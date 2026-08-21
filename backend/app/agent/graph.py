@@ -221,10 +221,13 @@ def retrieve_node(state: AgentState) -> AgentState:
                 len(rewritten_queries),
                 len(results),
             )
+            retrieval_stats = dict(outcome["stats"])
+            retrieval_stats["retrieval_query"] = retrieval_query
+            retrieval_stats["rewritten_queries"] = list(rewritten_queries)
             return {
                 **state,
                 "search_results": results,
-                "retrieval_stats": outcome["stats"],
+                "retrieval_stats": retrieval_stats,
             }
 
         all_results = []
@@ -249,7 +252,16 @@ def retrieve_node(state: AgentState) -> AgentState:
         unique_results = unique_results[:10]
 
         logger.info(f"[graph] 检索完成: 查询数={len(rewritten_queries)}, 结果数={len(unique_results)}")
-        return {**state, "search_results": unique_results}
+        return {
+            **state,
+            "search_results": unique_results,
+            "retrieval_stats": {
+                "query_count": len(rewritten_queries),
+                "retrieval_query": retrieval_query,
+                "rewritten_queries": list(rewritten_queries),
+                "selected_results": len(unique_results),
+            },
+        }
 
     except AgentRunCancelled:
         status = "cancelled"

@@ -33,6 +33,7 @@ def present_agent_response(
         timeline=response.timeline,
         retrieval_stats=response.retrieval_stats,
         model_usage=response.model_usage,
+        token_budget=response.token_budget,
         execution_time_ms=response.execution_time_ms,
         success=success,
     )

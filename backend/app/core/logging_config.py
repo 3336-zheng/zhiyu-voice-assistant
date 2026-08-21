@@ -39,6 +39,13 @@ class RequestContextFilter(logging.Filter):
         return True
 
 
+class BelowErrorFilter(logging.Filter):
+    """只允许普通日志进入标准输出，避免终端把 INFO 当成错误显示。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno < logging.ERROR
+
+
 class JsonFormatter(logging.Formatter):
     """输出便于检索和采集的单行 JSON。"""
 
@@ -131,10 +138,17 @@ def configure_logging(settings: Optional[Any] = None, *, force: bool = False) ->
         handler.close()
     root.setLevel(level)
 
-    console = _add_context_filter(logging.StreamHandler(sys.stderr))
+    # 普通日志走 stdout，错误日志单独走 stderr。这样终端只会把 ERROR 及以上显示为错误色。
+    console = _add_context_filter(logging.StreamHandler(sys.stdout))
+    console.addFilter(BelowErrorFilter())
     console.setLevel(level)
     console.setFormatter(SafeConsoleFormatter(datefmt="%Y-%m-%d %H:%M:%S"))
     root.addHandler(console)
+
+    error_console = _add_context_filter(logging.StreamHandler(sys.stderr))
+    error_console.setLevel(logging.ERROR)
+    error_console.setFormatter(SafeConsoleFormatter(datefmt="%Y-%m-%d %H:%M:%S"))
+    root.addHandler(error_console)
 
     try:
         root.addHandler(

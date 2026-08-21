@@ -9,6 +9,7 @@ import {
   Server,
   Sparkles,
   Square,
+  Trash2,
   X,
 } from 'lucide-react'
 import { api } from '../../shared/api/client'
@@ -17,7 +18,8 @@ import AgentMessage from './components/AgentMessage'
 import McpStatusPanel from './components/McpStatusPanel'
 import useAgentRun from './hooks/useAgentRun'
 
-export default function AskWorkspace({ notify }) {
+export default function AskWorkspace({ notify, onOpenSource }) {
+  const [mcpEnabled, setMcpEnabled] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
   const [mcpStatus, setMcpStatus] = useState(null)
   const [mcpLoading, setMcpLoading] = useState(false)
@@ -25,6 +27,8 @@ export default function AskWorkspace({ notify }) {
   const [sessions, setSessions] = useState([])
   const [sessionsLoading, setSessionsLoading] = useState(true)
   const [sessionOpening, setSessionOpening] = useState(false)
+  const [sessionDeleting, setSessionDeleting] = useState(false)
+  const [deleteSessionTarget, setDeleteSessionTarget] = useState(null)
   const [feedbackMessage, setFeedbackMessage] = useState(null)
   const [feedbackCategory, setFeedbackCategory] = useState('knowledge_missing')
   const [feedbackNote, setFeedbackNote] = useState('')
@@ -52,7 +56,7 @@ export default function AskWorkspace({ notify }) {
     sessionLabel,
     setQuery,
     stopRun,
-  } = useAgentRun(notify)
+  } = useAgentRun(notify, { allowExternalResearch: mcpEnabled })
 
   const feedbackPages = useMemo(() => {
     const pages = new Map()
@@ -88,7 +92,7 @@ export default function AskWorkspace({ notify }) {
   }, [historyVersion, loadSessions])
 
   async function openSession(session) {
-    if (sessionOpening) return
+    if (sessionOpening || sessionDeleting) return
     setSessionOpening(true)
     try {
       await loadSession(session.session_id)
@@ -107,11 +111,32 @@ export default function AskWorkspace({ notify }) {
     }
   }
 
+  async function deleteSession() {
+    if (!deleteSessionTarget || sessionDeleting) return
+    setSessionDeleting(true)
+    try {
+      await api(`/agent/sessions/${encodeURIComponent(deleteSessionTarget.session_id)}`, {
+        method: 'DELETE',
+      })
+      setSessions((previous) => previous.filter(
+        (session) => session.session_id !== deleteSessionTarget.session_id,
+      ))
+      if (deleteSessionTarget.session_id === sessionId) resetSession()
+      notify('对话已删除', 'success')
+      setDeleteSessionTarget(null)
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setSessionDeleting(false)
+    }
+  }
+
   async function loadMcpStatus(checkHealth = false) {
     setMcpLoading(true)
     try {
       const data = await api(checkHealth ? '/agent/mcp/health' : '/agent/mcp/status')
       setMcpStatus(data)
+      if (!data.available) setMcpEnabled(false)
     } catch (error) {
       notify(error.message, 'error')
     } finally {
@@ -156,6 +181,14 @@ export default function AskWorkspace({ notify }) {
     }
   }
 
+  function openKnowledgeSource(pageId) {
+    if (pageId && onOpenSource) {
+      onOpenSource(pageId)
+      return
+    }
+    notify('该来源没有对应的 Wiki 页面', 'error')
+  }
+
   return (
     <div className="ask-workspace">
       <div className="ask-layout">
@@ -182,20 +215,34 @@ export default function AskWorkspace({ notify }) {
             {sessionsLoading && <div className="inline-loading"><LoaderCircle size={16} className="spin" /> 加载中</div>}
             {!sessionsLoading && sessions.length === 0 && <div className="empty-inline">没有匹配的对话</div>}
             {sessions.map((session) => (
-              <button
+              <div
                 key={session.session_id}
-                className={`${session.session_id === sessionId ? 'session-row active' : 'session-row'}${session.match_snippet ? ' with-snippet' : ''}`}
-                type="button"
-                disabled={loading || sessionOpening}
-                onClick={() => openSession(session)}
+                className={`${session.session_id === sessionId ? 'session-row active' : 'session-row'}${session.match_snippet ? ' with-snippet' : ''}${loading || sessionOpening || sessionDeleting ? ' disabled' : ''}`}
               >
-                <MessageSquareText size={15} />
-                <span>
-                  <strong>{session.title || '新对话'}</strong>
-                  <small>{session.message_count || 0} 条消息 · {formatDate(session.updated_at)}</small>
-                  {session.match_snippet && <em>{session.match_snippet}</em>}
-                </span>
-              </button>
+                <button
+                  className="session-open-button"
+                  type="button"
+                  disabled={loading || sessionOpening || sessionDeleting}
+                  onClick={() => openSession(session)}
+                >
+                  <MessageSquareText size={15} />
+                  <span>
+                    <strong>{session.title || '新对话'}</strong>
+                    <small>{session.message_count || 0} 条消息 · {formatDate(session.updated_at)}</small>
+                    {session.match_snippet && <em>{session.match_snippet}</em>}
+                  </span>
+                </button>
+                <button
+                  className="session-delete-button"
+                  type="button"
+                  disabled={loading || sessionOpening || sessionDeleting}
+                  title={`删除对话：${session.title || '新对话'}`}
+                  aria-label={`删除对话：${session.title || '新对话'}`}
+                  onClick={() => setDeleteSessionTarget(session)}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             ))}
           </div>
         </aside>
@@ -204,12 +251,9 @@ export default function AskWorkspace({ notify }) {
           <header className="workspace-titlebar">
             <div><span className="eyebrow">可信问答</span><h1>基于你的 Wiki 寻找答案</h1></div>
             <div className="ask-title-actions">
-              <button className="secondary-button" type="button" onClick={toggleMcpPanel} aria-expanded={mcpOpen}><Server size={15} /> MCP</button>
               <button className="secondary-button" type="button" onClick={resetSession} disabled={loading}><RotateCcw size={15} /> 新会话 <span className="session-code">#{sessionLabel}</span></button>
             </div>
           </header>
-
-          {mcpOpen && <McpStatusPanel loading={mcpLoading} status={mcpStatus} onRefresh={() => loadMcpStatus(true)} />}
 
           <div className="conversation">
             {messages.length === 0 && (
@@ -234,12 +278,36 @@ export default function AskWorkspace({ notify }) {
                 onConfirmFeedback={confirmAnswerFeedback}
                 onFlagResponse={openFeedback}
                 onRetryFeedback={retryAnswerFeedback}
+                onOpenSource={openKnowledgeSource}
               />
             ))}
             {loading && <div className="answer-loading"><LoaderCircle size={18} className="spin" /> {liveStage}</div>}
           </div>
 
           <form className="ask-composer" onSubmit={sendQuery}>
+            <div className="composer-toolbar">
+              <label className={`mcp-query-toggle${mcpEnabled ? ' active' : ''}`}>
+                <input
+                  type="checkbox"
+                  checked={mcpEnabled}
+                  disabled={loading || (mcpStatus && !mcpStatus.available)}
+                  onChange={(event) => {
+                    const nextEnabled = event.target.checked
+                    setMcpEnabled(nextEnabled)
+                    if (nextEnabled && !mcpStatus) {
+                      setMcpOpen(true)
+                      loadMcpStatus(false)
+                    }
+                  }}
+                />
+                <Server size={15} />
+                <span><strong>本次启用 MCP</strong><small>{mcpStatus && !mcpStatus.available ? 'MCP 尚未配置' : (mcpEnabled ? '本次问题允许外部研究' : '仅使用本地 Wiki')}</small></span>
+              </label>
+              <button className="composer-status-button" type="button" onClick={toggleMcpPanel} aria-expanded={mcpOpen} title="查看 MCP 配置状态">
+                {mcpStatus ? (mcpStatus.available ? '已配置' : '未配置') : '查看状态'}
+              </button>
+            </div>
+            {mcpOpen && <McpStatusPanel loading={mcpLoading} status={mcpStatus} onRefresh={() => loadMcpStatus(true)} />}
             <textarea value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
@@ -307,6 +375,22 @@ export default function AskWorkspace({ notify }) {
               <textarea value={feedbackNote} onChange={(event) => setFeedbackNote(event.target.value)} maxLength="1000" rows="4" />
             </label>
           </div>
+        </Modal>
+      )}
+      {deleteSessionTarget && (
+        <Modal
+          title="删除对话"
+          onClose={() => !sessionDeleting && setDeleteSessionTarget(null)}
+          actions={(
+            <>
+              <button className="secondary-button" type="button" disabled={sessionDeleting} onClick={() => setDeleteSessionTarget(null)}>取消</button>
+              <button className="danger-button" type="button" disabled={sessionDeleting} onClick={deleteSession}>
+                {sessionDeleting ? <><LoaderCircle size={15} className="spin" /> 正在删除</> : <><Trash2 size={15} /> 删除</>}
+              </button>
+            </>
+          )}
+        >
+          <p>将永久删除“{deleteSessionTarget.title || '新对话'}”及其消息记录。</p>
         </Modal>
       )}
     </div>

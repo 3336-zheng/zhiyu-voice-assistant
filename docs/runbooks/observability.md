@@ -44,6 +44,8 @@ OBSERVABILITY_TRACE_ALLOW_REMOTE=false
 
 日志按文件大小轮转。保持 `OBSERVABILITY_CAPTURE_CONTENT=false` 时，追踪只记录统计和阶段状态；API Key、Prompt、Wiki 正文、转写全文及外部网页正文不应进入日志。Langfuse 与 OpenTelemetry 是可选导出层，默认关闭，导出异常不会影响主请求。
 
+默认上线配额为：`app.log` 和 `error.log` 单文件 `10 MB`，各保留 `7` 个备份。按单个日志计算，活动文件加备份文件最多约 `80 MB`；两类日志合计约 `160 MB`。这是文件大小上限，不是固定行数上限，避免长错误堆栈或较大的结构化事件突破磁盘预算。
+
 ## 错误边界
 
 稳定错误码用于分类，不替代底层异常。常见类别包括模型供应商、Embedding、Rerank、检索、MCP、Agent 执行、索引和页面版本冲突。界面只展示脱敏后的摘要，完整堆栈仅保存在本机错误日志中。

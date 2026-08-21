@@ -11,6 +11,8 @@ from enum import Enum
 
 from backend.app.core.config import settings
 from backend.app.core.ttl_cache import TTLCache
+from backend.app.core.observability import record_context_usage
+from backend.app.services.memory.context_assembler import estimate_messages_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +185,7 @@ class CRAGGraderService:
                     )
                 }
             ]
+            self._record_context_usage("agent.crag_grade", messages, 700)
 
             parameters = {
                 "type": "object",
@@ -447,6 +450,7 @@ class CRAGGraderService:
                     "content": f"{task_context}\n\n候选文档：\n{doc_text}\n\n请提取关键信息："
                 }
             ]
+            self._record_context_usage("agent.crag_refine", messages, 400)
 
             refined = self.llm_service.chat(
                 messages=messages,
@@ -481,6 +485,33 @@ class CRAGGraderService:
         if intent:
             lines.append(f"Planner 结构化意图：{intent}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _record_context_usage(
+        stage: str,
+        messages: List[Dict[str, str]],
+        output_reserved_tokens: int,
+    ) -> None:
+        """记录 CRAG 手工组装提示词的预算拆分。"""
+        total_budget = settings.llm_context_window_tokens
+        input_budget = max(0, total_budget - output_reserved_tokens)
+        system_tokens = estimate_messages_tokens(messages[:1])
+        current_tokens = estimate_messages_tokens(messages[1:])
+        record_context_usage(
+            stage,
+            {
+                "total_budget": total_budget,
+                "input_budget": input_budget,
+                "output_reserved_tokens": output_reserved_tokens,
+                "used_tokens": system_tokens + current_tokens,
+                "system_tokens": system_tokens,
+                "summary_tokens": 0,
+                "recent_tokens": 0,
+                "current_tokens": current_tokens,
+                "dropped_recent_messages": 0,
+                "truncated": False,
+            },
+        )
 
     @staticmethod
     def _format_documents(documents: List[Dict], *, content_limit: int) -> str:

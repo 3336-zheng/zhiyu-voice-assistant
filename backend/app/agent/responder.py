@@ -11,6 +11,7 @@ from backend.app.agent.models import (
     Plan, ExecutionResult, AgentResponse, IntentType
 )
 from backend.app.core.config import settings
+from backend.app.core.observability import record_context_usage
 from backend.app.services.memory.context_assembler import ContextAssembler
 from backend.app.services.retrieval.token_budget_service import limit_context, serialize_context
 
@@ -168,10 +169,11 @@ class Responder:
             system_messages=[{"role": "system", "content": RESPONSE_GENERATION_PROMPT}],
             history=context,
             current_messages=[current_message],
-            output_token_reserve=1000,
+            output_token_reserve=settings.llm_response_max_tokens,
         )
         messages = assembled.messages
         result.context_stats["model_context"] = assembled.stats()
+        record_context_usage("agent.generation", assembled.stats())
         logger.info("[responder] 上下文装配统计: %s", assembled.stats())
 
         if token_callback is None:
@@ -519,6 +521,8 @@ class Responder:
                 "page_revision": r.get("page_revision"),
                 "title": r.get("title"),
                 "score": r.get("rerank_score"),
+                "rerank_score": r.get("rerank_score"),
+                "rrf_score": r.get("rrf_score"),
                 "source_type": r.get("source_type", "note"),
                 "source_uri": r.get("source_uri"),
                 "source_url": r.get("source_url"),

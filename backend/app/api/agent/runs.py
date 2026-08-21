@@ -46,6 +46,7 @@ async def agent_chat(request: AgentChatRequest, db: Session = Depends(get_db)):
             request.query.strip(),
             session_id=request.session_id,
             db=db,
+            allow_external_research=request.allow_external_research,
         )
         return present_agent_response(response)
     except Exception as exc:
@@ -63,7 +64,11 @@ async def agent_chat_stream(request: AgentChatRequest):
     session_id = request.session_id or f"session_{uuid.uuid4().hex[:16]}"
     runtime = get_agent_runtime_service()
     try:
-        run = await runtime.start(request.query.strip(), session_id)
+        run = await runtime.start(
+            request.query.strip(),
+            session_id,
+            allow_external_research=request.allow_external_research,
+        )
     except AgentRunConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

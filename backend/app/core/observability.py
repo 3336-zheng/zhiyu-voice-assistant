@@ -26,12 +26,18 @@ _model_usage: ContextVar[Optional[List[Dict[str, Any]]]] = ContextVar(
     "model_usage",
     default=None,
 )
+_context_usage: ContextVar[Optional[Dict[str, Dict[str, Any]]]] = ContextVar(
+    "context_usage",
+    default=None,
+)
 _recent_traces: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _recent_traces_lock = threading.RLock()
 _recent_trace_limit = 500
 
 
-def start_request(request_id: Optional[str] = None) -> Tuple[str, Token, Token, Token, Token]:
+def start_request(
+    request_id: Optional[str] = None,
+) -> Tuple[str, Token, Token, Token, Token, Token]:
     """初始化请求上下文，并返回可用于恢复上下文的 Token。"""
     normalized = (request_id or "").strip()
     if not REQUEST_ID_PATTERN.fullmatch(normalized):
@@ -40,7 +46,8 @@ def start_request(request_id: Optional[str] = None) -> Tuple[str, Token, Token, 
     timings_token = _stage_timings.set({})
     timeline_token = _execution_timeline.set([])
     usage_token = _model_usage.set([])
-    return normalized, request_token, timings_token, timeline_token, usage_token
+    context_token = _context_usage.set({})
+    return normalized, request_token, timings_token, timeline_token, usage_token, context_token
 
 
 def reset_request(
@@ -48,11 +55,13 @@ def reset_request(
     timings_token: Token,
     timeline_token: Token,
     usage_token: Token,
+    context_token: Token,
 ) -> None:
     """恢复进入请求前的上下文。"""
     _stage_timings.reset(timings_token)
     _execution_timeline.reset(timeline_token)
     _model_usage.reset(usage_token)
+    _context_usage.reset(context_token)
     _request_id.reset(request_token)
 
 
@@ -134,11 +143,16 @@ def record_model_usage(
     operation: Optional[str] = None,
     finish_reason: Optional[str] = None,
     truncated: bool = False,
+    token_budget: Optional[int] = None,
+    context_window_tokens: Optional[int] = None,
 ) -> None:
     """记录一次模型尝试，不包含提示词、答案或密钥。"""
     usage = _model_usage.get()
     if usage is None:
         return
+    normalized_budget = max(0, int(token_budget or 0))
+    normalized_context_window = max(0, int(context_window_tokens or 0))
+    input_budget = max(0, normalized_context_window - normalized_budget)
     usage.append(
         {
             "provider": provider,
@@ -154,6 +168,11 @@ def record_model_usage(
             "operation": operation,
             "finish_reason": finish_reason,
             "truncated": bool(truncated),
+            "token_budget": normalized_budget,
+            "token_remaining": max(0, normalized_budget - int(completion_tokens or 0)),
+            "context_window_tokens": normalized_context_window,
+            "input_budget": input_budget,
+            "input_remaining": max(0, input_budget - int(prompt_tokens or 0)),
         }
     )
 
@@ -167,9 +186,43 @@ def get_model_usage() -> Dict[str, Any]:
         "prompt_tokens": sum(item["prompt_tokens"] for item in calls),
         "completion_tokens": sum(item["completion_tokens"] for item in calls),
         "total_tokens": sum(item["total_tokens"] for item in calls),
+        "output_token_budget": sum(item.get("token_budget", 0) for item in calls),
+        "output_token_remaining": sum(item.get("token_remaining", 0) for item in calls),
+        "input_token_budget": sum(item.get("input_budget", 0) for item in calls),
+        "input_token_remaining": sum(item.get("input_remaining", 0) for item in calls),
+        "context_window_tokens": sum(
+            item.get("context_window_tokens", 0) for item in calls
+        ),
         "estimated_cost": round(sum(item["estimated_cost"] for item in calls), 8),
         "fallback_used": any(item["fallback_used"] for item in calls),
         "truncated": any(item.get("truncated", False) for item in calls),
+    }
+
+
+def record_context_usage(stage: str, stats: Dict[str, Any]) -> None:
+    """记录一个模型上下文装配阶段的预算拆分，不保存正文。"""
+    usage = _context_usage.get()
+    if usage is None:
+        return
+    safe_stats = {
+        key: value
+        for key, value in (stats or {}).items()
+        if isinstance(value, (bool, int, float, str))
+    }
+    base_stage = str(stage)
+    stage_key = base_stage
+    sequence = 2
+    while stage_key in usage:
+        stage_key = f"{base_stage}#{sequence}"
+        sequence += 1
+    usage[stage_key] = safe_stats
+
+
+def get_context_usage() -> Dict[str, Dict[str, Any]]:
+    """返回各模型阶段的上下文预算拆分。"""
+    return {
+        str(stage): dict(stats)
+        for stage, stats in (_context_usage.get() or {}).items()
     }
 
 
@@ -182,10 +235,17 @@ def store_current_trace(
     total_ms: float,
     status: Optional[str] = None,
     trace_type: str = "http",
+    query: Optional[str] = None,
+    answer_quality: Optional[Dict[str, Any]] = None,
+    retrieval_stats: Optional[Dict[str, Any]] = None,
+    timeline: Optional[List[Dict[str, Any]]] = None,
+    model_usage: Optional[Dict[str, Any]] = None,
+    token_budget: Optional[Dict[str, Any]] = None,
+    context_usage: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """保存近期请求的安全快照，供本地诊断页查询。"""
-    timeline = get_execution_timeline()
-    errors = [item for item in timeline if item.get("error_code")]
+    """保存近期 Agent 查询的安全快照，供本地运行追踪查询。"""
+    timeline_items = timeline if timeline is not None else get_execution_timeline()
+    errors = [item for item in timeline_items if item.get("error_code")]
     snapshot = {
         "request_id": request_id,
         "trace_type": trace_type,
@@ -195,11 +255,21 @@ def store_current_trace(
         "status_code": int(status_code),
         "total_ms": round(float(total_ms), 3),
         "stage_timings": get_stage_timings(),
-        "timeline": timeline,
-        "model_usage": get_model_usage(),
+        "timeline": deepcopy(timeline_items),
+        "model_usage": deepcopy(model_usage if model_usage is not None else get_model_usage()),
         "error": deepcopy(errors[-1]) if errors else None,
         "completed_at": time.time(),
     }
+    if query is not None:
+        snapshot["query"] = query
+    if answer_quality is not None:
+        snapshot["answer_quality"] = deepcopy(answer_quality)
+    if retrieval_stats is not None:
+        snapshot["retrieval_stats"] = deepcopy(retrieval_stats)
+    if token_budget is not None:
+        snapshot["token_budget"] = deepcopy(token_budget)
+    if context_usage is not None:
+        snapshot["context_usage"] = deepcopy(context_usage)
     with _recent_traces_lock:
         _recent_traces[request_id] = deepcopy(snapshot)
         _recent_traces.move_to_end(request_id)
@@ -215,21 +285,24 @@ def get_recent_trace(request_id: str) -> Optional[Dict[str, Any]]:
 
 
 def list_recent_traces(limit: int = 50) -> List[Dict[str, Any]]:
-    """按完成时间倒序返回摘要，不包含模型输入输出。"""
+    """按完成时间倒序返回 Agent 查询摘要，不包含模型输入输出。"""
     normalized_limit = max(1, min(int(limit), 100))
     with _recent_traces_lock:
-        snapshots = list(reversed(_recent_traces.values()))[:normalized_limit]
+        snapshots = [
+            item
+            for item in reversed(_recent_traces.values())
+            if item.get("trace_type") == "agent"
+        ][:normalized_limit]
     return [
         {
             "request_id": item["request_id"],
             "trace_type": item["trace_type"],
-            "method": item["method"],
-            "path": item["path"],
+            "query": item.get("query", ""),
             "status": item["status"],
-            "status_code": item["status_code"],
             "total_ms": item["total_ms"],
             "completed_at": item["completed_at"],
             "error_code": (item.get("error") or {}).get("error_code"),
+            **(item.get("answer_quality") or {}),
         }
         for item in snapshots
     ]

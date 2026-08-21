@@ -22,6 +22,7 @@ const views = {
 
 export default function App() {
   const [activeView, setActiveView] = useState('wiki')
+  const [wikiTarget, setWikiTarget] = useState(null)
   const [toast, setToast] = useState(null)
   const [mobileNav, setMobileNav] = useState(false)
 
@@ -32,6 +33,13 @@ export default function App() {
 
   function openView(view) {
     setActiveView(view)
+    setMobileNav(false)
+  }
+
+  function openWikiPage(pageId) {
+    if (!pageId) return
+    setWikiTarget({ pageId, openedAt: Date.now() })
+    setActiveView('wiki')
     setMobileNav(false)
   }
 
@@ -67,8 +75,8 @@ export default function App() {
         </header>
 
         <div className="view-container">
-          {activeView === 'wiki' && <WikiWorkspace notify={notify} />}
-          {activeView === 'ask' && <AskWorkspace notify={notify} />}
+          {activeView === 'wiki' && <WikiWorkspace notify={notify} openPage={wikiTarget} />}
+          {activeView === 'ask' && <AskWorkspace notify={notify} onOpenSource={openWikiPage} />}
           {activeView === 'capture' && <CaptureWorkspace notify={notify} onSaved={() => openView('wiki')} />}
           {activeView === 'diagnostics' && <DiagnosticsWorkspace notify={notify} />}
         </div>

@@ -14,6 +14,8 @@ from backend.app.core.config import settings
 from backend.app.core.database import SessionLocal
 from backend.app.models.conversation import Conversation, ConversationMessage
 from backend.app.services.retrieval.token_budget_service import estimate_tokens, truncate_text
+from backend.app.services.memory.context_assembler import estimate_messages_tokens
+from backend.app.core.observability import record_context_usage
 
 logger = logging.getLogger(__name__)
 
@@ -333,10 +335,26 @@ class MemoryService:
                         "content": f"已有摘要：\n{previous_summary}\n\n新增对话：\n{conversation_text}"
                     }
                 ]
+                record_context_usage(
+                    "memory.summary",
+                    {
+                        "total_budget": self.summary_input_token_budget + self.summary_token_budget,
+                        "input_budget": self.summary_input_token_budget,
+                        "output_reserved_tokens": self.summary_token_budget,
+                        "used_tokens": estimate_messages_tokens(summary_messages),
+                        "system_tokens": estimate_messages_tokens(summary_messages[:1]),
+                        "summary_tokens": estimate_tokens(previous_summary),
+                        "recent_tokens": estimate_tokens(conversation_text),
+                        "current_tokens": 0,
+                        "dropped_recent_messages": max(0, len(messages_to_summarize) - len(selected_messages)),
+                        "truncated": len(selected_messages) < len(messages_to_summarize),
+                    },
+                )
 
                 summary = llm_service.chat(
                     summary_messages,
                     max_tokens=self.summary_token_budget,
+                    trace_name="memory.summary",
                 )
                 if not summary or not str(summary).strip():
                     return

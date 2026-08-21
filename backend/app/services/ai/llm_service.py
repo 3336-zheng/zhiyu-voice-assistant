@@ -125,6 +125,7 @@ class LLMService:
         error: Optional[Exception] = None,
         operation: Optional[str] = None,
         finish_reason: Optional[str] = None,
+        token_budget: Optional[int] = None,
     ) -> None:
         prompt_tokens, completion_tokens, total_tokens = self._usage_values(response)
         resolved_finish_reason = finish_reason or self._finish_reason(response)
@@ -146,6 +147,8 @@ class LLMService:
             operation=operation,
             finish_reason=resolved_finish_reason,
             truncated=resolved_finish_reason == "length",
+            token_budget=token_budget,
+            context_window_tokens=settings.llm_context_window_tokens,
         )
 
     @staticmethod
@@ -183,6 +186,7 @@ class LLMService:
                     fallback_used=fallback_used,
                     response=response,
                     operation=operation,
+                    token_budget=attempt_kwargs.get("max_tokens"),
                 )
                 return response, model, fallback_used
             except AgentRunCancelled:
@@ -196,6 +200,7 @@ class LLMService:
                     fallback_used=fallback_used,
                     error=exc,
                     operation=operation,
+                    token_budget=attempt_kwargs.get("max_tokens"),
                 )
                 last_error = exc
                 can_fallback = index == 0 and len(attempts) > 1 and self._is_retryable_error(exc)
@@ -552,6 +557,7 @@ class LLMService:
                     response=final_chunk,
                     operation=trace_name,
                     finish_reason=finish_reason,
+                    token_budget=kwargs.get("max_tokens"),
                 )
                 if finish_reason == "length":
                     logger.warning(
@@ -570,6 +576,7 @@ class LLMService:
                     fallback_used=fallback_used,
                     error=exc,
                     operation=trace_name,
+                    token_budget=kwargs.get("max_tokens"),
                 )
                 can_fallback = (
                     not emitted

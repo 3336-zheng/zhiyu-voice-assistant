@@ -27,6 +27,7 @@ from backend.app.core.observability import (
     record_error,
     reset_request,
     start_request,
+    get_recent_trace,
     store_current_trace,
 )
 from backend.app.models.observability import AgentRun
@@ -69,6 +70,7 @@ class RuntimeRun:
     run_id: str
     session_id: str
     query: str
+    allow_external_research: bool = False
     status: AgentRunStatus = AgentRunStatus.PENDING
     sequence: int = 0
     events: List[AgentRuntimeEvent] = field(default_factory=list)
@@ -119,12 +121,21 @@ class AgentRuntimeService:
             "agent_max_iterations": settings.agent_max_iterations,
             "run_timeout_seconds": settings.agent_run_timeout_seconds,
             "tool_context_token_budget": settings.agent_tool_context_token_budget,
+            "llm_context_window_tokens": settings.llm_context_window_tokens,
+            "llm_max_tokens": settings.llm_max_tokens,
+            "llm_response_max_tokens": settings.llm_response_max_tokens,
             "rag_v2_enabled": settings.rag_v2_enabled,
             "rag_parent_child_enabled": settings.rag_parent_child_enabled,
             "rag_context_token_budget": settings.rag_context_token_budget,
         }
 
-    async def start(self, query: str, session_id: str) -> RuntimeRun:
+    async def start(
+        self,
+        query: str,
+        session_id: str,
+        *,
+        allow_external_research: bool = False,
+    ) -> RuntimeRun:
         """创建并启动一次运行；同一会话只允许一个活动运行。"""
         async with self._lock:
             self._cleanup_finished_runs()
@@ -138,6 +149,7 @@ class AgentRuntimeService:
                 run_id=str(uuid.uuid4()),
                 session_id=session_id,
                 query=query,
+                allow_external_research=bool(allow_external_research),
             )
             self._runs[run.run_id] = run
             self._active_sessions[session_id] = run.run_id
@@ -207,6 +219,7 @@ class AgentRuntimeService:
             timings_token,
             timeline_token,
             usage_token,
+            context_token,
         ) = start_request(run.run_id)
         db = self._session_factory()
         try:
@@ -218,6 +231,7 @@ class AgentRuntimeService:
                     event_callback=event_callback,
                     cancel_check=cancel_check,
                     raise_errors=True,
+                    allow_external_research=run.allow_external_research,
                 ),
                 timeout=settings.agent_run_timeout_seconds,
             )
@@ -313,10 +327,32 @@ class AgentRuntimeService:
                 total_ms=duration_ms,
                 status=run.status.value,
                 trace_type="agent",
+                query=run.query,
+                answer_quality=(
+                    {
+                        "confidence": run.response.confidence,
+                        "evidence_status": run.response.evidence_status,
+                        "evidence_score": run.response.evidence_score,
+                        "evidence_source_count": run.response.evidence_source_count,
+                        "evidence_reason": run.response.evidence_reason,
+                    }
+                    if run.response
+                    else None
+                ),
+                retrieval_stats=run.response.retrieval_stats if run.response else None,
+                timeline=run.response.timeline if run.response else None,
+                model_usage=run.response.model_usage if run.response else None,
+                token_budget=run.response.token_budget if run.response else None,
             )
             db.close()
             await asyncio.to_thread(self._persist_terminal, run)
-            reset_request(request_token, timings_token, timeline_token, usage_token)
+            reset_request(
+                request_token,
+                timings_token,
+                timeline_token,
+                usage_token,
+                context_token,
+            )
             async with self._lock:
                 if self._active_sessions.get(run.session_id) == run.run_id:
                     self._active_sessions.pop(run.session_id, None)
@@ -500,14 +536,28 @@ class AgentRuntimeService:
             row.response = run.response.response if run.response else None
             row.error = run.error
             row.events = run.persisted_events
+            row.execution_time_ms = int(
+                ((run.finished_at or time.time()) - run.started_at) * 1000
+            )
             row.completed_at = datetime.now(timezone.utc)
             row.updated_at = row.completed_at
             if run.response:
-                row.execution_time_ms = run.response.execution_time_ms
                 row.timeline = run.response.timeline
                 row.retrieval_stats = run.response.retrieval_stats
                 row.model_usage = run.response.model_usage
                 row.intent = run.response.plan.intent.value if run.response.plan else None
+                snapshot = dict(row.runtime_snapshot or {})
+                snapshot["token_budget"] = run.response.token_budget or {}
+                row.runtime_snapshot = snapshot
+            else:
+                trace = get_recent_trace(run.run_id) or {}
+                row.timeline = trace.get("timeline") or row.timeline
+                row.retrieval_stats = trace.get("retrieval_stats") or row.retrieval_stats
+                row.model_usage = trace.get("model_usage") or row.model_usage
+                if trace.get("answer_quality"):
+                    snapshot = dict(row.runtime_snapshot or {})
+                    snapshot["answer_quality"] = trace["answer_quality"]
+                    row.runtime_snapshot = snapshot
             db.commit()
         except Exception:
             db.rollback()

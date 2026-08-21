@@ -32,7 +32,6 @@ from .core.observability import (
     record_timing,
     reset_request,
     start_request,
-    store_current_trace,
 )
 
 configure_logging(settings)
@@ -52,7 +51,14 @@ class RequestContextMiddleware:
             return
 
         headers = Headers(scope=scope)
-        request_id, request_token, timings_token, timeline_token, usage_token = start_request(
+        (
+            request_id,
+            request_token,
+            timings_token,
+            timeline_token,
+            usage_token,
+            context_token,
+        ) = start_request(
             headers.get("X-Request-ID")
         )
         started = time.perf_counter()
@@ -109,14 +115,6 @@ class RequestContextMiddleware:
             total_ms = (time.perf_counter() - started) * 1000
             record_timing("http.total", total_ms)
             request_path = scope.get("path") or ""
-            if not request_path.startswith("/api/observability"):
-                store_current_trace(
-                    request_id=request_id,
-                    method=scope.get("method") or "HTTP",
-                    path=request_path,
-                    status_code=status_code,
-                    total_ms=total_ms,
-                )
             log_event(
                 logger,
                 logging.INFO,
@@ -128,7 +126,13 @@ class RequestContextMiddleware:
                 path=request_path,
                 status_code=status_code,
             )
-            reset_request(request_token, timings_token, timeline_token, usage_token)
+            reset_request(
+                request_token,
+                timings_token,
+                timeline_token,
+                usage_token,
+                context_token,
+            )
 
 
 # 创建应用

@@ -19,9 +19,11 @@ from backend.app.core.database import SessionLocal
 from backend.app.core.config import settings
 from backend.app.core.observability import (
     get_execution_timeline,
+    get_context_usage,
     get_model_usage,
     get_request_id,
     record_timing,
+    store_current_trace,
     timed_stage,
 )
 from backend.app.models.observability import AgentRun
@@ -87,6 +89,7 @@ class PlanExecuteAgent:
         event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         raise_errors: bool = False,
+        allow_external_research: bool = False,
     ) -> AgentResponse:
         """
         执行 Agent 主流程（使用 LangGraph 图状态机）
@@ -193,6 +196,7 @@ class PlanExecuteAgent:
                     event_callback,
                     cancel_check,
                     fast_path=fast_path,
+                    allow_external_research=allow_external_research,
                 )
             else:
                 response = await self._run_tool_plan(
@@ -204,6 +208,7 @@ class PlanExecuteAgent:
                     start_time,
                     event_callback,
                     cancel_check,
+                    allow_external_research=allow_external_research,
                 )
 
             self._raise_if_cancelled(cancel_check)
@@ -212,6 +217,7 @@ class PlanExecuteAgent:
             record_timing("agent.total", response.execution_time_ms)
             self._attach_observability(response)
             self._save_agent_run(response, db)
+            self._store_agent_trace(response)
 
             logger.info(f"Agent 处理完成，总耗时 {response.execution_time_ms}ms")
             return response
@@ -235,6 +241,7 @@ class PlanExecuteAgent:
             record_timing("agent.total", response.execution_time_ms or 0)
             self._attach_observability(response)
             self._save_agent_run(response, db)
+            self._store_agent_trace(response)
             return response
 
         finally:
@@ -264,6 +271,7 @@ class PlanExecuteAgent:
         start_time: float,
         event_callback: Optional[Callable[[str, Dict[str, Any]], None]],
         cancel_check: Optional[Callable[[], bool]],
+        allow_external_research: bool = False,
     ) -> AgentResponse:
         """执行只读工具计划，并在失败或空结果时进行有限重规划。"""
         policy = self._get_plan_policy()
@@ -361,6 +369,7 @@ class PlanExecuteAgent:
                     start_time,
                     event_callback,
                     cancel_check,
+                    allow_external_research=allow_external_research,
                 )
             current_plan = next_plan
 
@@ -431,6 +440,7 @@ class PlanExecuteAgent:
         event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         fast_path: bool = False,
+        allow_external_research: bool = False,
     ) -> AgentResponse:
         """执行只读的 Agentic RAG 图。"""
         from backend.app.agent.graph import get_agent_graph
@@ -498,7 +508,9 @@ class PlanExecuteAgent:
             evidence_source_count=final_state.get("evidence_source_count", evidence.source_count),
             evidence_reason=final_state.get("evidence_reason", evidence.reason),
             external_research_available=(
-                evidence_status == "insufficient" and settings.mcp_research_available()
+                allow_external_research
+                and evidence_status == "insufficient"
+                and settings.mcp_research_available()
             ),
             retrieval_stats=final_state.get("retrieval_stats"),
             timestamp=datetime.now(),
@@ -510,8 +522,342 @@ class PlanExecuteAgent:
         """把请求级追踪快照附加到响应，供前端和持久化使用。"""
         response.request_id = get_request_id()
         if settings.observability_enabled:
-            response.timeline = get_execution_timeline()
+            # 先冻结本次模型调用快照，再把调用结果映射到时间线节点。
             response.model_usage = get_model_usage()
+            response.token_budget = PlanExecuteAgent._build_token_budget(
+                response,
+                get_context_usage(),
+            )
+            response.timeline = PlanExecuteAgent._enrich_timeline(
+                get_execution_timeline(),
+                response,
+            )
+
+    @staticmethod
+    def _build_token_budget(
+        response: AgentResponse,
+        context_usage: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """汇总本次请求的模型预算、RAG 上下文预算和工具上下文预算。"""
+        usage = response.model_usage or {}
+        retrieval = response.retrieval_stats or {}
+        calls = list(usage.get("calls") or [])
+        output_budget = int(usage.get("output_token_budget", 0) or 0)
+        output_used = int(usage.get("completion_tokens", 0) or 0)
+        input_budget = int(usage.get("input_token_budget", 0) or 0)
+        input_used = int(usage.get("prompt_tokens", 0) or 0)
+
+        tool_used = 0
+        execution = response.execution_result
+        tool_steps = []
+        response_summary = None
+        if execution:
+            tool_used = sum(int(item.context_tokens or 0) for item in execution.results)
+            tool_steps = [
+                {
+                    "step_id": item.step_id,
+                    "tool": item.tool_name.value,
+                    "budget": settings.agent_tool_context_token_budget,
+                    "used": int(item.context_tokens or 0),
+                    "remaining": max(
+                        0,
+                        settings.agent_tool_context_token_budget - int(item.context_tokens or 0),
+                    ),
+                    "truncated": bool(item.context_truncated),
+                }
+                for item in execution.results
+            ]
+            response_summary = (execution.context_stats or {}).get("response_summary")
+        tool_budget = (
+            settings.agent_tool_context_token_budget * len(execution.results)
+            if execution
+            else 0
+        )
+
+        rag_budget = retrieval.get("token_budget")
+        rag_used = retrieval.get("context_tokens")
+        model_contexts = {}
+        for stage, stats in (context_usage or {}).items():
+            total_budget = int(stats.get("total_budget", 0) or 0)
+            used = int(stats.get("used_tokens", 0) or 0)
+            input_budget_for_stage = int(stats.get("input_budget", 0) or 0)
+            model_contexts[stage] = {
+                **stats,
+                "remaining": max(0, input_budget_for_stage - used),
+                "budget_remaining": max(0, total_budget - used),
+            }
+        return {
+            "definition": "模型输入/输出预算分别累计；RAG 和工具上下文预算独立统计，不将不同上下文窗口相加。",
+            "output": {
+                "budget": output_budget,
+                "used": output_used,
+                "remaining": max(0, output_budget - output_used),
+            },
+            "input": {
+                "budget": input_budget,
+                "used": input_used,
+                "remaining": max(0, input_budget - input_used),
+            },
+            "model": {
+                "total_used": int(usage.get("total_tokens", 0) or 0),
+                "call_count": len(calls),
+                "context_window": int(usage.get("context_window_tokens", 0) or 0),
+            },
+            "contexts": {
+                "rag": {
+                    "budget": int(rag_budget) if rag_budget is not None else None,
+                    "used": int(rag_used) if rag_used is not None else None,
+                    "remaining": (
+                        max(0, int(rag_budget) - int(rag_used))
+                        if rag_budget is not None and rag_used is not None
+                        else None
+                    ),
+                    "truncated": bool(retrieval.get("context_truncated", False)),
+                    "selected_results": int(retrieval.get("selected_results", 0) or 0),
+                },
+                "tool": {
+                    "budget": tool_budget,
+                    "used": tool_used,
+                    "remaining": max(0, tool_budget - tool_used),
+                    "per_step": settings.agent_tool_context_token_budget if execution else 0,
+                    "steps": tool_steps,
+                },
+                "model": model_contexts,
+                "response_summary": response_summary,
+                "memory": {
+                    "history_budget": settings.memory_context_token_budget,
+                    "summary_budget": settings.memory_summary_token_budget,
+                    "summary_trigger": settings.memory_summary_trigger_tokens,
+                    "summary_input_budget": settings.memory_summary_input_token_budget,
+                },
+            },
+            "calls": [
+                {
+                    "stage": call.get("operation") or "llm",
+                    "budget": int(call.get("token_budget", 0) or 0),
+                    "used": int(call.get("completion_tokens", 0) or 0),
+                    "total_used": int(call.get("total_tokens", 0) or 0),
+                    "input_tokens": int(call.get("prompt_tokens", 0) or 0),
+                    "output_tokens": int(call.get("completion_tokens", 0) or 0),
+                    "remaining": int(call.get("token_remaining", 0) or 0),
+                }
+                for call in calls
+            ],
+        }
+
+    @staticmethod
+    def _enrich_timeline(
+        timeline: List[Dict[str, Any]],
+        response: AgentResponse,
+    ) -> List[Dict[str, Any]]:
+        """为耗时节点补充安全的结构化结果，供运行追踪展开查看。"""
+        stats = response.retrieval_stats or {}
+        crag = stats.get("crag") or {}
+        quality = PlanExecuteAgent._answer_quality(response)
+        model_calls = list((response.model_usage or {}).get("calls") or [])
+        model_index = 0
+
+        def model_result_for(stage: str) -> Dict[str, Any]:
+            """按 operation 找到模型调用，补齐流式生成等没有 llm 时间线节点的阶段。"""
+            call = next(
+                (
+                    item
+                    for item in model_calls
+                    if item.get("operation") == stage
+                    or str(item.get("operation") or "").startswith(f"{stage}.")
+                ),
+                None,
+            )
+            if not call:
+                return {}
+            return {
+                key: call.get(key)
+                for key in (
+                    "model",
+                    "total_tokens",
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "token_budget",
+                    "token_remaining",
+                    "input_budget",
+                    "input_remaining",
+                )
+                if call.get(key) is not None
+            }
+
+        results: List[Dict[str, Any]] = []
+        for item in timeline:
+            stage = item.get("stage")
+            result: Optional[Dict[str, Any]] = None
+            if stage == "agent.plan":
+                plan = response.plan
+                result = {
+                    "intent": plan.intent.value if plan else None,
+                    "goal": plan.goal if plan else None,
+                    "steps": [
+                        {
+                            "step_id": step.step_id,
+                            "tool": step.tool_name.value,
+                            "description": step.description,
+                        }
+                        for step in (plan.steps if plan else [])
+                    ],
+                }
+                result.update(model_result_for("agent.plan"))
+            elif stage == "agent.fast_path":
+                result = {"mode": "fast_path", "planner_skipped": True}
+            elif stage == "agent.replan":
+                result = model_result_for("agent.replan")
+            elif stage == "agent.query_rewrite":
+                result = {
+                    "retrieval_query": stats.get("retrieval_query"),
+                    "rewritten_queries": stats.get("rewritten_queries", []),
+                }
+                result.update(model_result_for("agent.query_rewrite"))
+            elif stage in {"agent.retrieve", "retrieval.recall"}:
+                result = {
+                    key: stats.get(key, 0)
+                    for key in (
+                        "query_count",
+                        "bm25_hits",
+                        "embedding_hits",
+                        "fused_candidates",
+                        "reranked_candidates",
+                        "selected_results",
+                        "context_tokens",
+                        "token_budget",
+                    )
+                }
+            elif stage == "retrieval.embedding":
+                result = {"hits": stats.get("embedding_hits", 0)}
+            elif stage == "retrieval.bm25":
+                result = {"hits": stats.get("bm25_hits", 0)}
+            elif stage == "retrieval.fusion":
+                result = {"fused_candidates": stats.get("fused_candidates", 0)}
+            elif stage == "retrieval.fetch_chunks":
+                result = {"fetched_candidates": stats.get("reranked_candidates", 0)}
+            elif stage == "retrieval.rerank":
+                selected_documents = []
+                for source in response.sources or []:
+                    if not isinstance(source, dict):
+                        continue
+                    selected_documents.append(
+                        {
+                            "title": source.get("title")
+                            or source.get("filename")
+                            or source.get("page_id")
+                            or "知识库页面",
+                            "score": source.get("rerank_score", source.get("score")),
+                            "rrf_score": source.get("rrf_score"),
+                            "section_title": source.get("section_title"),
+                        }
+                    )
+                result = {
+                    "candidates": stats.get("reranked_candidates", 0),
+                    "selected": stats.get("quality_filtered_candidates", 0)
+                    or stats.get("selected_results", 0),
+                    "selected_documents": selected_documents,
+                }
+            elif stage == "agent.crag_grade":
+                result = {
+                    key: crag.get(key)
+                    for key in (
+                        "model_grade",
+                        "coverage",
+                        "max_score",
+                        "upper_threshold",
+                        "lower_threshold",
+                        "support_count",
+                        "limited_support_count",
+                        "incorrect_count",
+                        "accepted_count",
+                        "grading_failed",
+                        "skipped",
+                    )
+                    if key in crag
+                }
+                result.update(model_result_for("agent.crag_grade"))
+            elif stage == "agent.evidence":
+                result = quality
+            elif stage == "agent.evaluate":
+                execution = response.execution_result
+                tool_results = (execution.context_stats or {}).get("tool_results", []) if execution else []
+                tool_used = sum(int(item.get("context_tokens", 0) or 0) for item in tool_results)
+                result = {
+                    "tool_context_tokens": tool_used,
+                    "tool_context_budget": settings.agent_tool_context_token_budget * len(tool_results),
+                    "tool_steps": len(tool_results),
+                }
+            elif stage == "agent.generation":
+                result = {
+                    "answer_generated": bool(response.response),
+                    "source_count": len(response.sources or []),
+                    "evidence_status": response.evidence_status,
+                }
+                result.update(model_result_for("agent.generation"))
+            elif stage.startswith("llm."):
+                if model_index < len(model_calls):
+                    call = model_calls[model_index]
+                    model_index += 1
+                    result = {
+                        key: call.get(key)
+                        for key in (
+                            "operation",
+                            "model",
+                            "total_tokens",
+                            "prompt_tokens",
+                            "completion_tokens",
+                            "duration_ms",
+                            "success",
+                            "finish_reason",
+                            "token_budget",
+                            "token_remaining",
+                            "input_budget",
+                            "input_remaining",
+                        )
+                        if call.get(key) is not None
+                    }
+            elif stage == "agent.total":
+                result = {"total_ms": response.execution_time_ms or 0}
+
+            enriched = dict(item)
+            enriched["result"] = result or {
+                "status": item.get("status", "completed")
+            }
+            results.append(enriched)
+        return results
+
+    @staticmethod
+    def _answer_quality(response: AgentResponse) -> Dict[str, Any]:
+        """提取可展示的查询质量，不保存答案正文。"""
+        return {
+            "confidence": response.confidence,
+            "evidence_status": response.evidence_status,
+            "evidence_score": response.evidence_score,
+            "evidence_source_count": response.evidence_source_count,
+            "evidence_reason": response.evidence_reason,
+        }
+
+    @classmethod
+    def _store_agent_trace(cls, response: AgentResponse) -> None:
+        """保存 Agent 查询追踪，避免把 HTTP 请求混入运行追踪。"""
+        if not settings.observability_enabled or not response.request_id:
+            return
+        store_current_trace(
+            request_id=response.request_id,
+            method="AGENT",
+            path="agent.run",
+            status_code=200 if response.confidence > 0 else 500,
+            total_ms=response.execution_time_ms or 0,
+            status="completed" if response.confidence > 0 else "failed",
+            trace_type="agent",
+            query=response.query,
+            answer_quality=cls._answer_quality(response),
+            retrieval_stats=response.retrieval_stats,
+            timeline=response.timeline,
+            model_usage=response.model_usage,
+            token_budget=response.token_budget,
+        )
 
     @staticmethod
     def _save_agent_run(response: AgentResponse, db: Session) -> None:
@@ -537,6 +883,10 @@ class PlanExecuteAgent:
             run.timeline = response.timeline
             run.retrieval_stats = response.retrieval_stats
             run.model_usage = response.model_usage
+            runtime_snapshot = dict(run.runtime_snapshot or {})
+            runtime_snapshot["answer_quality"] = PlanExecuteAgent._answer_quality(response)
+            runtime_snapshot["token_budget"] = response.token_budget or {}
+            run.runtime_snapshot = runtime_snapshot
             db.commit()
         except Exception as exc:
             db.rollback()

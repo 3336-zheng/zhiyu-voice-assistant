@@ -21,6 +21,7 @@ from .wiki_file_store import WikiFileStore
 from .wiki_index_task_service import WikiIndexTaskService
 from .wiki_link_service import WikiLinkService
 from .wiki_revision_service import WikiRevisionService
+from .markdown_normalizer import clean_page_title
 
 ACTIVE_STATUS = "active"
 
@@ -324,7 +325,11 @@ class PageService:
         new_title = self._validate_title(title) if title is not None else page.title
         new_content = self._validate_content(content) if content is not None else current["content"]
         new_aliases = self._normalize_strings(aliases) if aliases is not None else list(page.aliases or [])
-        if new_title != page.title and page.title not in new_aliases:
+        if (
+            new_title != page.title
+            and page.title not in new_aliases
+            and clean_page_title(page.title) == page.title
+        ):
             new_aliases.append(page.title)
         new_aliases = self._normalize_strings(new_aliases, exclude={new_title})
         values = {

@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 class AgentChatRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     session_id: Optional[str] = Field(default=None, max_length=64)
+    # 仅允许本次查询在本地证据不足时进入 MCP 外部研究流程。
+    allow_external_research: bool = False
 
 
 class AgentChatResponse(BaseModel):
@@ -30,6 +32,7 @@ class AgentChatResponse(BaseModel):
     timeline: List[Dict[str, Any]] = Field(default_factory=list)
     retrieval_stats: Optional[Dict[str, Any]] = None
     model_usage: Optional[Dict[str, Any]] = None
+    token_budget: Optional[Dict[str, Any]] = None
     execution_time_ms: Optional[int] = None
     success: bool = True
 

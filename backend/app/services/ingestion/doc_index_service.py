@@ -20,6 +20,7 @@ from backend.app.core.config import settings
 from backend.app.services.ai.embedding_service import get_embedding_service
 from backend.app.services.retrieval.chroma_service import get_chroma_service
 from backend.app.services.retrieval.bm25_service import get_bm25_service
+from backend.app.services.wiki.markdown_normalizer import normalize_heading_links
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +36,13 @@ def clean_markdown_for_chunking(content: str) -> str:
     4. 合并连续空行（超过 2 个换行压缩为 2 个）
     5. 去除行首行尾多余空格
     """
-    # 1. 去除控制字符（保留换行和制表符）
+    # 1. 标题只保留可读标签，避免章节元数据携带完整 URL。
+    content = normalize_heading_links(content)
+
+    # 2. 去除控制字符（保留换行和制表符）
     content = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", content)
 
-    # 2. 去除页码模式（如 "第 1 页"、"Page 1"、"- 1 -"、"1/10" 等独立行）
+    # 3. 去除页码模式（如 "第 1 页"、"Page 1"、"- 1 -"、"1/10" 等独立行）
     content = re.sub(
         r"^\s*(第\s*\d+\s*页|Page\s*\d+|\d+\s*/\s*\d+|\-\s*\d+\s*\-)\s*$",
         "",
@@ -46,18 +50,18 @@ def clean_markdown_for_chunking(content: str) -> str:
         flags=re.MULTILINE
     )
 
-    # 3. 去除连续重复的短行（PDF 转换常见页眉页脚残留）
+    # 4. 去除连续重复的短行（PDF 转换常见页眉页脚残留）
     lines = content.split("\n")
     cleaned_lines = _remove_repeated_short_lines(lines)
     content = "\n".join(cleaned_lines)
 
-    # 4. 标题层级规范化：确保标题不跳级（如 # 之后直接 ### 补为 ##）
+    # 5. 标题层级规范化：确保标题不跳级（如 # 之后直接 ### 补为 ##）
     content = _normalize_header_levels(content)
 
-    # 5. 合并连续空行（最多保留 1 个空行）
+    # 6. 合并连续空行（最多保留 1 个空行）
     content = re.sub(r"\n{3,}", "\n\n", content)
 
-    # 6. 去除每行首尾多余空格
+    # 7. 去除每行首尾多余空格
     lines = content.split("\n")
     lines = [line.rstrip() for line in lines]
     content = "\n".join(lines)

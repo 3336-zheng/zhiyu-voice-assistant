@@ -11,6 +11,7 @@ from enum import Enum
 from backend.app.core.config import settings
 from backend.app.services.memory.context_assembler import ContextAssembler
 from backend.app.core.ttl_cache import TTLCache
+from backend.app.core.observability import record_context_usage
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,7 @@ class QueryRewriteService:
                 intent=intent,
                 instruction="请生成一个假设性的答案：",
                 output_token_reserve=200,
+                stage="agent.query_rewrite.hyde",
             )
 
             hypothetical_answer = self.llm_service.chat(
@@ -211,6 +213,7 @@ class QueryRewriteService:
                 intent=intent,
                 instruction="请完成指代消解并生成多视角检索查询：",
                 output_token_reserve=300,
+                stage="agent.query_rewrite",
             )
 
             parameters = {
@@ -273,6 +276,7 @@ class QueryRewriteService:
         intent: Optional[str],
         instruction: str,
         output_token_reserve: int,
+        stage: str,
     ) -> List[Dict[str, str]]:
         """在统一 Token 预算内装配历史、Planner 目标与当前问题。"""
         task_lines = [f"用户当前问题：{query}"]
@@ -288,6 +292,7 @@ class QueryRewriteService:
             output_token_reserve=output_token_reserve,
         )
         logger.info("Query 改写上下文装配统计: %s", assembled.stats())
+        record_context_usage(stage, assembled.stats())
         return assembled.messages
 
     @staticmethod

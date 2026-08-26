@@ -112,6 +112,7 @@ class AgentResponse(BaseModel):
     evidence_source_count: int = 0
     evidence_reason: Optional[str] = None
     external_research_available: bool = False
+    external_research_requested: bool = False
     request_id: Optional[str] = None
     timeline: List[Dict[str, Any]] = Field(default_factory=list)
     retrieval_stats: Optional[Dict[str, Any]] = None

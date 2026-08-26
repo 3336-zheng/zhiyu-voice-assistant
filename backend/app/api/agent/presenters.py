@@ -29,6 +29,7 @@ def present_agent_response(
         evidence_source_count=response.evidence_source_count,
         evidence_reason=response.evidence_reason,
         external_research_available=response.external_research_available,
+        external_research_requested=response.external_research_requested,
         request_id=response.request_id,
         timeline=response.timeline,
         retrieval_stats=response.retrieval_stats,

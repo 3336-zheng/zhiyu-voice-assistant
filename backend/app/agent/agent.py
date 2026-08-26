@@ -17,6 +17,7 @@ from backend.app.agent.responder import get_responder
 from backend.app.agent.tool_registry import AgentToolRegistry
 from backend.app.core.database import SessionLocal
 from backend.app.core.config import settings
+from backend.app.services.research.mcp_intent import is_explicit_mcp_request
 from backend.app.core.observability import (
     get_execution_timeline,
     get_context_usage,
@@ -104,6 +105,8 @@ class PlanExecuteAgent:
         """
         start_time = time.time()
         session_id = self._get_session_id(session_id)
+        explicit_mcp_request = is_explicit_mcp_request(user_query)
+        allow_external_research = allow_external_research or explicit_mcp_request
 
         logger.info(f"Agent 开始处理查询: '{user_query[:50]}...'" if len(user_query) > 50 else f"Agent 开始处理查询: '{user_query}'")
         logger.info(f"会话 ID: {session_id}")
@@ -212,6 +215,9 @@ class PlanExecuteAgent:
                 )
 
             self._raise_if_cancelled(cancel_check)
+            response.external_research_requested = (
+                explicit_mcp_request and settings.mcp_research_available()
+            )
             self._save_conversation(user_query, response, db)
             response.execution_time_ms = int((time.time() - start_time) * 1000)
             record_timing("agent.total", response.execution_time_ms)
@@ -1108,6 +1114,7 @@ class PlanExecuteAgent:
                 "evidence_source_count": response.evidence_source_count,
                 "evidence_reason": response.evidence_reason,
                 "external_research_available": response.external_research_available,
+                "external_research_requested": response.external_research_requested,
                 "action_preview": response.action_preview,
                 "request_id": response.request_id,
             },

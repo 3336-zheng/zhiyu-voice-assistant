@@ -8,6 +8,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
+from unittest.mock import sentinel
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -29,6 +30,7 @@ from backend.app.services.research.external_research_service import (
     ExternalResearchService,
 )
 from backend.app.services.research.mcp_client_service import MCPClientService
+from backend.app.services.research.mcp_intent import is_explicit_mcp_request
 
 
 class FakeLLM:
@@ -171,6 +173,14 @@ class ExternalResearchTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.status, "saved")
         self.assertIsNotNone(run.page_id)
 
+    async def test_external_research_uses_ai_llm_service(self):
+        service = ExternalResearchService()
+        with patch(
+            "backend.app.services.ai.llm_service.get_llm_service",
+            return_value=sentinel.llm,
+        ):
+            self.assertIs(service.llm, sentinel.llm)
+
     async def test_private_and_local_urls_are_rejected(self):
         service = ExternalResearchService(gateway=FakeGateway(), llm=FakeLLM())
         self.assertIsNone(await service.validate_public_url("http://127.0.0.1/admin"))
@@ -185,6 +195,46 @@ class ExternalResearchTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["tools"]["fetch"], settings.mcp_fetch_tool)
         self.assertNotIn("command", status)
         self.assertNotIn("env", status)
+
+    async def test_mcp_search_items_unwraps_firecrawl_web_results(self):
+        payload = {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "url": "https://www.firecrawl.dev/",
+                        "title": "Firecrawl",
+                        "description": "官方页面",
+                    }
+                ]
+            },
+        }
+        items = MCPClientService._search_items(payload)
+        self.assertEqual(
+            items,
+            [
+                {
+                    "url": "https://www.firecrawl.dev/",
+                    "title": "Firecrawl",
+                    "snippet": "官方页面",
+                }
+            ],
+        )
+
+    async def test_explicit_mcp_request_is_detected_without_triggering_negations(self):
+        positive_queries = [
+            "请使用 MCP 查询 Firecrawl 官方文档",
+            "调用 firecrawl 搜索最新资料",
+            "联网查一下 FastAPI 的最新版本",
+        ]
+        negative_queries = [
+            "不要使用 MCP，直接查本地 Wiki",
+            "总结本地 RAG 笔记",
+        ]
+        for query in positive_queries:
+            self.assertTrue(is_explicit_mcp_request(query), query)
+        for query in negative_queries:
+            self.assertFalse(is_explicit_mcp_request(query), query)
 
     async def test_timeout_marks_research_as_failed(self):
         settings.mcp_total_timeout_seconds = 0.01

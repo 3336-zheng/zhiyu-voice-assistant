@@ -54,6 +54,7 @@ export default function useAgentRun(notify, { allowExternalResearch = false } = 
     let lastSequence = 0
     let reconnectCount = 0
     let firstConnection = true
+    let autoResearchStarted = false
 
     const handleAgentEvent = (eventPayload, metadata) => {
       const eventType = eventPayload.type
@@ -69,6 +70,7 @@ export default function useAgentRun(notify, { allowExternalResearch = false } = 
       if (['run_completed', 'run_error', 'run_cancelled'].includes(eventType)) {
         terminalReceived = true
       }
+      const completedResponse = eventType === 'run_completed' ? (data.response || {}) : null
 
       setMessages((previous) => previous.map((message) => {
         if (message.id !== assistantId) return message
@@ -91,7 +93,7 @@ export default function useAgentRun(notify, { allowExternalResearch = false } = 
         }
         if (eventType !== 'run_completed') return message
 
-        const response = data.response || {}
+        const response = completedResponse || {}
         return {
           ...message,
           content: response.response || message.content,
@@ -101,6 +103,7 @@ export default function useAgentRun(notify, { allowExternalResearch = false } = 
           evidenceSourceCount: response.evidence_source_count,
           evidenceReason: response.evidence_reason,
           externalResearchAvailable: response.external_research_available,
+          externalResearchRequested: response.external_research_requested,
           confirmationRequired: response.confirmation_required,
           pendingActionId: response.pending_action_id,
           preview: response.action_preview || [],
@@ -112,6 +115,12 @@ export default function useAgentRun(notify, { allowExternalResearch = false } = 
           modelUsage: response.model_usage,
         }
       }))
+      if (completedResponse?.external_research_requested && !autoResearchStarted) {
+        autoResearchStarted = true
+        window.setTimeout(() => {
+          void runExternalResearch(assistantId, text)
+        }, 0)
+      }
     }
 
     try {
@@ -184,6 +193,7 @@ export default function useAgentRun(notify, { allowExternalResearch = false } = 
         evidenceSourceCount: metadata.evidence_source_count,
         evidenceReason: metadata.evidence_reason,
         externalResearchAvailable: metadata.external_research_available,
+        externalResearchRequested: metadata.external_research_requested,
         confirmationRequired: metadata.confirmation_required,
         pendingActionId: metadata.pending_action_id,
         preview: metadata.action_preview || [],

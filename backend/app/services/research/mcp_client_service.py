@@ -201,12 +201,24 @@ class MCPClientService:
     def _search_items(cls, payload: Any) -> List[Dict[str, str]]:
         values: Any = payload
         if isinstance(payload, dict):
-            for key in ("results", "items", "data", "sources"):
+            # 兼容通用搜索结果和 Firecrawl 的 data.web 包装结构。
+            for key in ("results", "items", "sources", "web", "news", "images"):
                 if isinstance(payload.get(key), list):
                     values = payload[key]
                     break
             else:
-                values = [payload]
+                nested = payload.get("data")
+                if isinstance(nested, list):
+                    values = nested
+                elif isinstance(nested, dict):
+                    for key in ("results", "items", "sources", "web", "news", "images"):
+                        if isinstance(nested.get(key), list):
+                            values = nested[key]
+                            break
+                    else:
+                        values = [payload]
+                else:
+                    values = [payload]
         if not isinstance(values, list):
             return []
 

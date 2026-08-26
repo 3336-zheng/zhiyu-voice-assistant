@@ -82,6 +82,12 @@ export default function AgentMessage({
       <div className="message-role">{message.role === 'user' ? '你' : <><MessageSquareText size={14} /> 智语</>}</div>
       <div className="message-body">
         {message.role === 'assistant' ? <MarkdownView content={message.content} stripCitationAppendix /> : message.content}
+        {message.role === 'assistant' && message.externalResearchRequested && message.researchStatus === 'loading' && (
+          <div className="evidence-warning" role="status">
+            <strong><Globe2 size={15} /> MCP 外部研究</strong>
+            <span>正在查询外部资料</span>
+          </div>
+        )}
         {message.role === 'assistant' && message.evidenceStatus === 'insufficient' && (
           <div className="evidence-warning" role="status">
             <strong>证据不足，未生成推测性答案</strong>

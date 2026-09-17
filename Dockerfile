@@ -27,7 +27,9 @@ RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua
 # 复制项目代码
 COPY main.py .
 COPY backend/ backend/
-COPY frontend/legacy/ frontend/legacy/
+# 不拷贝 frontend/legacy/：它是 backend/app/__init__.py:173 在 React 未构建时的回退路径，
+# 而上面的多阶段构建保证了 frontend/dist 必定存在（npm run build 失败则镜像构建失败），
+# 镜像内永远走不到该回退。本地开发仍需保留仓库中的 frontend/legacy/ 目录。
 COPY --from=frontend-builder /frontend/dist frontend/dist
 
 # 创建数据目录（运行时通过 volume 挂载）

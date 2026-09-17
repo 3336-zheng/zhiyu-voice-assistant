@@ -23,9 +23,12 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?必须在 .env 中设置 MYSQL_PASSWORD}
     volumes:
       - mysql_data:/var/lib/mysql
-    # 不映射端口到宿主机，只在 compose 内网互通。
-    # 需要本地工具连接调试时临时追加 ports: ["127.0.0.1:3306:3306"]，
-    # 注意绝不能写成 "3306:3306"，那会绑定 0.0.0.0 暴露到局域网
+    # 一律绑定 127.0.0.1，绝不能写成 "3316:3306"——那等同 0.0.0.0，会把数据库暴露到局域网。
+    # 用 3316 而非 3306，是因为本机已有其他项目的 MySQL 占用 3306。
+    # 映射到宿主机是为了让本地直接运行的 python main.py 能连上；
+    # 容器内的 zhiyu 服务走 compose 内网的 mysql:3306，不经过这个映射。
+    ports:
+      - "127.0.0.1:3316:3306"
     healthcheck:
       test:
         - CMD-SHELL
@@ -47,6 +50,9 @@ services:
       - "yes"
     volumes:
       - redis_data:/data
+    # 6382 避开本机其他项目已占用的 6379/6380/6381
+    ports:
+      - "127.0.0.1:6382:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -61,6 +67,9 @@ services:
     container_name: zhiyu-chroma
     volumes:
       - chroma_data:/data
+    # 8001 避开本机 api.tiwork.ai 占用的 8000
+    ports:
+      - "127.0.0.1:8001:8000"
     # 用 TCP 端口探测而非 HTTP 请求：chromadb 1.x 的健康检查路径为 /api/v2，
     # 与 0.x 的 /api/v1 不同，写死路径会在升级时静默失效。
     # 探测方式只能用 bash 的 /dev/tcp 伪设备：1.x 镜像核心已用 Rust 重写，
@@ -94,6 +103,12 @@ services:
       - WHISPER_MODEL_PATH=/app/models/whisper
       - EMBEDDING_MODEL_PATH=/app/models/embedding
       - RERANKER_MODEL_PATH=/app/models/reranker
+      # .env 里的地址是宿主机视角（127.0.0.1:3316 / 6382 / 8001），供本地直接运行使用；
+      # 容器内必须改写为 compose 内网服务名，否则 127.0.0.1 会指向容器自身。
+      # DATABASE_URL 当前仍是 SQLite，Stage 2 切换到 MySQL 时在此追加覆盖。
+      - REDIS_URL=redis://redis:6379/0
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
     # 本阶段尚未连接 chroma 容器，因此不加入依赖，避免其健康检查阻塞应用启动；
     # Stage 4 切换到 HttpClient 时再补上 chroma 依赖
     depends_on:

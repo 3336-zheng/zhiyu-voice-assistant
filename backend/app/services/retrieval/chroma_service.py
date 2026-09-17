@@ -10,6 +10,7 @@ from chromadb.config import Settings as ChromaSettings
 from typing import List, Tuple, Optional, Dict, Any
 import logging
 
+from backend.app.core import index_version
 from backend.app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -75,8 +76,8 @@ class ChromaService:
             name=self.collection_name,
             metadata={"hnsw:space": "cosine"}  # 使用余弦相似度
         )
-        # 进程内 generation 能识别“文档数量不变但正文已更新”的缓存失效场景。
-        self._generation = 0
+        # 索引版本号用来识别“文档数量不变但正文已更新”的缓存失效场景。
+        # 它存在 Redis 上而不是进程内，否则多实例时别人改了索引本进程不会知道。
 
         logger.info(
             "ChromaDB 服务初始化完成，集合: %s，Embedding Provider: %s",
@@ -495,12 +496,13 @@ class ChromaService:
             return False
 
     def mark_index_changed(self) -> None:
-        """标记绕过本服务直接写入 Chroma 的索引变更。"""
-        self._generation += 1
+        """标记索引变更。
 
-    def get_generation(self) -> int:
-        """返回当前进程内索引 generation。"""
-        return self._generation
+        本服务内部的每个写操作都会调它，外部绕过本服务直接写 Chroma 时也要手动调。
+        换句话说这里是所有索引变更的唯一汇聚点，所以全局版本号在这里递增一次就够了，
+        不需要去各个写入点分别埋点。
+        """
+        index_version.bump()
 
 
 # 全局服务实例

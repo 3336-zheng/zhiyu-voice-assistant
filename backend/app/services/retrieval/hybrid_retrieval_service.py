@@ -11,6 +11,7 @@ import math
 import re
 from urllib.parse import quote
 
+from backend.app.core import index_version
 from backend.app.core.config import settings
 from backend.app.services.retrieval.chroma_service import get_chroma_service
 from backend.app.services.retrieval.bm25_service import get_bm25_service
@@ -318,16 +319,33 @@ class HybridRetrievalService:
         return outcomes
 
     def _index_version(self) -> str:
-        """组合集合计数与 generation，识别同数量内容更新。"""
+        """检索结果缓存所用的索引版本，索引一变它就变，旧缓存自然失效。
+
+        以前这里拼的是「Chroma 文档数 : 进程内 generation」。两个来源都有问题：
+        文档数要额外往 Chroma 跑一趟；generation 只存在本进程内存里，别的实例
+        写了索引本进程毫不知情，缓存会一直端出旧结果。现在统一读全局版本号。
+        """
+        return index_version.current()
+
+    def _ensure_index_fresh(self) -> None:
+        """检索前确保本实例的 BM25 索引不落后于全局版本。
+
+        重建逻辑放在 doc_index_service（只有它知道怎么从 Chroma 拉全量数据），
+        这里延迟导入并作为回调传进去：BM25Service 直接依赖 doc_index_service
+        会形成循环导入。
+        """
         try:
-            count = self.chroma_service.collection.count()
-            generation = getattr(self.chroma_service, "get_generation", lambda: 0)()
-            return f"{int(count)}:{int(generation)}"
-        except Exception:
-            getter = getattr(self.bm25_service, "get_document_count", None)
-            if callable(getter):
-                return f"{int(getter())}:bm25"
-            return f"{len(getattr(self.bm25_service, 'corpus', {}) or {})}:bm25"
+            from backend.app.services.ingestion.doc_index_service import (
+                get_doc_index_service,
+            )
+
+            self.bm25_service.ensure_fresh(
+                lambda: get_doc_index_service().rebuild_bm25_from_persistent()
+            )
+        except Exception as exc:
+            # 刷新失败不该让整次检索失败：手上这份旧索引照样能出结果，而且
+            # 重建失败时已同步版本没有被更新，下次检索还会再试一次。
+            logger.error("BM25 索引新鲜度检查失败，沿用当前索引: %s", exc)
 
     def _retrieval_cache_key(
         self,
@@ -376,6 +394,10 @@ class HybridRetrievalService:
             cached_stats = dict(cached.get("stats") or {})
             cached_stats["cache_hit"] = True
             return {"results": cached.get("results", []), "stats": cached_stats}
+
+        # 放在缓存查询之后：命中缓存说明同版本下已经检索过一次，那次已经刷新过索引，
+        # 没必要为了一个直接返回的结果去付重建的代价。
+        self._ensure_index_fresh()
 
         recall_lists: List[List[tuple[str, float]]] = []
         bm25_count = 0
@@ -608,6 +630,7 @@ class HybridRetrievalService:
 
         try:
             logger.info("开始混合检索，查询长度=%s", len(query))
+            self._ensure_index_fresh()
 
             # Step 1: 生成查询向量
             with timed_stage("retrieval.embedding"):
@@ -747,6 +770,7 @@ class HybridRetrievalService:
             List[Dict]: 检索结果
         """
         try:
+            self._ensure_index_fresh()
             bm25_results = self.bm25_service.search(query, top_k=top_k)
             if not bm25_results:
                 return []
@@ -840,6 +864,7 @@ class HybridRetrievalService:
             List[Dict]: 检索结果
         """
         try:
+            self._ensure_index_fresh()
             query_embedding = self.embedding_service.encode(query)
 
             # 构建 ChromaDB 过滤条件

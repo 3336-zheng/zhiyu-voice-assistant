@@ -482,8 +482,14 @@ class DocIndexService:
         """
         from rank_bm25 import BM25Okapi
 
+        from ...core import index_version
+
         bm25 = self.bm25_service
-        bm25.clear_index()
+
+        # 版本号必须在读 Chroma 之前取。取到的这份数据是「version 时刻或更新」的，
+        # 记成 version 顶多让下次多重建一遍；反过来在重建结束后才取版本，就会把
+        # 重建期间别人写进去的变更也算作已同步，那部分数据将永远不再被重建。
+        version = index_version.current()
 
         # 收集所有待索引文档: [(doc_id, content, title)]
         entries: List[tuple] = []
@@ -502,24 +508,44 @@ class DocIndexService:
                         page_title = metadata.get("page_title", "")
                         entries.append((doc_id, content, f"{page_title} {section_title}".strip()))
         except Exception as e:
+            # 这里必须抛出而不是记日志继续。继续的话 entries 是空的，下面会把索引
+            # 清空并标记成「已同步到 version」，于是 Chroma 的一次临时故障就让
+            # 检索永久退化成零结果，且再也不会触发重建。
+            # 抛在这个位置是安全的：下面的清空和重建都还没开始，旧索引原封不动，
+            # 已同步版本也没变，下次检索会再试一次。
             logger.error(f"从 ChromaDB 加载 doc chunks 失败: {e}")
+            raise
 
-        # 一次性构建 BM25 索引
-        for doc_id, content, title in entries:
-            bm25.corpus[doc_id] = content
-            bm25.doc_id_list.append(doc_id)
-            text = f"{title} {content}"
-            tokens = bm25._tokenize(text)
-            bm25.tokenized_corpus.append(tokens)
+        # 分词是这里最慢的一步（实测约占重建耗时的一半），放在锁外做，
+        # 让并发的检索只在真正替换索引的那一小段时间里等待。
+        tokenized = [bm25._tokenize(f"{title} {content}") for _, content, title in entries]
 
-        if bm25.tokenized_corpus:
-            bm25.bm25 = BM25Okapi(
-                bm25.tokenized_corpus,
-                k1=bm25.k1,
-                b=bm25.b
-            )
+        # 清空到重建完成必须是一个原子区间：中途放锁的话，并发检索会撞上
+        # 一个已经清空但还没填好的索引，静静地返回零结果。
+        # 这里直接用 BM25Service 的锁而不是自己新建一个，是因为写入侧
+        # （add/remove_document）用的就是它，两边必须是同一把锁才能互斥。
+        with bm25._lock:
+            bm25.clear_index()
+            for (doc_id, content, _title), tokens in zip(entries, tokenized):
+                bm25.corpus[doc_id] = content
+                bm25.doc_id_list.append(doc_id)
+                bm25.tokenized_corpus.append(tokens)
 
-        logger.info(f"BM25 索引重建完成，文档与 Wiki 分块数: {bm25.get_document_count()}")
+            if bm25.tokenized_corpus:
+                bm25.bm25 = BM25Okapi(
+                    bm25.tokenized_corpus,
+                    k1=bm25.k1,
+                    b=bm25.b
+                )
+
+            # clear_index 会把已同步版本清成 None，所以这句必须在它之后。
+            bm25.mark_synced(version)
+
+        logger.info(
+            "BM25 索引重建完成，文档与 Wiki 分块数: %s，同步至版本 %s",
+            bm25.get_document_count(),
+            version,
+        )
 
     # 保留旧的私有入口，兼容已有调用方；新代码应使用公共方法。
     def _rebuild_bm25_from_persistent(self):

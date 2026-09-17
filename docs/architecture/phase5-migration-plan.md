@@ -37,47 +37,96 @@ Stage 0 ──┬─→ Stage 1 ──→ Stage 2 ──┬──→ Stage 5 ─
 
 ---
 
-## Stage 0 — 容器骨架 `S`
+## Stage 0 — 容器骨架 `S` ✅ 已完成
 
 **改动**
-- `docker-compose.yml`（27 行 → 约 120 行）
-- `requirements.txt`
+- `docker-compose.yml`（27 行 → 约 130 行）
+- `requirements.txt`、`.env.example`
 
 **内容**
-- 新增 `mysql:8.0`、`redis:7-alpine`、`chromadb/chroma` 三个 service
+- 新增 `mysql:8.0`、`redis:7-alpine`、`chromadb/chroma:1.5.9` 三个 service
 - 每个 service 配 `healthcheck`，`zhiyu` 用 `depends_on: condition: service_healthy`
 - 数据卷：`mysql_data`、`redis_data`、`chroma_data` 独立持久化
-- `requirements.txt` 增加 `pymysql`、`redis`、`arq`、`alembic`，并为 SQLAlchemy 固定版本
+- `requirements.txt` 增加 `pymysql`、`cryptography`、`redis`、`arq`、`alembic`，并为 SQLAlchemy 与 chromadb 固定版本区间
 
-**验收**：`docker compose up` 后三个新容器 healthy，`zhiyu` 仍跑 SQLite，功能不受影响。
+**端口映射的双地址视角**
+
+应用既可能直接跑在宿主机（本地开发），也可能跑在 compose 网络内（部署），两者看到的服务地址不同：
+
+| 服务 | 宿主机视角（`.env`） | 容器内视角（compose `environment` 覆盖） |
+|---|---|---|
+| MySQL | `127.0.0.1:3316` | `mysql:3306` |
+| Redis | `127.0.0.1:6382` | `redis:6379` |
+| Chroma | `127.0.0.1:8001` | `chroma:8000` |
+
+映射端口刻意避开 3306 / 6379 / 8000，因为开发机上常有其他项目占用。**一律绑定 `127.0.0.1`**，写成 `3316:3306` 等价于 `0.0.0.0`，会把无认证或弱口令的数据库暴露到局域网。
+
+**执行期修正**
+
+| 项 | 问题 | 处理 |
+|---|---|---|
+| chromadb 版本 | `requirements.txt` 原写 `>=0.5.0` 无上限，实际安装到 1.5.9 | 镜像与依赖同步锁到 `1.5.9` / `>=1.5.9,<1.6` |
+| chroma healthcheck | 1.x 核心已用 Rust 重写，镜像内无 `python`/`curl`/`wget`/`nc` | 改用 bash 内建 `/dev/tcp` 做 TCP 探测 |
+| API 路径 | 1.x 的 `/api/v1` 已返回 `410 Gone` | 健康检查不绑定 API 路径版本 |
+
+**验收结果**：三容器全部 healthy；MySQL 8.0.46 / utf8mb4 / `max_connections=300`，中文与 emoji 写入往返正常；Redis AOF 已启用；Chroma `/api/v2/heartbeat` 正常、持久化目录为 `/data`；三个镜像均有原生 arm64，无需 `platform: linux/amd64`。
 
 ---
 
-## Stage 1 — 数据库层改造 `M`
+## Stage 1 — 数据库层改造 `M` ✅ 已完成
 
 **改动**
-- `backend/app/core/database.py`（21 行 → 约 70 行）
-- `backend/app/core/lifecycle.py:20`
-- `backend/app/core/config.py`
-- 新增 `alembic/` 目录与基线迁移
-- `backend/app/core/schema.py` 归档
-- `test/unit/core/test_schema_v6.py` 随 `schema.py` 一起归档
+- `backend/app/core/database.py`（24 行 → 62 行），新增 `is_sqlite()` 与 `_create_engine()`
+- `backend/app/core/lifecycle.py:15` `_initialize_database()` 改为方言双分支
+- `backend/app/core/config.py` 新增 12 个字段
+- `backend/app/models/wiki.py` 两处唯一约束改为前缀索引
+- 新增 `alembic.ini` / `alembic/` 与基线迁移 `913259aa108b`
+- 删除 `backend/app/core/schema.py` 与 `test/unit/core/test_schema_v6.py`
+- 新增 `test/unit/core/test_alembic_migration.py`
 
 **内容**
-1. `database.py` 按 dialect 分支（仅约 10 行）：
-   - SQLite（测试路径）：`connect_args={"check_same_thread": False}`
-   - MySQL（生产路径）：`charset=utf8mb4` + 显式连接池 `pool_size` / `max_overflow` / `pool_timeout` / `pool_recycle`
-2. 删除 `lifecycle.py:20` 的 `settings.database_url.replace("sqlite:///", "")` 硬编码，否则 MySQL 下静默失效
-3. 建立 Alembic 基线，每个迁移必须提供 `upgrade` 与 `downgrade`（现有 `schema.py` 只能前进）
-4. `schema.py:149` 的 `id INTEGER PRIMARY KEY AUTOINCREMENT` 改为复合主键 `(page_id, research_source_id)`——该表 `wiki_page_sources` 已有同字段唯一约束 `uq_wiki_page_source`，改动无损
+1. `database.py` 按方言分支：SQLite 保持原样，MySQL 走 `pool_size` / `max_overflow` / `pool_timeout` / `pool_recycle` / `pool_pre_ping` + `charset=utf8mb4`
+2. `_initialize_database()` 在非 SQLite 下直接返回、不执行任何 DDL——多实例并发建表会互相撞车，且 MySQL 的 DDL 不在事务内，中途失败会留下半完成的库
+3. Alembic 基线含 14 张表，`upgrade` / `downgrade` 双向可用
+4. `alembic/env.py` 从应用配置读取地址，不在 `alembic.ini` 中存第二份；写入前对 `%` 转义，避免 configparser 把 URL 编码的密码当作插值语法
+
+**执行期发现的三处计划偏差**
+
+| 原计划 | 实际 | 原因 |
+|---|---|---|
+| SQLite 加 `check_same_thread=False` | 不加 | SQLAlchemy 2.0 对文件型 SQLite 默认已用 QueuePool 并自行处理跨线程；实测跨线程访问正常。该建议源自 1.3 时代 |
+| `schema.py:149` 改复合主键 | 不需要 | 问题只存在于裸 SQL，ORM 用的是方言无关的 `autoincrement=True`，`schema.py` 归档后自然消失 |
+| 未预见 | 两处唯一约束改前缀索引 | 见下 |
+
+**未预见的阻断：InnoDB 索引键长度上限**
+
+utf8mb4 下每字符最多 4 字节，InnoDB 索引键上限 3072 字节，即被索引的 `VARCHAR` 最长 768 字符。SQLite 无此限制，因此该问题只在切到 MySQL 时才暴露，报错为 `1071 Specified key was too long`。
+
+| 表.列 | 类型 | 原约束 | 所需字节 |
+|---|---|---|---|
+| `external_research_sources.url` | String(2048) | `uq_..._url (run_id, url)` | 8192 |
+| `wiki_pages.file_path` | String(1024) | 列级 `unique=True` | 4096 |
+
+处理方式：改为 `Index(..., unique=True, mysql_length=700)` 前缀索引，**列容量一字未改**，无数据截断风险；`mysql_length` 在 SQLite 上自动忽略。`url` 的唯一约束本就只是第二道防御——`external_research_service.py:206` 的 `_normalize_sources` 已用 `seen_urls` 完整去重，且 `run_id` 每次为新 UUID。
+
+**同时证实 `schema.py` 无法用于 MySQL**（这是必须换 Alembic 而非沿用的硬理由）：
+
+| 位置 | 写法 | MySQL 实测 |
+|---|---|---|
+| `schema.py:333` | `CREATE INDEX IF NOT EXISTS` | 语法错误 1064 |
+| `schema.py:149` | `INTEGER PRIMARY KEY AUTOINCREMENT` | 语法错误 1064 |
 
 **不做**：不开启 SQLite WAL。生产不跑 SQLite，WAL 仅对单机多线程读写争抢有价值，测试是单线程的。
 
-**验收**：`DATABASE_URL` 分别指向 SQLite 与 MySQL 都能启动服务并跑通单元测试。
+**验收结果**
+- MySQL 空库 `alembic upgrade head` 成功，建出 15 张表（14 业务 + `alembic_version`），全部 `utf8mb4_unicode_ci`，两个前缀索引 `sub_part=700`
+- MySQL 连接池实测 `pool_size=10` / `max_overflow=20` / `pre_ping=True` / `recycle=3600`，连接字符集 `utf8mb4`
+- 现有 SQLite 库（175 行真实数据）经新建表逻辑后行数不变
+- `test/unit` 102 项 + `test/integration` 4 项全部通过
 
 ---
 
-## Stage 2 — 数据迁移 `M`
+## Stage 2 — 数据迁移 `M` ✅ 已完成
 
 **改动**：新增 `scripts/migrate_sqlite_to_mysql.py`
 
@@ -87,22 +136,54 @@ Stage 0 ──┬─→ Stage 1 ──→ Stage 2 ──┬──→ Stage 5 ─
 - 迁移后做行数比对 + 关键字段抽样比对
 - 原 `data/notes.db` 保留为只读冷备，不再被代码引用
 
-**验收**：两库行数一致，前端四个 tab 数据显示正常。
+**执行期修正**
+
+- **DATETIME 精度**：MySQL 的 `DATETIME` 默认零精度，会把微秒直接截断。新增 `backend/app/models/types.py` 的 `DateTimeMs`，用 `with_variant` 只在 MySQL 方言下换成 `DATETIME(6)`，SQLite 行为不变；配套迁移改了 29 列。Alembic 的 autogenerate 检测不到 fsp 差异（即使开 `compare_type=True` 也只得到空迁移），这个迁移只能手写。
+- **校验的浮点容差**：JSON 列里的浮点数在两库之间存在 1 ULP（相对误差约 2e-16）的差异——SQLite 侧走 Python `json.dumps` 的最短往返表示，MySQL 原生 JSON 列用自己的 double↔文本算法。校验改成递归比对，**只对浮点放宽到 1e-12，其余类型（含 datetime）一律严格相等**。全量比对 167 行，非浮点差异 0 处。
+- **AUTO_INCREMENT 校验误报**：`information_schema` 的统计列是缓存值，`information_schema_stats_expiry` 默认 86400 秒，表空时读到的 1 会返回一整天。校验前设 `SET SESSION information_schema_stats_expiry = 0`。
+- **清空目标表用 DELETE 而非 TRUNCATE**：被外键引用的表 TRUNCATE 会被 InnoDB 拒绝（错误 1701）；DELETE 不重置 AUTO_INCREMENT，而迁移本就要显式写入原 id。
+
+**验收**：两库行数一致（14 表 167 行），前端四个 tab 数据显示正常，`test/unit` + `test/integration` 全绿。
 
 ---
 
-## Stage 3 — BM25 索引外置 `S/M`（可与 Stage 2 并行）
+## Stage 3 — BM25 索引跨实例一致 `S/M` ✅ 已完成
+
+> 原计划是「把词表序列化进 Redis，省掉启动时的全量重建」。实测后这个前提不成立，方案改为只同步版本号。下面是改后的内容。
 
 **改动**
-- `backend/app/services/retrieval/bm25_service.py`（新增 `save_snapshot` / `load_snapshot`）
-- `backend/app/core/lifecycle.py:55-59`
+- 新增 `backend/app/core/index_version.py`
+- `backend/app/services/retrieval/bm25_service.py`（加锁 + `ensure_fresh` / `mark_synced`）
+- `backend/app/services/retrieval/chroma_service.py`（`mark_index_changed` 改为递增全局版本，删除进程内 `get_generation`）
+- `backend/app/services/retrieval/hybrid_retrieval_service.py`（四个检索入口在检索前刷新索引）
+- `backend/app/services/ingestion/doc_index_service.py`（重建过程加锁、记录已同步版本、Chroma 拉取失败改为抛出）
+
+**为什么不存快照**
+
+973 个 chunk 全量重建实测 **399 ms**，拆开是：从 Chroma 拉取 175 ms + jieba 分词 216 ms + `BM25Okapi` 构造 8 ms。快照只能省掉分词那一段，净省约 211 ms，代价却是序列化格式兼容、快照体积、pickle 反序列化的安全面，以及写入侧的分布式锁。在这个数据量下是负收益。等 chunk 数涨到一万左右（分词约 2.2 秒）再考虑。
+
+**真正要解决的两个问题**
+
+1. **多实例索引不一致**：`_generation` 计数器存在进程内存里。实例 A 写入后只更新自己的计数器，B 和 C 毫不知情，继续用陈旧索引返回旧结果——不报错，只是搜不到新内容。
+2. **BM25 的静默数据错位**：`doc_id_list[i]` 与 `tokenized_corpus[i]` 靠下标一一对应，而 `remove_document` 的两次删除不是原子的。并发下错位后，BM25 算出「第 5 篇最相关」，去 `doc_id_list` 取第 5 个却拿到别的文档。同样不抛异常，只是安静地返回错误结果。
 
 **内容**
-- `self.corpus` 序列化后存入 Redis，启动时优先 `load_snapshot`，失败才回退全量重建
-- 写入路径（`add` / `update` / `remove`）加 Redis 锁 + 版本号，避免多实例互相覆盖
-- 检索算法与分词逻辑一行不改
+- Redis 上放一个计数器 `zhiyu:index:version`，索引变更时 `INCR`，各实例检索前比对，落后就自己全量重建
+- 版本号带来源前缀（`r:` 来自 Redis，`l:` 来自进程内），从 Redis 模式掉到降级模式时版本串必然不同，必然触发一次重建；比较用 `!=` 而非 `>`，防止 Redis 被清空后计数器倒退导致漏重建
+- Redis 不可用时降级为进程内计数器：连接超时 0.3 秒（这个调用在检索关键路径上），失败后 5 秒退避窗口内不再重试，warning 只打一次
+- `BM25Service` 加两把锁：`_lock` 保护增删改与检索取快照，`_rebuild_lock` 单独保护全量重建（重建期间检索照常读旧索引，只有最后替换数据的一小段互斥）。取锁顺序固定 `_rebuild_lock → _lock`
+- `search()` 改为锁内取一致快照、锁外算分：`BM25Okapi` 重建时是整个替换的，拿到的引用不会被原地改；`doc_id_list` 浅拷贝。两者同一时刻取出，下标对应关系必然一致
+- 写入侧不需要逐点埋点：`mark_index_changed()` 是所有索引变更的唯一汇聚点
+- 检索算法、分词逻辑、混合检索流程一行未改
+- **不新增任何缓存**。现有 4 个 TTLCache（query 改写、检索结果、query embedding、CRAG 评分）缓存的都是昂贵的 LLM/embedding 调用，全部保留在进程内，不搬 Redis
 
-**验收**：重启进程后 `get_stats()` 文档数不变，启动耗时明显下降。
+**已知取舍**：写入的那个实例自己也会被版本号带动重建一次，哪怕它刚用 `add_document` 增量更新过。本可以让写入方顺手把自己标成已同步，但那要求精确区分「这次版本变化是我造成的」和「别的实例也同时改了」，判断错一次就是永久漏数据。多花的几百毫秒远小于写入本身（embedding + Chroma 落盘）的耗时。
+
+**验收**（已通过）
+- 新增 18 个测试，`test/unit` + `test/integration` 共 124 passed
+- 并发用例做过反向验证：把锁换成空操作后，下标错位用例立刻失败（裸并发测试撞不到那个只有几条字节码宽的窗口，需要人为撑开）
+- 端到端跨进程验证：另一个进程调 `mark_index_changed()` 让 Redis 版本 1→2，运行中的应用下一次检索日志显示「本地=r:1 全局=r:2」并自动重建
+- 降级验证：停掉 Redis 后连续三次检索均 HTTP 200，warning 只出现一次；恢复 Redis 后日志显示「索引版本号已恢复使用 Redis」并重建一次
 
 ---
 

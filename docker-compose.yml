@@ -62,17 +62,11 @@ services:
     volumes:
       - chroma_data:/data
     # 用 TCP 端口探测而非 HTTP 请求：chromadb 1.x 的健康检查路径为 /api/v2，
-    # 与 0.x 的 /api/v1 不同，且镜像内不一定包含 curl
+    # 与 0.x 的 /api/v1 不同，写死路径会在升级时静默失效。
+    # 探测方式只能用 bash 的 /dev/tcp 伪设备：1.x 镜像核心已用 Rust 重写，
+    # 容器内不存在 python、curl、wget、nc，仅有 sh 与 bash。
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - |
-          import socket, sys
-          s = socket.socket()
-          s.settimeout(3)
-          sys.exit(s.connect_ex(("127.0.0.1", 8000)))
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000"]
       interval: 10s
       timeout: 5s
       retries: 5

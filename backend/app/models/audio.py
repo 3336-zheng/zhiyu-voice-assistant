@@ -1,9 +1,10 @@
 """
 音频模型
 """
-from sqlalchemy import JSON, Column, Integer, String, Float, DateTime, Text
+from sqlalchemy import JSON, Column, Integer, String, Float, Text
 from sqlalchemy.sql import func
 from ..core.database import Base
+from .types import DateTimeMs
 
 class Audio(Base):
     __tablename__ = "audios"
@@ -17,8 +18,8 @@ class Audio(Base):
     language = Column(String(10))  # 识别语言
     transcription = Column(Text)  # 转录文本
     transcription_segments = Column(JSON, nullable=False, default=list)  # 带时间戳的转录片段
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTimeMs, server_default=func.now())
+    updated_at = Column(DateTimeMs, onupdate=func.now())
 
     def __repr__(self):
         return f"<Audio(id={self.id}, filename={self.filename})>"

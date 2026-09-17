@@ -105,7 +105,8 @@ services:
       - RERANKER_MODEL_PATH=/app/models/reranker
       # .env 里的地址是宿主机视角（127.0.0.1:3316 / 6382 / 8001），供本地直接运行使用；
       # 容器内必须改写为 compose 内网服务名，否则 127.0.0.1 会指向容器自身。
-      # DATABASE_URL 当前仍是 SQLite，Stage 2 切换到 MySQL 时在此追加覆盖。
+      # 这里用插值而不是写死连接串，是为了让密码只存在于 .env 一处。
+      - DATABASE_URL=mysql+pymysql://${MYSQL_USER:-zhiyu}:${MYSQL_PASSWORD:?必须在 .env 中设置 MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-zhiyu}?charset=utf8mb4
       - REDIS_URL=redis://redis:6379/0
       - CHROMA_HOST=chroma
       - CHROMA_PORT=8000

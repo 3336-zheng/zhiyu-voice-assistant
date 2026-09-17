@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     JSON,
     Column,
-    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -16,6 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from ..core.database import Base
+from .types import DateTimeMs
 
 
 def utc_now() -> datetime:
@@ -49,9 +49,9 @@ class WikiPage(Base):
     content_hash = Column(String(64), nullable=False, index=True)
     index_status = Column(String(32), nullable=False, default="pending", index=True)
     index_error = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    updated_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    deleted_at = Column(DateTimeMs, nullable=True)
 
     revisions = relationship(
         "WikiPageRevision",
@@ -81,7 +81,7 @@ class WikiPageRevision(Base):
     content = Column(Text, nullable=False)
     page_metadata = Column(JSON, nullable=False, default=dict)
     change_summary = Column(String(500), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
 
     page = relationship("WikiPage", back_populates="revisions")
 
@@ -112,7 +112,7 @@ class WikiPageLink(Base):
         index=True,
     )
     target_title = Column(String(255), nullable=False, index=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
 
 
 class WikiIndexTask(Base):
@@ -127,10 +127,10 @@ class WikiIndexTask(Base):
     status = Column(String(16), nullable=False, default="pending", index=True)
     attempts = Column(Integer, nullable=False, default=0)
     error = Column(Text, nullable=True)
-    next_attempt_at = Column(DateTime(timezone=True), nullable=True, index=True)
-    locked_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    next_attempt_at = Column(DateTimeMs, nullable=True, index=True)
+    locked_at = Column(DateTimeMs, nullable=True)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    updated_at = Column(DateTimeMs, nullable=False, default=utc_now)
 
 
 class AgentPendingAction(Base):
@@ -146,9 +146,9 @@ class AgentPendingAction(Base):
     status = Column(String(16), nullable=False, default="pending", index=True)
     result_data = Column(JSON, nullable=True)
     error = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    expires_at = Column(DateTimeMs, nullable=False)
+    completed_at = Column(DateTimeMs, nullable=True)
 
 
 class ExternalResearchRun(Base):
@@ -171,8 +171,8 @@ class ExternalResearchRun(Base):
         nullable=True,
         index=True,
     )
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    completed_at = Column(DateTimeMs, nullable=True)
 
     sources = relationship(
         "ExternalResearchSource",
@@ -214,8 +214,8 @@ class ExternalResearchSource(Base):
     content_hash = Column(String(64), nullable=False, index=True)
     provider = Column(String(255), nullable=False)
     tool_name = Column(String(255), nullable=False)
-    retrieved_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    retrieved_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
 
     run = relationship("ExternalResearchRun", back_populates="sources")
 
@@ -241,4 +241,4 @@ class WikiPageSource(Base):
         nullable=False,
         index=True,
     )
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)

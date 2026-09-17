@@ -2,9 +2,10 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Column, DateTime, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Column, String, Text, UniqueConstraint
 
 from ..core.database import Base
+from .types import DateTimeMs
 
 
 def utc_now() -> datetime:
@@ -40,6 +41,6 @@ class AnswerFeedback(Base):
     retest_answer = Column(Text, nullable=True)
     retest_snapshot = Column(JSON, nullable=True)
     error = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    updated_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    completed_at = Column(DateTimeMs, nullable=True)

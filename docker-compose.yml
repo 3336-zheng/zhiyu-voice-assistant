@@ -1,7 +1,84 @@
 # 智语端侧智能语音笔记助手 Docker Compose 配置
 # 使用方法：docker compose up --build
+#
+# Phase 5 分布式改造 Stage 0：基础设施就位，应用层零改动。
+# 本阶段 zhiyu 仍使用 SQLite 与 ChromaDB 嵌入模式，
+# MySQL / Redis / Chroma 三个容器只是准备好，尚未被应用连接。
+# 数据库切换在 Stage 1-2，Chroma 切换在 Stage 4。
 
 services:
+  mysql:
+    image: mysql:8.0
+    container_name: zhiyu-mysql
+    # 中文内容必须使用 utf8mb4，否则 emoji 和部分生僻字会写入失败；
+    # max-connections 为 Stage 7 多实例预留，单实例上限 30 条连接
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max-connections=300
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?必须在 .env 中设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-zhiyu}
+      MYSQL_USER: ${MYSQL_USER:-zhiyu}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?必须在 .env 中设置 MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    # 不映射端口到宿主机，只在 compose 内网互通。
+    # 需要本地工具连接调试时临时追加 ports: ["127.0.0.1:3306:3306"]，
+    # 注意绝不能写成 "3306:3306"，那会绑定 0.0.0.0 暴露到局域网
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 -u root -p"$$MYSQL_ROOT_PASSWORD" --silent
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      # MySQL 首次启动需要初始化数据目录，约 20-30 秒，期间不计入失败次数
+      start_period: 40s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: zhiyu-redis
+    # 开启 AOF：Redis 承担任务队列职责，进程重启不能丢失未消费的任务
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  chroma:
+    # 镜像版本必须与 requirements.txt 中的 chromadb 保持一致，
+    # client 与 server 版本不匹配会在调用时报协议错误
+    image: chromadb/chroma:1.5.9
+    container_name: zhiyu-chroma
+    volumes:
+      - chroma_data:/data
+    # 用 TCP 端口探测而非 HTTP 请求：chromadb 1.x 的健康检查路径为 /api/v2，
+    # 与 0.x 的 /api/v1 不同，且镜像内不一定包含 curl
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import socket, sys
+          s = socket.socket()
+          s.settimeout(3)
+          sys.exit(s.connect_ex(("127.0.0.1", 8000)))
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
   zhiyu:
     build: .
     container_name: zhiyu-assistant
@@ -23,4 +100,16 @@ services:
       - WHISPER_MODEL_PATH=/app/models/whisper
       - EMBEDDING_MODEL_PATH=/app/models/embedding
       - RERANKER_MODEL_PATH=/app/models/reranker
+    # 本阶段尚未连接 chroma 容器，因此不加入依赖，避免其健康检查阻塞应用启动；
+    # Stage 4 切换到 HttpClient 时再补上 chroma 依赖
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  mysql_data:
+  redis_data:
+  chroma_data:

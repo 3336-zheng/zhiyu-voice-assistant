@@ -1,7 +1,8 @@
 # Web 与数据层
 fastapi
 uvicorn
-sqlalchemy
+# 项目使用 2.0 风格 API（从 sqlalchemy.orm 导入 declarative_base），必须锁定大版本
+sqlalchemy>=2.0,<2.1
 pydantic
 pydantic-settings
 python-multipart
@@ -21,7 +22,8 @@ librosa
 numpy
 
 # 检索与知识库
-chromadb>=0.5.0
+# 切换 server 模式后 client 与容器镜像版本必须一致，锁定小版本区间
+chromadb>=1.5.9,<1.6
 rank-bm25>=0.2.2
 jieba>=0.42.1
 PyYAML>=6.0
@@ -38,6 +40,15 @@ langfuse>=3.0,<4.0
 opentelemetry-api>=1.30,<2.0
 opentelemetry-sdk>=1.30,<2.0
 opentelemetry-exporter-otlp-proto-grpc>=1.30,<2.0
+
+# 数据库与任务队列（Phase 5 分布式改造）
+# cryptography 是必需项：MySQL 8 默认使用 caching_sha2_password 认证，
+# pymysql 缺少它会在建立连接时抛出 RuntimeError
+pymysql>=1.1.1
+cryptography>=42.0
+alembic>=1.13
+redis>=5.0
+arq>=0.26
 
 # 运行辅助
 psutil

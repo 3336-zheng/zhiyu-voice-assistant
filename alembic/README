@@ -1,0 +1,31 @@
+数据库迁移（Alembic）
+
+适用范围
+    仅 MySQL 等生产数据库使用。SQLite 用于本地开发与测试，
+    由 backend/app/core/lifecycle.py 的 _initialize_database() 直接按 ORM 元数据建表，
+    不走迁移。两条路径的表结构来源相同（backend/app/models），
+    一致性由 test/unit/core/test_alembic_migration.py 断言保证。
+
+连接地址
+    不写在 alembic.ini 里。env.py 从应用配置（.env 的 DATABASE_URL）读取，
+    避免同一份连接信息存两份而产生分歧，也避免密码进入版本库。
+    需要临时指定时用环境变量覆盖：
+        DATABASE_URL="mysql+pymysql://用户:密码@主机:端口/库?charset=utf8mb4" alembic upgrade head
+
+常用命令
+    alembic upgrade head              升级到最新版本（部署前执行）
+    alembic downgrade -1              回退一个版本
+    alembic current                   查看当前版本
+    alembic history                   查看迁移链
+    alembic revision --autogenerate -m "说明"    按 ORM 变更生成新迁移
+
+改了 ORM 之后
+    必须生成对应迁移，否则 test_alembic_migration.py 会失败。
+    生成后务必人工检查迁移文件：autogenerate 不能识别表重命名、列重命名和数据迁移，
+    它会把重命名理解成「删掉旧的、新建一个」，直接执行会丢数据。
+
+MySQL 的两个约束
+    1. DDL 不在事务内，迁移中途失败无法回滚，会留下半完成的库。
+       上线前先在与生产同版本的库上演练。
+    2. InnoDB 索引键上限 3072 字节，utf8mb4 下被索引的 VARCHAR 最长 768 字符。
+       超长列需用 Index(..., mysql_length=N) 建前缀索引，SQLite 会自动忽略该参数。

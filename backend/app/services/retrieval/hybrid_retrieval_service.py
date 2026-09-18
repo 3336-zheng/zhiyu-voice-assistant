@@ -11,6 +11,7 @@ import math
 import re
 from urllib.parse import quote
 
+from backend.app.core import index_version
 from backend.app.core.config import settings
 from backend.app.services.retrieval.chroma_service import get_chroma_service
 from backend.app.services.retrieval.bm25_service import get_bm25_service
@@ -92,6 +93,19 @@ class HybridRetrievalService:
             settings.retrieval_cache_ttl_seconds,
             settings.retrieval_cache_max_entries,
         )
+        # 检索用的共享线程池。原先每次检索都 with ThreadPoolExecutor(...) 现开现关，
+        # 等于每个请求创建再销毁一批 OS 线程；检索是高频路径，这笔开销没有必要。
+        #
+        # max_workers 取 settings.retrieval_max_workers（默认 8）而不是沿用原先各处
+        # 写死的 2：共享之后这个数的含义变了，它是「本进程用于检索的线程总额度」，
+        # 本来就该由一个全局配置来定。这个额度要够 Agent 并发步骤用——executor.py
+        # 的线程池是 max_workers=4，即最多 4 个步骤同时进入检索，每次检索又要并发
+        # 跑 BM25 和向量两路召回，4 × 2 = 8 正好等于默认值。调小会让它们互相排队，
+        # 这是共享池带来的真实行为变化，不是纯粹的优化。
+        self._executor = ThreadPoolExecutor(
+            max_workers=settings.retrieval_max_workers,
+            thread_name_prefix="retrieval",
+        )
 
     def _fetch_doc_chunks(self, doc_ids: List[str]) -> Dict[str, Dict]:
         """
@@ -103,24 +117,7 @@ class HybridRetrievalService:
         Returns:
             Dict: {doc_id: {"content": ..., "metadata": ...}}
         """
-        if not doc_ids:
-            return {}
-        try:
-            chunk_results = self.chroma_service.collection.get(
-                ids=doc_ids,
-                include=["documents", "metadatas"]
-            )
-            chunks_dict = {}
-            if chunk_results["ids"]:
-                for i, cid in enumerate(chunk_results["ids"]):
-                    chunks_dict[cid] = {
-                        "content": chunk_results["documents"][i] if chunk_results["documents"] else "",
-                        "metadata": chunk_results["metadatas"][i] if chunk_results["metadatas"] else {}
-                    }
-            return chunks_dict
-        except Exception as e:
-            logger.error(f"获取文档块失败: {e}")
-            return {}
+        return self.chroma_service.get_chunks_by_ids(doc_ids)
 
     @staticmethod
     def _parent_chunk_id(doc_id: str) -> str:
@@ -231,33 +228,6 @@ class HybridRetrievalService:
             selected = valid[:1]
         return selected[:final_top_k]
 
-    def _recall(self, query: str, bm25_top_k: int, embedding_top_k: int) -> Dict[str, Any]:
-        """并行执行单个查询的稀疏与稠密召回，不做融合和精排。"""
-        with timed_stage("retrieval.embedding"):
-            query_embedding = self.embedding_service.encode(query)
-
-        def bm25_search():
-            try:
-                return self.bm25_service.search(query, top_k=bm25_top_k)
-            except Exception as exc:
-                logger.error("BM25 检索失败: %s", exc)
-                return []
-
-        def embedding_search():
-            try:
-                return self.chroma_service.search(query_embedding, top_k=embedding_top_k)
-            except Exception as exc:
-                logger.error("Embedding 检索失败: %s", exc)
-                return []
-
-        with timed_stage("retrieval.recall"):
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_bm25 = executor.submit(bm25_search)
-                future_embedding = executor.submit(embedding_search)
-                bm25_results = future_bm25.result()
-                embedding_results = future_embedding.result()
-        return {"bm25": bm25_results, "embedding": embedding_results}
-
     def _encode_queries(self, queries: List[str]) -> List[List[float]]:
         """优先使用批量查询向量，兼容旧的单条测试替身。"""
         encoder = getattr(self.embedding_service, "encode_queries", None)
@@ -266,11 +236,11 @@ class HybridRetrievalService:
         encoder = getattr(self.embedding_service, "encode_batch", None)
         if callable(encoder):
             return encoder(queries)
-        with ThreadPoolExecutor(
-            max_workers=min(settings.retrieval_max_workers, max(1, len(queries)))
-        ) as executor:
-            futures = [executor.submit(self.embedding_service.encode, query) for query in queries]
-            return [future.result() for future in futures]
+        futures = [
+            self._executor.submit(self.embedding_service.encode, query)
+            for query in queries
+        ]
+        return [future.result() for future in futures]
 
     def _recall_many(
         self,
@@ -303,31 +273,45 @@ class HybridRetrievalService:
                 return index, "embedding", []
 
         with timed_stage("retrieval.recall"):
-            max_workers = min(
-                settings.retrieval_max_workers,
-                max(2, len(queries) * 2),
-            )
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = []
-                for index in range(len(queries)):
-                    futures.append(executor.submit(bm25_search, index))
-                    futures.append(executor.submit(embedding_search, index))
-                for future in futures:
-                    index, source, results = future.result()
-                    outcomes[index][source] = results
+            # 提交给共享池。这里的任务内部只调 bm25_service / chroma_service，
+            # 不会再往同一个池提交，所以不存在「池内任务等待池内任务」的死锁结构。
+            futures = []
+            for index in range(len(queries)):
+                futures.append(self._executor.submit(bm25_search, index))
+                futures.append(self._executor.submit(embedding_search, index))
+            for future in futures:
+                index, source, results = future.result()
+                outcomes[index][source] = results
         return outcomes
 
     def _index_version(self) -> str:
-        """组合集合计数与 generation，识别同数量内容更新。"""
+        """检索结果缓存所用的索引版本，索引一变它就变，旧缓存自然失效。
+
+        以前这里拼的是「Chroma 文档数 : 进程内 generation」。两个来源都有问题：
+        文档数要额外往 Chroma 跑一趟；generation 只存在本进程内存里，别的实例
+        写了索引本进程毫不知情，缓存会一直端出旧结果。现在统一读全局版本号。
+        """
+        return index_version.current()
+
+    def _ensure_index_fresh(self) -> None:
+        """检索前确保本实例的 BM25 索引不落后于全局版本。
+
+        重建逻辑放在 doc_index_service（只有它知道怎么从 Chroma 拉全量数据），
+        这里延迟导入并作为回调传进去：BM25Service 直接依赖 doc_index_service
+        会形成循环导入。
+        """
         try:
-            count = self.chroma_service.collection.count()
-            generation = getattr(self.chroma_service, "get_generation", lambda: 0)()
-            return f"{int(count)}:{int(generation)}"
-        except Exception:
-            getter = getattr(self.bm25_service, "get_document_count", None)
-            if callable(getter):
-                return f"{int(getter())}:bm25"
-            return f"{len(getattr(self.bm25_service, 'corpus', {}) or {})}:bm25"
+            from backend.app.services.ingestion.doc_index_service import (
+                get_doc_index_service,
+            )
+
+            self.bm25_service.ensure_fresh(
+                lambda: get_doc_index_service().rebuild_bm25_from_persistent()
+            )
+        except Exception as exc:
+            # 刷新失败不该让整次检索失败：手上这份旧索引照样能出结果，而且
+            # 重建失败时已同步版本没有被更新，下次检索还会再试一次。
+            logger.error("BM25 索引新鲜度检查失败，沿用当前索引: %s", exc)
 
     def _retrieval_cache_key(
         self,
@@ -376,6 +360,10 @@ class HybridRetrievalService:
             cached_stats = dict(cached.get("stats") or {})
             cached_stats["cache_hit"] = True
             return {"results": cached.get("results", []), "stats": cached_stats}
+
+        # 放在缓存查询之后：命中缓存说明同版本下已经检索过一次，那次已经刷新过索引，
+        # 没必要为了一个直接返回的结果去付重建的代价。
+        self._ensure_index_fresh()
 
         recall_lists: List[List[tuple[str, float]]] = []
         bm25_count = 0
@@ -608,6 +596,7 @@ class HybridRetrievalService:
 
         try:
             logger.info("开始混合检索，查询长度=%s", len(query))
+            self._ensure_index_fresh()
 
             # Step 1: 生成查询向量
             with timed_stage("retrieval.embedding"):
@@ -632,14 +621,13 @@ class HybridRetrievalService:
                     logger.error(f"Embedding 检索失败: {e}")
                     return []
 
-            # 并行执行
+            # 并行执行（共享池，理由见 __init__ 里 _executor 的注释）
             with timed_stage("retrieval.recall"):
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    future_bm25 = executor.submit(bm25_search)
-                    future_embedding = executor.submit(embedding_search)
+                future_bm25 = self._executor.submit(bm25_search)
+                future_embedding = self._executor.submit(embedding_search)
 
-                    bm25_results = future_bm25.result()
-                    embedding_results = future_embedding.result()
+                bm25_results = future_bm25.result()
+                embedding_results = future_embedding.result()
 
             logger.info(f"BM25: {len(bm25_results)} 条, Embedding: {len(embedding_results)} 条")
 
@@ -747,6 +735,7 @@ class HybridRetrievalService:
             List[Dict]: 检索结果
         """
         try:
+            self._ensure_index_fresh()
             bm25_results = self.bm25_service.search(query, top_k=top_k)
             if not bm25_results:
                 return []
@@ -840,6 +829,7 @@ class HybridRetrievalService:
             List[Dict]: 检索结果
         """
         try:
+            self._ensure_index_fresh()
             query_embedding = self.embedding_service.encode(query)
 
             # 构建 ChromaDB 过滤条件

@@ -1,7 +1,93 @@
 # 智语端侧智能语音笔记助手 Docker Compose 配置
 # 使用方法：docker compose up --build
+#
+# Phase 5 分布式改造：MySQL（Stage 1-2）、Redis（Stage 3 起）、
+# Chroma server 模式（Stage 4）均已接入，三个容器都在被应用真正使用。
+# 本地直接运行 python main.py 时走 .env 里的宿主机地址；
+# 容器内则由下面的 environment 覆盖为 compose 内网服务名。
 
 services:
+  mysql:
+    image: mysql:8.0
+    container_name: zhiyu-mysql
+    # 中文内容必须使用 utf8mb4，否则 emoji 和部分生僻字会写入失败；
+    # max-connections 为 Stage 7 多实例预留，单实例上限 30 条连接
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max-connections=300
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?必须在 .env 中设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-zhiyu}
+      MYSQL_USER: ${MYSQL_USER:-zhiyu}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?必须在 .env 中设置 MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    # 一律绑定 127.0.0.1，绝不能写成 "3316:3306"——那等同 0.0.0.0，会把数据库暴露到局域网。
+    # 用 3316 而非 3306，是因为本机已有其他项目的 MySQL 占用 3306。
+    # 映射到宿主机是为了让本地直接运行的 python main.py 能连上；
+    # 容器内的 zhiyu 服务走 compose 内网的 mysql:3306，不经过这个映射。
+    ports:
+      - "127.0.0.1:3316:3306"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 -u root -p"$$MYSQL_ROOT_PASSWORD" --silent
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      # MySQL 首次启动需要初始化数据目录，约 20-30 秒，期间不计入失败次数
+      start_period: 40s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: zhiyu-redis
+    # 开启 AOF：Redis 承担任务队列职责，进程重启不能丢失未消费的任务
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+    volumes:
+      - redis_data:/data
+    # 6382 避开本机其他项目已占用的 6379/6380/6381
+    ports:
+      - "127.0.0.1:6382:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  chroma:
+    # 镜像版本必须与 requirements.txt 中的 chromadb 保持一致，
+    # client 与 server 版本不匹配会在调用时报协议错误
+    image: chromadb/chroma:1.5.9
+    container_name: zhiyu-chroma
+    volumes:
+      # 直接挂 embedded 模式一直在用的那个目录，而不是用独立的 named volume。
+      # 实测同版本（1.5.9）的 server 能直接读 PersistentClient 写出来的数据，
+      # 973 个 chunk 原样可见，所以切模式不需要任何数据迁移，本地目录同时也是
+      # 切回 embedded 的回退路径。
+      # 注意：两种模式共用这一份文件，所以只能二选一地开，不能同时跑——
+      # 同时写同一份索引正是本 Stage 要消灭的那个问题。
+      - ./data/database/chromadb:/data
+    # 8001 避开本机 api.tiwork.ai 占用的 8000
+    ports:
+      - "127.0.0.1:8001:8000"
+    # 用 TCP 端口探测而非 HTTP 请求：chromadb 1.x 的健康检查路径为 /api/v2，
+    # 与 0.x 的 /api/v1 不同，写死路径会在升级时静默失效。
+    # 探测方式只能用 bash 的 /dev/tcp 伪设备：1.x 镜像核心已用 Rust 重写，
+    # 容器内不存在 python、curl、wget、nc，仅有 sh 与 bash。
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
   zhiyu:
     build: .
     container_name: zhiyu-assistant
@@ -23,4 +109,25 @@ services:
       - WHISPER_MODEL_PATH=/app/models/whisper
       - EMBEDDING_MODEL_PATH=/app/models/embedding
       - RERANKER_MODEL_PATH=/app/models/reranker
+      # .env 里的地址是宿主机视角（127.0.0.1:3316 / 6382 / 8001），供本地直接运行使用；
+      # 容器内必须改写为 compose 内网服务名，否则 127.0.0.1 会指向容器自身。
+      # 这里用插值而不是写死连接串，是为了让密码只存在于 .env 一处。
+      - DATABASE_URL=mysql+pymysql://${MYSQL_USER:-zhiyu}:${MYSQL_PASSWORD:?必须在 .env 中设置 MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-zhiyu}?charset=utf8mb4
+      - REDIS_URL=redis://redis:6379/0
+      # 容器内固定走 server 模式：向量库是独立容器，embedded 会去读 /app/data 下
+      # 那份文件，和 chroma 容器同时写同一份索引，正是本 Stage 要消灭的情况。
+      - CHROMA_MODE=server
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  mysql_data:
+  redis_data:

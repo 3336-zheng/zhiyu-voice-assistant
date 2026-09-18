@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     JSON,
     Column,
-    DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -15,6 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from ..core.database import Base
+from .types import DateTimeMs
 
 
 def utc_now() -> datetime:
@@ -26,6 +27,14 @@ class WikiPage(Base):
     """Wiki 当前页面元数据，正文保存在 Markdown 文件中。"""
 
     __tablename__ = "wiki_pages"
+    __table_args__ = (
+        # 不能写成列级 unique=True：InnoDB 索引键上限 3072 字节，
+        # utf8mb4 下 String(1024) 需要 4096 字节，建表会直接报错 1071。
+        # 改用前缀索引，列容量保持 1024 不变，只对前 700 字符建唯一索引。
+        # 700 字符远超文件系统 PATH_MAX（1024 字节），不会造成误判重复。
+        # mysql_length 只对 MySQL 生效，SQLite 建表时自动忽略。
+        Index("uq_wiki_pages_file_path", "file_path", unique=True, mysql_length=700),
+    )
 
     id = Column(String(36), primary_key=True)
     title = Column(String(255), nullable=False, index=True)
@@ -35,14 +44,14 @@ class WikiPage(Base):
     status = Column(String(32), nullable=False, default="active", index=True)
     source_type = Column(String(64), nullable=False, default="manual", index=True)
     source_uri = Column(String(1024), nullable=True)
-    file_path = Column(String(1024), nullable=False, unique=True)
+    file_path = Column(String(1024), nullable=False)
     revision = Column(Integer, nullable=False, default=1)
     content_hash = Column(String(64), nullable=False, index=True)
     index_status = Column(String(32), nullable=False, default="pending", index=True)
     index_error = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    updated_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    deleted_at = Column(DateTimeMs, nullable=True)
 
     revisions = relationship(
         "WikiPageRevision",
@@ -72,7 +81,7 @@ class WikiPageRevision(Base):
     content = Column(Text, nullable=False)
     page_metadata = Column(JSON, nullable=False, default=dict)
     change_summary = Column(String(500), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
 
     page = relationship("WikiPage", back_populates="revisions")
 
@@ -103,7 +112,7 @@ class WikiPageLink(Base):
         index=True,
     )
     target_title = Column(String(255), nullable=False, index=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
 
 
 class WikiIndexTask(Base):
@@ -118,10 +127,10 @@ class WikiIndexTask(Base):
     status = Column(String(16), nullable=False, default="pending", index=True)
     attempts = Column(Integer, nullable=False, default=0)
     error = Column(Text, nullable=True)
-    next_attempt_at = Column(DateTime(timezone=True), nullable=True, index=True)
-    locked_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    next_attempt_at = Column(DateTimeMs, nullable=True, index=True)
+    locked_at = Column(DateTimeMs, nullable=True)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    updated_at = Column(DateTimeMs, nullable=False, default=utc_now)
 
 
 class AgentPendingAction(Base):
@@ -137,9 +146,9 @@ class AgentPendingAction(Base):
     status = Column(String(16), nullable=False, default="pending", index=True)
     result_data = Column(JSON, nullable=True)
     error = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    expires_at = Column(DateTimeMs, nullable=False)
+    completed_at = Column(DateTimeMs, nullable=True)
 
 
 class ExternalResearchRun(Base):
@@ -162,8 +171,8 @@ class ExternalResearchRun(Base):
         nullable=True,
         index=True,
     )
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    completed_at = Column(DateTimeMs, nullable=True)
 
     sources = relationship(
         "ExternalResearchSource",
@@ -178,7 +187,17 @@ class ExternalResearchSource(Base):
 
     __tablename__ = "external_research_sources"
     __table_args__ = (
-        UniqueConstraint("run_id", "url", name="uq_external_research_source_url"),
+        # 同上：run_id(36) + url(2048) 在 utf8mb4 下需 8192 字节，超出 3072 上限。
+        # url 取前 700 字符建前缀索引，36*4 + 700*4 = 2944 字节，留有余量。
+        # 该约束只是第二道防御——external_research_service.py 的 _normalize_sources
+        # 已用 seen_urls 集合完整去重，且 run_id 每次为新 UUID，实际不会触发。
+        Index(
+            "uq_external_research_source_url",
+            "run_id",
+            "url",
+            unique=True,
+            mysql_length={"url": 700},
+        ),
     )
 
     id = Column(String(36), primary_key=True)
@@ -195,8 +214,8 @@ class ExternalResearchSource(Base):
     content_hash = Column(String(64), nullable=False, index=True)
     provider = Column(String(255), nullable=False)
     tool_name = Column(String(255), nullable=False)
-    retrieved_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    retrieved_at = Column(DateTimeMs, nullable=False, default=utc_now)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)
 
     run = relationship("ExternalResearchRun", back_populates="sources")
 
@@ -222,4 +241,4 @@ class WikiPageSource(Base):
         nullable=False,
         index=True,
     )
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    created_at = Column(DateTimeMs, nullable=False, default=utc_now)

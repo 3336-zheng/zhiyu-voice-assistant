@@ -304,25 +304,26 @@ class DocIndexService:
         # 写入 ChromaDB
         file_mtime = os.path.getmtime(filepath)
         doc_ids = []
+        metadatas = []
         for i, chunk in enumerate(chunks):
-            doc_id = f"doc_{Path(filename).stem}_{i}"
-            doc_ids.append(doc_id)
-            metadata = {
+            doc_ids.append(f"doc_{Path(filename).stem}_{i}")
+            metadatas.append({
                 "source_type": "doc",
                 "filename": filename,
                 "section_title": chunk["section_title"],
                 "chunk_idx": i,
                 "file_mtime": file_mtime,
-            }
-            self.chroma_service.collection.add(
-                ids=[doc_id],
-                embeddings=[embeddings[i]],
-                documents=[chunk["text"]],
-                metadatas=[metadata]
-            )
-        mark_index_changed = getattr(self.chroma_service, "mark_index_changed", None)
-        if callable(mark_index_changed):
-            mark_index_changed()
+            })
+
+        # 攒齐一次写入，而不是在循环里逐块 add：embedded 模式下两者只差几次函数调用，
+        # server 模式下前者是 1 次 HTTP 往返，后者是每块一次。
+        # add_chunks 内部会标记索引变更。
+        self.chroma_service.add_chunks(
+            ids=doc_ids,
+            embeddings=list(embeddings),
+            documents=[chunk["text"] for chunk in chunks],
+            metadatas=metadatas,
+        )
 
         # 写入 BM25
         for i, chunk in enumerate(chunks):
@@ -482,44 +483,71 @@ class DocIndexService:
         """
         from rank_bm25 import BM25Okapi
 
+        from ...core import index_version
+
         bm25 = self.bm25_service
-        bm25.clear_index()
+
+        # 版本号必须在读 Chroma 之前取。取到的这份数据是「version 时刻或更新」的，
+        # 记成 version 顶多让下次多重建一遍；反过来在重建结束后才取版本，就会把
+        # 重建期间别人写进去的变更也算作已同步，那部分数据将永远不再被重建。
+        version = index_version.current()
 
         # 收集所有待索引文档: [(doc_id, content, title)]
         entries: List[tuple] = []
 
         # 从 ChromaDB 加载旧文档与统一 Wiki 页面分块
         try:
-            results = self.chroma_service.collection.get(
-                include=["documents", "metadatas"]
-            )
-            if results["ids"]:
-                for i, doc_id in enumerate(results["ids"]):
-                    content = results["documents"][i] if results["documents"] else ""
-                    metadata = results["metadatas"][i] if results["metadatas"] else {}
-                    if metadata.get("source_type") in {"doc", "wiki_page"}:
-                        section_title = metadata.get("section_title", "")
-                        page_title = metadata.get("page_title", "")
-                        entries.append((doc_id, content, f"{page_title} {section_title}".strip()))
+            # source_type 的筛选交给 Chroma 做（get_all_chunks 内部下推成 where），
+            # 不再拉回全量后在 Python 里挑：不匹配的那些在 server 模式下要白白经过
+            # 序列化、网络传输、反序列化，最后才被丢掉。
+            for chunk in self.chroma_service.get_all_chunks(["doc", "wiki_page"]):
+                metadata = chunk["metadata"]
+                section_title = metadata.get("section_title", "")
+                page_title = metadata.get("page_title", "")
+                entries.append((
+                    chunk["id"],
+                    chunk["content"],
+                    f"{page_title} {section_title}".strip(),
+                ))
         except Exception as e:
+            # 这里必须抛出而不是记日志继续。继续的话 entries 是空的，下面会把索引
+            # 清空并标记成「已同步到 version」，于是 Chroma 的一次临时故障就让
+            # 检索永久退化成零结果，且再也不会触发重建。
+            # 抛在这个位置是安全的：下面的清空和重建都还没开始，旧索引原封不动，
+            # 已同步版本也没变，下次检索会再试一次。
             logger.error(f"从 ChromaDB 加载 doc chunks 失败: {e}")
+            raise
 
-        # 一次性构建 BM25 索引
-        for doc_id, content, title in entries:
-            bm25.corpus[doc_id] = content
-            bm25.doc_id_list.append(doc_id)
-            text = f"{title} {content}"
-            tokens = bm25._tokenize(text)
-            bm25.tokenized_corpus.append(tokens)
+        # 分词是这里最慢的一步（实测约占重建耗时的一半），放在锁外做，
+        # 让并发的检索只在真正替换索引的那一小段时间里等待。
+        tokenized = [bm25._tokenize(f"{title} {content}") for _, content, title in entries]
 
-        if bm25.tokenized_corpus:
-            bm25.bm25 = BM25Okapi(
-                bm25.tokenized_corpus,
-                k1=bm25.k1,
-                b=bm25.b
-            )
+        # 清空到重建完成必须是一个原子区间：中途放锁的话，并发检索会撞上
+        # 一个已经清空但还没填好的索引，静静地返回零结果。
+        # 这里直接用 BM25Service 的锁而不是自己新建一个，是因为写入侧
+        # （add/remove_document）用的就是它，两边必须是同一把锁才能互斥。
+        with bm25._lock:
+            bm25.clear_index()
+            for (doc_id, content, _title), tokens in zip(entries, tokenized):
+                bm25.corpus[doc_id] = content
+                bm25.doc_id_list.append(doc_id)
+                bm25.tokenized_corpus.append(tokens)
 
-        logger.info(f"BM25 索引重建完成，文档与 Wiki 分块数: {bm25.get_document_count()}")
+            if bm25.tokenized_corpus:
+                bm25.bm25 = BM25Okapi(
+                    bm25.tokenized_corpus,
+                    k1=bm25.k1,
+                    b=bm25.b
+                )
+
+            # clear_index 会把已同步版本清成 None，所以这句必须在它之后。
+            bm25.mark_synced(version)
+
+        logger.info(
+            "BM25 索引重建完成，文档与 Wiki 分块数: %s，同步至版本 %s",
+            bm25.get_document_count(),
+            version,
+        )
 
     # 保留旧的私有入口，兼容已有调用方；新代码应使用公共方法。
     def _rebuild_bm25_from_persistent(self):
@@ -535,17 +563,12 @@ class DocIndexService:
             Dict[str, float]: {filename: mtime}
         """
         try:
-            results = self.chroma_service.collection.get(
-                where={"source_type": "doc"},
-                include=["metadatas"]
-            )
             mtimes: Dict[str, float] = {}
-            if results["metadatas"]:
-                for metadata in results["metadatas"]:
-                    fname = metadata.get("filename", "")
-                    mtime = metadata.get("file_mtime", 0)
-                    if fname and mtime > mtimes.get(fname, 0):
-                        mtimes[fname] = mtime
+            for metadata in self.chroma_service.get_doc_metadatas():
+                fname = metadata.get("filename", "")
+                mtime = metadata.get("file_mtime", 0)
+                if fname and mtime > mtimes.get(fname, 0):
+                    mtimes[fname] = mtime
             return mtimes
         except Exception as e:
             logger.error(f"获取已索引 mtime 失败: {e}")

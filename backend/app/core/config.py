@@ -23,6 +23,27 @@ class Settings(BaseSettings):
     # 数据库配置
     database_url: str = "sqlite:///data/database/notes.db"
 
+    # MySQL 容器凭据：仅供 docker compose 插值使用，应用一律通过 DATABASE_URL 连接，
+    # 不读取以下四个字段。此处仍需声明，是因为 model_config 未放开 extra，
+    # pydantic-settings 默认 extra="forbid"，.env 中出现未声明的变量会直接校验失败。
+    mysql_root_password: str = ""
+    mysql_database: str = "zhiyu"
+    mysql_user: str = "zhiyu"
+    mysql_password: str = ""
+
+    # 连接池配置：仅 MySQL 等网络数据库生效，SQLite 路径不使用这些参数。
+    # 单实例连接上限为 db_pool_size + db_max_overflow，
+    # 该上限必须大于等于进程内所有线程池的线程总数，否则线程会在取连接时排队超时。
+    db_pool_size: int = Field(default=10, ge=1, le=100)
+    db_max_overflow: int = Field(default=20, ge=0, le=200)
+    db_pool_timeout: float = Field(default=30.0, gt=0, le=300)
+    # 必须小于 MySQL 的 wait_timeout（实测容器内为 28800 秒），
+    # 否则连接会被服务端先行掐断，应用侧再次使用时抛 "MySQL server has gone away"
+    db_pool_recycle: int = Field(default=3600, ge=60, le=28_000)
+
+    # Redis：任务队列、事件流、取消信号与分布式锁（Stage 3 起启用）
+    redis_url: str = "redis://127.0.0.1:6379/0"
+
     # 模型路径配置（需在 .env 中填写实际路径）
     whisper_model_path: str = ""
     embedding_provider: Literal["local", "openai_compatible"] = "local"
@@ -51,8 +72,15 @@ class Settings(BaseSettings):
     allowed_extensions: str = ".wav,.mp3,.flac,.ogg,.webm"  # 从 .env 读取为字符串
 
     # ChromaDB 向量数据库配置
+    # embedded：Chroma 作为库运行在应用进程内，直接读写 chroma_persist_path；
+    # server：连接独立的 Chroma 容器。多实例部署必须使用 server，
+    # 否则多个进程会同时写入同一份本地索引文件，损坏后不报错、只表现为召回变少。
+    chroma_mode: Literal["embedded", "server"] = "embedded"
     chroma_persist_path: str = "data/database/chromadb"
     chroma_collection_name: str = "notes"
+    # 仅 chroma_mode="server" 时生效（Stage 4 启用）
+    chroma_host: str = "chroma"
+    chroma_port: int = Field(default=8000, ge=1, le=65_535)
 
     # 混合检索配置（新增）
     rrf_k: float = 60.0  # RRF 融合常数
@@ -222,6 +250,22 @@ class Settings(BaseSettings):
             raise ValueError("CRAG_LOWER_THRESHOLD 必须小于 CRAG_UPPER_THRESHOLD")
         if self.crag_recovery_min_score > self.crag_lower_threshold:
             raise ValueError("CRAG_RECOVERY_MIN_SCORE 不能高于 CRAG_LOWER_THRESHOLD")
+        return self
+
+    @model_validator(mode="after")
+    def validate_chroma_server(self):
+        """server 模式必须有地址，让配置错误在启动时就暴露。
+
+        不加这条的话，CHROMA_HOST 写空仍然能启动，失败点被推迟到第一次检索——
+        而向量检索失败在这个项目里是「召回变少」而不是「报错」，很难当场察觉。
+
+        这里只做非空校验，不做 SSRF 那种网络地址校验：chroma_host 只来自 .env，
+        没有任何用户输入能影响它，不构成 SSRF 攻击面。而且仓库里现成的
+        validate_public_url 要求地址解析到公网 IP，套用到这里的话，正确配置
+        （Compose 服务名 chroma、127.0.0.1）反而会全部被判为非法。
+        """
+        if self.chroma_mode == "server" and not self.chroma_host.strip():
+            raise ValueError("CHROMA_MODE=server 时必须配置 CHROMA_HOST")
         return self
 
     def get_cors_origins(self) -> list:

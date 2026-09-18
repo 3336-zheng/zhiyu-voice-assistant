@@ -187,20 +187,69 @@ utf8mb4 下每字符最多 4 字节，InnoDB 索引键上限 3072 字节，即�
 
 ---
 
-## Stage 4 — Chroma server 模式 + 收封装泄漏 `S`
+## Stage 4 — Chroma server 模式 + 收封装泄漏 `S` ✅ 已完成（验收未做）
 
 **改动**
 - `backend/app/services/retrieval/chroma_service.py`
-- `backend/app/services/retrieval/hybrid_retrieval_service.py:109`、`:323`
-- `backend/app/services/retrieval/hybrid_retrieval_service.py:254`、`:269`、`:310`、`:637`
+- `backend/app/services/retrieval/hybrid_retrieval_service.py`
+- `backend/app/services/wiki/page_index_service.py`
+- `backend/app/services/ingestion/doc_index_service.py`
+- `backend/app/api/system/health.py`
+- `backend/app/core/config.py`、`docker-compose.yml`、`.env.example`
+- 新增 `test/unit/retrieval/test_chroma_client_factory.py`（13 项）、`test/unit/retrieval/test_retrieval_executor.py`（4 项）
 
 **内容**
-1. **先修封装泄漏**：`hybrid_retrieval_service` 两处直接访问 `self.chroma_service.collection.get(...)` 与 `.count()`，必须收敛为 `chroma_service` 的方法，否则更换 client 类型会失败
-2. `PersistentClient` 改为工厂函数，按配置返回 `PersistentClient` 或 `HttpClient`
-3. 工厂内增加向量库地址 SSRF 校验（参考 WeKnora `internal/container/engine_factory.go` 的 `validateRuntimeVectorStoreAddresses`）——现有外部研究已做 URL 校验，但向量库地址未做
-4. 顺手修复 4 处 per-request 线程池：`:254`、`:269`、`:310`、`:637` 目前都是 `with ThreadPoolExecutor(...)`，检索是高频路径，每次请求创建销毁线程池是纯浪费，改为服务实例级持有
+1. **封装泄漏不止计划里写的 2 处，是 6 处跨 4 个文件**：
+   - `hybrid_retrieval_service._fetch_doc_chunks` 直接 `.collection.get(ids=...)`
+   - `wiki/page_index_service` 直接 `.collection.add(...)`，还带一段
+     `getattr(self.chroma_service, "mark_index_changed", None)` 的防御性兜底
+   - `ingestion/doc_index_service` 三处：循环里逐块 `.collection.add(...)`、
+     全量 `.collection.get()` 后回 Python 侧过滤、`.collection.get(where={"source_type": "doc"})`
+   - `api/system/health.py` 的 `.collection.count()`
+   - 两处防御性 `getattr` 一起删除：它们存在的唯一原因就是外部绕过了服务层
+   - `ChromaService` 新增 `add_chunks` / `get_all_chunks` / `get_doc_metadatas` /
+     `get_chunks_by_ids` 收口，原生 collection 改名 `_collection`（私有化，grep 无残留）
 
-**验收**：embedded 与 server 两种模式下检索结果一致。
+2. `PersistentClient` 改为模块级工厂 `_create_client()`，按 `chroma_mode` 返回
+   `PersistentClient` 或 `HttpClient`。server 模式创建后主动 `heartbeat()` 一次，
+   把「连不上」从「第一次检索召回为 0」提前到「启动即失败」。
+
+3. **删掉原计划的 SSRF 校验**。`chroma_host/port` 只来自 `.env`，全仓没有任何运行时
+   改 settings 的路径，没有用户输入流入，不构成 SSRF 攻击面。仓库现成的
+   `validate_public_url` 要求地址解析到公网 IP，套到这里会让正确配置（Compose 服务名
+   `chroma`、`127.0.0.1`）全部被判非法，Stage 4 会直接起不来。
+   实际加的是 `Settings.validate_chroma_server`：server 模式必须有地址，只做非空校验。
+
+4. **线程池**：计划里写的 4 处 per-request 建池不实——`_recall()` 全仓无调用方
+   （死代码，已删）；`_encode_queries` 的池分支仅在测试替身缺方法时才走到，
+   生产不可达。真正 per-request 建池只有 2 处。改为服务实例级持有 `self._executor`，
+   `max_workers = settings.retrieval_max_workers`（默认 8）。
+
+   行为变化要记住：`agent/executor.py` 有个 `max_workers=4` 的池，经 `tool_registry`
+   最多 4 步并发进检索、各 2 路召回 = 8，正好等于默认额度。默认配置下是「各自开池」
+   换成「共用一个池、上限相同」，收益是并发有界、线程数可控，不是吞吐提升。
+   实测反向验证：把池改成 2 worker 仍能同时跑 6 查询 × 2 路，不死锁。
+
+5. 顺带修的两处：
+   - `doc_index_service` 逐块 `add()` 改成攒齐一次 `add_chunks()`——
+     server 模式下从「每块一次 HTTP 往返」变「一次」
+   - `get_all_chunks` 的 `source_type` 过滤下推到 Chroma（`where`），不再拉全量回
+     Python 侧筛；`include` 只带 documents/metadatas，不带 embeddings（向量比正文大一个量级）
+
+   另外 `get_all_chunks` **故意不捕获异常**，失败直接上抛。返回空列表会让
+   `rebuild_bm25_from_persistent` 把 BM25 索引清空并标记「已同步」，一次临时故障就变成
+   永久零结果。docstring 已写明不要「顺手」补 try/except。
+
+**新增测试**
+- `test_chroma_client_factory.py`：工厂按模式选客户端、server 主动探活、连不上时
+  报错含 NO_PROXY 提示；写入必标记索引变更、空批次不发请求、`where` 下推且
+  `include` 不含 embeddings、失败必须抛出而非返回空列表（防回归）
+- `test_retrieval_executor.py`：池按配置额度创建、多次检索复用同一个池、
+  并发数远超池容量时不死锁（池 2 worker vs 12 任务）、多线程同时检索结果不串位。
+  死锁那条做过反向验证：注入「池内任务又向同一个池提交」后确实挂死，
+  证明测试真的在检验死锁而不是恰好通过
+
+**验收（未执行，见「剩余工作」）**：embedded 与 server 两种模式下检索结果一致。
 
 ---
 
@@ -281,6 +330,47 @@ def recover_interrupted_runs(db, distributed: bool, stale_cutoff: datetime):
 参考 WeKnora 的 `docreader/`（独立 Python gRPC 服务）。将 pdfplumber / python-docx / faster-whisper 拆为独立服务，主 API 镜像不再安装 torch。
 
 前七阶段完成前不启动。
+
+---
+
+## 剩余工作（2026-09-18 暂停时点）
+
+### Stage 4 验收（继续时的第一步）
+- 代码已全部完成并通过测试（全量 140 passed + subtests；新增 13 + 4 全过），
+  暂停前剩最后一步：端到端双模式一致性验收。
+  做法：`docker compose up -d chroma` 起容器（bind mount 已指向 `./data/database/chromadb`，
+  实测同版本 server 可直接读 embedded 写出的数据）；本机运行需设
+  `NO_PROXY=127.0.0.1,localhost,chroma`（macOS 系统代理会让 httpx 连本机容器返回 502，
+  而 curl 不受影响）；分别以 `CHROMA_MODE=embedded` 与 `server` 跑同一批查询，
+  对比 doc_id 序列与分数。
+- 探针脚本已写好：`test/integration/dual_mode_probe.py`（未提交，仍在工作区）。
+  用固定种子向量采集两端指纹（count、5 组 top_k 检索、全量拉取摘要、元数据摘要、
+  按 ID 批量取），diff 两个 JSON。用固定向量而非真实 embedding，避免浮点噪声盖过真差异。
+- 顺带要测的两项（此前标记未知）：
+  1. server 下 `get_all_chunks` 全量拉取（约 973 条）单次 `get()` 是否需要分页
+  2. `HttpClient` 查询超时——已查明 `chroma_query_request_timeout_seconds` 默认 60s，
+     结论是「不设显式超时也等得起」，无需为超时加 shutdown 钩子
+
+### 提交相关
+- 分支 `feat/phase5-distributed` 无上游，后续 push 用 `git push -u origin`。
+- 根目录 11 个 LeetCode 文件绝不能进 commit，`git add` 必须显式列文件。
+- 公开仓库历史里有一枚未吊销的 DeepSeek key，历史清理需单独授权。
+
+### 文档欠账
+- Obsidian 侧：Stage 4 笔记未写（9 段结构、必含选型对比与后续完善）；总览文档的
+  进度表、Stage 4 索引双链、各 Stage 状态待更新。
+- 仓库侧：本计划的 Stage 4 状态标注「验收未做」，验收通过后改回 ✅ 并删掉本段第一条。
+
+### 后续阶段（未开工）
+Stage 5（索引/ASR 迁 arq）→ Stage 6（AgentRuntimeService 分布式化）→ Stage 7（多实例）
+→ Stage 8（可选，拆文档解析服务）。
+
+### 技术债（任意阶段插入）
+- 根目录 11 个 LeetCode 练习文件移出项目目录
+- `frontend/legacy/` 4 个死 HTML 文件删除
+- `package-lock.json` 与 `pnpm-lock.yaml` 二选一
+- `frontend/src/styles/index.css` 3562 行拆分
+- 前端 4 个 tab 无路由（刷新丢状态），引入 react-router
 
 ---
 

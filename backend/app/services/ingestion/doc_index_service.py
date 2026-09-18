@@ -304,25 +304,26 @@ class DocIndexService:
         # 写入 ChromaDB
         file_mtime = os.path.getmtime(filepath)
         doc_ids = []
+        metadatas = []
         for i, chunk in enumerate(chunks):
-            doc_id = f"doc_{Path(filename).stem}_{i}"
-            doc_ids.append(doc_id)
-            metadata = {
+            doc_ids.append(f"doc_{Path(filename).stem}_{i}")
+            metadatas.append({
                 "source_type": "doc",
                 "filename": filename,
                 "section_title": chunk["section_title"],
                 "chunk_idx": i,
                 "file_mtime": file_mtime,
-            }
-            self.chroma_service.collection.add(
-                ids=[doc_id],
-                embeddings=[embeddings[i]],
-                documents=[chunk["text"]],
-                metadatas=[metadata]
-            )
-        mark_index_changed = getattr(self.chroma_service, "mark_index_changed", None)
-        if callable(mark_index_changed):
-            mark_index_changed()
+            })
+
+        # 攒齐一次写入，而不是在循环里逐块 add：embedded 模式下两者只差几次函数调用，
+        # server 模式下前者是 1 次 HTTP 往返，后者是每块一次。
+        # add_chunks 内部会标记索引变更。
+        self.chroma_service.add_chunks(
+            ids=doc_ids,
+            embeddings=list(embeddings),
+            documents=[chunk["text"] for chunk in chunks],
+            metadatas=metadatas,
+        )
 
         # 写入 BM25
         for i, chunk in enumerate(chunks):
@@ -496,17 +497,18 @@ class DocIndexService:
 
         # 从 ChromaDB 加载旧文档与统一 Wiki 页面分块
         try:
-            results = self.chroma_service.collection.get(
-                include=["documents", "metadatas"]
-            )
-            if results["ids"]:
-                for i, doc_id in enumerate(results["ids"]):
-                    content = results["documents"][i] if results["documents"] else ""
-                    metadata = results["metadatas"][i] if results["metadatas"] else {}
-                    if metadata.get("source_type") in {"doc", "wiki_page"}:
-                        section_title = metadata.get("section_title", "")
-                        page_title = metadata.get("page_title", "")
-                        entries.append((doc_id, content, f"{page_title} {section_title}".strip()))
+            # source_type 的筛选交给 Chroma 做（get_all_chunks 内部下推成 where），
+            # 不再拉回全量后在 Python 里挑：不匹配的那些在 server 模式下要白白经过
+            # 序列化、网络传输、反序列化，最后才被丢掉。
+            for chunk in self.chroma_service.get_all_chunks(["doc", "wiki_page"]):
+                metadata = chunk["metadata"]
+                section_title = metadata.get("section_title", "")
+                page_title = metadata.get("page_title", "")
+                entries.append((
+                    chunk["id"],
+                    chunk["content"],
+                    f"{page_title} {section_title}".strip(),
+                ))
         except Exception as e:
             # 这里必须抛出而不是记日志继续。继续的话 entries 是空的，下面会把索引
             # 清空并标记成「已同步到 version」，于是 Chroma 的一次临时故障就让
@@ -561,17 +563,12 @@ class DocIndexService:
             Dict[str, float]: {filename: mtime}
         """
         try:
-            results = self.chroma_service.collection.get(
-                where={"source_type": "doc"},
-                include=["metadatas"]
-            )
             mtimes: Dict[str, float] = {}
-            if results["metadatas"]:
-                for metadata in results["metadatas"]:
-                    fname = metadata.get("filename", "")
-                    mtime = metadata.get("file_mtime", 0)
-                    if fname and mtime > mtimes.get(fname, 0):
-                        mtimes[fname] = mtime
+            for metadata in self.chroma_service.get_doc_metadatas():
+                fname = metadata.get("filename", "")
+                mtime = metadata.get("file_mtime", 0)
+                if fname and mtime > mtimes.get(fname, 0):
+                    mtimes[fname] = mtime
             return mtimes
         except Exception as e:
             logger.error(f"获取已索引 mtime 失败: {e}")

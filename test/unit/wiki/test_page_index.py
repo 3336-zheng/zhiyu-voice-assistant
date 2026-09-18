@@ -5,18 +5,15 @@ import unittest
 from backend.app.services.wiki.page_index_service import PageIndexService, split_parent_into_children
 
 
-class FakeCollection:
-    def __init__(self):
-        self.add_calls = []
-
-    def add(self, **kwargs):
-        self.add_calls.append(kwargs)
-
-
 class FakeChroma:
     def __init__(self):
-        self.collection = FakeCollection()
+        # 替身实现 ChromaService 的公开方法即可，不再伪造一层原生 Collection。
+        self.add_calls = []
         self.deleted_filters = []
+
+    def add_chunks(self, **kwargs):
+        self.add_calls.append(kwargs)
+        return True
 
     def delete_by_filter(self, where):
         self.deleted_filters.append(where)
@@ -63,7 +60,7 @@ class PageIndexServiceTestCase(unittest.TestCase):
         }
         result = self.service.index_page(page)
         self.assertEqual(result["status"], "indexed")
-        add_call = self.service.chroma_service.collection.add_calls[-1]
+        add_call = self.service.chroma_service.add_calls[-1]
         parent_ids = [
             chunk_id for chunk_id in add_call["ids"]
             if ":child:" not in chunk_id

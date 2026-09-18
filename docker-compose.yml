@@ -1,10 +1,10 @@
 # 智语端侧智能语音笔记助手 Docker Compose 配置
 # 使用方法：docker compose up --build
 #
-# Phase 5 分布式改造 Stage 0：基础设施就位，应用层零改动。
-# 本阶段 zhiyu 仍使用 SQLite 与 ChromaDB 嵌入模式，
-# MySQL / Redis / Chroma 三个容器只是准备好，尚未被应用连接。
-# 数据库切换在 Stage 1-2，Chroma 切换在 Stage 4。
+# Phase 5 分布式改造：MySQL（Stage 1-2）、Redis（Stage 3 起）、
+# Chroma server 模式（Stage 4）均已接入，三个容器都在被应用真正使用。
+# 本地直接运行 python main.py 时走 .env 里的宿主机地址；
+# 容器内则由下面的 environment 覆盖为 compose 内网服务名。
 
 services:
   mysql:
@@ -66,7 +66,13 @@ services:
     image: chromadb/chroma:1.5.9
     container_name: zhiyu-chroma
     volumes:
-      - chroma_data:/data
+      # 直接挂 embedded 模式一直在用的那个目录，而不是用独立的 named volume。
+      # 实测同版本（1.5.9）的 server 能直接读 PersistentClient 写出来的数据，
+      # 973 个 chunk 原样可见，所以切模式不需要任何数据迁移，本地目录同时也是
+      # 切回 embedded 的回退路径。
+      # 注意：两种模式共用这一份文件，所以只能二选一地开，不能同时跑——
+      # 同时写同一份索引正是本 Stage 要消灭的那个问题。
+      - ./data/database/chromadb:/data
     # 8001 避开本机 api.tiwork.ai 占用的 8000
     ports:
       - "127.0.0.1:8001:8000"
@@ -108,18 +114,20 @@ services:
       # 这里用插值而不是写死连接串，是为了让密码只存在于 .env 一处。
       - DATABASE_URL=mysql+pymysql://${MYSQL_USER:-zhiyu}:${MYSQL_PASSWORD:?必须在 .env 中设置 MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-zhiyu}?charset=utf8mb4
       - REDIS_URL=redis://redis:6379/0
+      # 容器内固定走 server 模式：向量库是独立容器，embedded 会去读 /app/data 下
+      # 那份文件，和 chroma 容器同时写同一份索引，正是本 Stage 要消灭的情况。
+      - CHROMA_MODE=server
       - CHROMA_HOST=chroma
       - CHROMA_PORT=8000
-    # 本阶段尚未连接 chroma 容器，因此不加入依赖，避免其健康检查阻塞应用启动；
-    # Stage 4 切换到 HttpClient 时再补上 chroma 依赖
     depends_on:
       mysql:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      chroma:
         condition: service_healthy
     restart: unless-stopped
 
 volumes:
   mysql_data:
   redis_data:
-  chroma_data:

@@ -147,15 +147,13 @@ class PageIndexService:
 
         embeddings = self.embedding_service.encode_documents(texts)
 
-        self.chroma_service.collection.add(
+        # add_chunks 内部会标记索引变更，这里不需要再调一次 mark_index_changed。
+        self.chroma_service.add_chunks(
             ids=ids,
             embeddings=embeddings,
             documents=texts,
             metadatas=metadatas,
         )
-        mark_index_changed = getattr(self.chroma_service, "mark_index_changed", None)
-        if callable(mark_index_changed):
-            mark_index_changed()
         for chunk_id, text, metadata in zip(ids, texts, metadatas):
             self.bm25_service.add_document(
                 chunk_id,

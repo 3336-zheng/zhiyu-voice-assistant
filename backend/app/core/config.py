@@ -252,6 +252,22 @@ class Settings(BaseSettings):
             raise ValueError("CRAG_RECOVERY_MIN_SCORE 不能高于 CRAG_LOWER_THRESHOLD")
         return self
 
+    @model_validator(mode="after")
+    def validate_chroma_server(self):
+        """server 模式必须有地址，让配置错误在启动时就暴露。
+
+        不加这条的话，CHROMA_HOST 写空仍然能启动，失败点被推迟到第一次检索——
+        而向量检索失败在这个项目里是「召回变少」而不是「报错」，很难当场察觉。
+
+        这里只做非空校验，不做 SSRF 那种网络地址校验：chroma_host 只来自 .env，
+        没有任何用户输入能影响它，不构成 SSRF 攻击面。而且仓库里现成的
+        validate_public_url 要求地址解析到公网 IP，套用到这里的话，正确配置
+        （Compose 服务名 chroma、127.0.0.1）反而会全部被判为非法。
+        """
+        if self.chroma_mode == "server" and not self.chroma_host.strip():
+            raise ValueError("CHROMA_MODE=server 时必须配置 CHROMA_HOST")
+        return self
+
     def get_cors_origins(self) -> list:
         """获取 CORS 允许的源列表"""
         if self.cors_origins == "*":

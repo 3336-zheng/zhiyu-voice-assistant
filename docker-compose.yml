@@ -164,6 +164,20 @@ services:
     depends_on: *app-depends
     restart: unless-stopped
 
+  # Agent 运行专用 worker。运行可能跑满 180 秒且是交互式任务，
+  # 与索引、转写分开排队，免得排在后台批处理后面。
+  # 它也是唯一执行 Agent 的进程，API 重启不影响正在进行的对话。
+  arq-worker-agent:
+    build: .
+    container_name: zhiyu-arq-worker-agent
+    command: arq backend.app.tasks.worker.AgentWorkerSettings
+    volumes: *app-volumes
+    env_file:
+      - .env
+    environment: *app-environment
+    depends_on: *app-depends
+    restart: unless-stopped
+
 volumes:
   mysql_data:
   redis_data:

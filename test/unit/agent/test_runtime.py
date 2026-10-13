@@ -11,7 +11,12 @@ from unittest.mock import patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from backend.app.agent.events import AgentEventType, AgentRunCancelled, AgentRuntimeEvent
+from backend.app.agent.events import (
+    TERMINAL_EVENT_TYPES,
+    AgentEventType,
+    AgentRunCancelled,
+    AgentRuntimeEvent,
+)
 from backend.app.agent.models import AgentResponse
 from backend.app.core.config import settings
 from backend.app.core.database import Base
@@ -20,8 +25,8 @@ from backend.app.services.runtime.agent_runtime_service import (
     AgentRunConflict,
     AgentRunNotFound,
     AgentRunStatus,
+    AgentRuntimeError,
     AgentRuntimeService,
-    RuntimeRun,
 )
 
 
@@ -43,6 +48,9 @@ class FakeAgentStateStore:
         self.sessions = {}
         self.cancels = {}
         self._entry = 0
+        # 操作顺序日志：状态与事件是两个存储，谁先谁后决定了客户端
+        # 收到终止事件时能不能查到终态，需要能被断言
+        self.ops = []
 
     # ---------------------------------------------------------- 运行注册表
 
@@ -71,6 +79,7 @@ class FakeAgentStateStore:
                 run["error"] = error
 
     def save_terminal(self, run_id, status, error, response, finished_at):
+        self.ops.append(("save_terminal", status))
         run = self.runs.get(run_id)
         if run is not None:
             run.update(
@@ -109,6 +118,7 @@ class FakeAgentStateStore:
     # ---------------------------------------------------------- 事件流
 
     def append_event(self, run_id, event):
+        self.ops.append(("append_event", event["type"]))
         self._entry += 1
         self.streams.setdefault(run_id, []).append((str(self._entry), event))
         run = self.runs.get(run_id)
@@ -234,11 +244,32 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         Base.metadata.create_all(self.engine)
         self.session_factory = sessionmaker(bind=self.engine)
         self.state = FakeAgentStateStore()
+        self.dispatched = []
 
     def _runtime(self, **kwargs) -> AgentRuntimeService:
+        """构造一个运行时服务。
+
+        执行现在发生在 worker 进程里，所以 start() 只创建运行并投递。
+        测试里用一个记录调用的替身投递器代替 arq，再显式调 execute_run
+        来扮演 worker——这样「API 只创建」「worker 才执行」这条边界是被
+        真的走过的，而不是靠 start() 顺手把活干了。
+        """
         kwargs.setdefault("session_factory", self.session_factory)
         kwargs.setdefault("state_store", self.state)
+        kwargs.setdefault("run_dispatcher", self._dispatch)
         return AgentRuntimeService(**kwargs)
+
+    async def _dispatch(self, run_id: str) -> bool:
+        self.dispatched.append(run_id)
+        return True
+
+    async def _run_to_completion(self, runtime: AgentRuntimeService, run_id: str, timeout: float = 5.0):
+        """扮演 agent worker：把投递出去的运行执行掉。"""
+        return await asyncio.wait_for(runtime.execute_run(run_id), timeout=timeout)
+
+    def _execute_in_background(self, runtime: AgentRuntimeService, run_id: str) -> asyncio.Task:
+        """扮演 agent worker，但不等待它结束——用于测试运行中途的交互。"""
+        return asyncio.create_task(runtime.execute_run(run_id))
 
     def _stream_events(self, run_id):
         return [
@@ -255,10 +286,15 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         runtime = self._runtime(agent_factory=lambda: agent)
 
         run = await runtime.start("测试问题", "session-stream")
-        await run.task
+        self.assertEqual(self.dispatched, [run.run_id], "start 应当把运行投递出去")
+        await self._run_to_completion(runtime, run.run_id)
 
         self.assertEqual(agent.call_count, 1)
-        self.assertEqual(run.status, AgentRunStatus.COMPLETED)
+        # 断言共享状态而不是 start() 返回的那个对象：执行在 worker 进程里，
+        # 它新建了自己的运行句柄，API 手上这份只是一张回执。
+        self.assertEqual(
+            self.state.get_run(run.run_id)["status"], AgentRunStatus.COMPLETED.value
+        )
 
         events = self._stream_events(run.run_id)
         self.assertEqual([event.sequence for event in events], list(range(1, len(events) + 1)))
@@ -292,7 +328,7 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         agent = StreamingAgent()
         runtime = self._runtime(agent_factory=lambda: agent)
         run = await runtime.start("测试问题", "session-expired")
-        await run.task
+        await self._run_to_completion(runtime, run.run_id)
 
         self.state.delete_events(run.run_id)
 
@@ -311,6 +347,7 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         agent = BlockingAgent()
         runtime = self._runtime(agent_factory=lambda: agent)
         run = await runtime.start("第一个问题", "session-conflict")
+        worker = self._execute_in_background(runtime, run.run_id)
         await asyncio.wait_for(agent.started.wait(), timeout=1)
 
         with self.assertRaises(AgentRunConflict):
@@ -318,13 +355,15 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
         cancelling = await runtime.cancel(run.run_id, run.session_id)
         self.assertEqual(cancelling["status"], AgentRunStatus.CANCELLING.value)
-        await asyncio.wait_for(run.task, timeout=1)
-        self.assertEqual(run.status, AgentRunStatus.CANCELLED)
+        await asyncio.wait_for(worker, timeout=5)
+        self.assertEqual(
+            self.state.get_run(run.run_id)["status"], AgentRunStatus.CANCELLED.value
+        )
         self.assertEqual(
             self._stream_events(run.run_id)[-1].type, AgentEventType.RUN_CANCELLED
         )
 
-    async def _await_cancelled(self, run: RuntimeRun, timeout: float = 5.0) -> None:
+    async def _await_cancelled(self, run, worker_future, timeout: float = 5.0) -> None:
         """等运行结束，并确认它是被「协作式取消」停下的。
 
         只断言 status == CANCELLED 是不够的：asyncio.wait_for 超时会取消任务，
@@ -332,10 +371,11 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         「服务退出」）。两者混在一起时，取消信号根本没送达也会让断言通过。
         所以这里断言只有协作式取消路径才会写下的错误信息。
         """
-        await asyncio.wait_for(run.task, timeout=timeout)
-        self.assertEqual(run.status, AgentRunStatus.CANCELLED)
+        await asyncio.wait_for(worker_future, timeout=timeout)
+        state = self.state.get_run(run.run_id)
+        self.assertEqual(state["status"], AgentRunStatus.CANCELLED.value)
         self.assertEqual(
-            run.error,
+            state["error"],
             "运行已由用户停止",
             "运行不是被取消信号停下的（可能是测试超时把任务取消了）",
         )
@@ -346,6 +386,7 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         agent = BlockingAgent()
         executor = self._runtime(agent_factory=lambda: agent)
         run = await executor.start("被取消的问题", "session-cross-cancel")
+        worker = self._execute_in_background(executor, run.run_id)
         await asyncio.wait_for(agent.started.wait(), timeout=1)
 
         # 另一个实例：本地没有运行句柄，只有共享的状态存储
@@ -353,7 +394,7 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         snapshot = await other_instance.cancel(run.run_id, run.session_id)
         self.assertEqual(snapshot["status"], AgentRunStatus.CANCELLING.value)
 
-        await self._await_cancelled(run)
+        await self._await_cancelled(run, worker)
         self.assertEqual(
             self.state.get_run(run.run_id)["status"], AgentRunStatus.CANCELLED.value
         )
@@ -363,11 +404,12 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         agent = BlockingAgent()
         executor = self._runtime(agent_factory=lambda: agent)
         run = await executor.start("被取消的问题", "session-clear-cancel")
+        worker = self._execute_in_background(executor, run.run_id)
         await asyncio.wait_for(agent.started.wait(), timeout=1)
 
         other_instance = self._runtime()
         await other_instance.cancel(run.run_id, run.session_id)
-        await self._await_cancelled(run)
+        await self._await_cancelled(run, worker)
 
         self.assertFalse(self.state.is_cancel_requested(run.run_id))
 
@@ -375,7 +417,7 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         agent = StreamingAgent()
         runtime = self._runtime(agent_factory=lambda: agent)
         run = await runtime.start("已完成的问题", "session-idempotent")
-        await run.task
+        await self._run_to_completion(runtime, run.run_id)
 
         snapshot = await runtime.cancel(run.run_id, run.session_id)
         self.assertEqual(snapshot["status"], AgentRunStatus.COMPLETED.value)
@@ -384,6 +426,7 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         agent = BlockingAgent()
         runtime = self._runtime(agent_factory=lambda: agent)
         run = await runtime.start("问题", "session-owner")
+        worker = self._execute_in_background(runtime, run.run_id)
         await asyncio.wait_for(agent.started.wait(), timeout=1)
         try:
             with self.assertRaises(AgentRunNotFound):
@@ -392,14 +435,91 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 await runtime.cancel("no-such-run", "session-owner")
         finally:
             await runtime.cancel(run.run_id, run.session_id)
-            await asyncio.wait_for(run.task, timeout=5)
+            await asyncio.wait_for(worker, timeout=5)
+
+    async def test_投递失败时释放会话锁并把运行标记为失败(self):
+        # 不收拾的话运行会永远停在 pending，而会话锁还握着——
+        # 用户之后每次提问都被判「会话忙」，要等锁的 TTL 到期才能恢复。
+        async def broken_dispatch(run_id: str) -> bool:
+            raise OSError("队列连不上")
+
+        runtime = AgentRuntimeService(
+            session_factory=self.session_factory,
+            state_store=self.state,
+            run_dispatcher=broken_dispatch,
+        )
+        with self.assertRaises(AgentRuntimeError):
+            await runtime.start("问题", "session-dispatch-fail")
+
+        self.assertIsNone(
+            self.state.get_session_run("session-dispatch-fail"),
+            "投递失败后会话锁没有释放",
+        )
+        states = list(self.state.runs.values())
+        self.assertEqual(len(states), 1)
+        self.assertEqual(states[0]["status"], AgentRunStatus.FAILED.value)
+
+    async def test_投递被拒时同样收尾(self):
+        # arq 对已存在的 job_id 返回 None。正常路径走不到（run_id 是新 uuid），
+        # 但真发生时也不能让会话被锁住。
+        async def rejected_dispatch(run_id: str) -> bool:
+            return False
+
+        runtime = AgentRuntimeService(
+            session_factory=self.session_factory,
+            state_store=self.state,
+            run_dispatcher=rejected_dispatch,
+        )
+        with self.assertRaises(AgentRunConflict):
+            await runtime.start("问题", "session-dispatch-rejected")
+        self.assertIsNone(self.state.get_session_run("session-dispatch-rejected"))
+
+    async def test_worker_跳过已经取消的运行(self):
+        # 投递到执行之间用户取消了，worker 拿到任务时不该再跑一遍
+        agent = StreamingAgent()
+        runtime = self._runtime(agent_factory=lambda: agent)
+        run = await runtime.start("问题", "session-skip")
+        await runtime.cancel(run.run_id, run.session_id)
+
+        await runtime.execute_run(run.run_id)
+        self.assertEqual(agent.call_count, 0, "已经取消的运行不该被执行")
+
+    async def test_终止事件一定在终态写完之后才发出(self):
+        """状态与事件是两个存储，谁先谁后决定了客户端会不会读到过期值。
+
+        客户端收到 run_completed 之后往往会立刻查一次状态来渲染结果；
+        事件先发的话那一查会看到 running。
+
+        这里断言操作顺序而不是「读到终止事件后去查状态」——后者依赖时序，
+        两次存储之间的窗口不一定每次都被踩到，测试会时灵时不灵。
+        """
+        agent = StreamingAgent()
+        runtime = self._runtime(agent_factory=lambda: agent)
+        run = await runtime.start("问题", "session-terminal-order")
+        await self._run_to_completion(runtime, run.run_id)
+
+        ops = self.state.ops
+        terminal_index = max(
+            index
+            for index, (kind, value) in enumerate(ops)
+            if kind == "append_event" and value == AgentEventType.RUN_COMPLETED.value
+        )
+        saves_before = [
+            value
+            for kind, value in ops[:terminal_index]
+            if kind == "save_terminal" and value == AgentRunStatus.COMPLETED.value
+        ]
+        self.assertTrue(
+            saves_before,
+            "终止事件发出时终态还没写——客户端会读到过期的 running",
+        )
 
     async def test_run_completion_releases_session_lock(self):
         # 锁没释放的话，用户跑完一轮再问第二个问题会被判「会话忙」。
         agent = StreamingAgent()
         runtime = self._runtime(agent_factory=lambda: agent)
         run = await runtime.start("第一个问题", "session-release")
-        await run.task
+        await self._run_to_completion(runtime, run.run_id)
 
         self.assertIsNone(self.state.get_session_run("session-release"))
         second = await runtime.start("第二个问题", "session-release")
@@ -411,22 +531,24 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         agent = StreamingAgent()
         runtime = self._runtime(agent_factory=lambda: agent)
         finished = await runtime.start("旧问题", "session-stale")
-        await finished.task
+        await self._run_to_completion(runtime, finished.run_id)
 
         # 手动把锁塞回去，模拟「没释放成功」
         self.state.sessions["session-stale"] = finished.run_id
 
         run = await runtime.start("新问题", "session-stale")
         self.assertIsNotNone(run)
-        await run.task
+        await self._run_to_completion(runtime, run.run_id)
 
     async def test_total_timeout_produces_terminal_error(self):
         runtime = self._runtime(agent_factory=SlowAgent)
         with patch.object(settings, "agent_run_timeout_seconds", 0.02):
             run = await runtime.start("超时问题", "session-timeout")
-            await asyncio.wait_for(run.task, timeout=1)
+            await self._run_to_completion(runtime, run.run_id)
 
-        self.assertEqual(run.status, AgentRunStatus.TIMED_OUT)
+        self.assertEqual(
+            self.state.get_run(run.run_id)["status"], AgentRunStatus.TIMED_OUT.value
+        )
         last = self._stream_events(run.run_id)[-1]
         self.assertEqual(last.type, AgentEventType.RUN_ERROR)
         self.assertEqual(last.data["code"], "run_timeout")

@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
 from backend.app.agent.events import (
     AgentEventType,
@@ -127,18 +127,26 @@ class RuntimeRun:
 
 
 class AgentRuntimeService:
-    """以 Redis 承载运行态，以数据库保存终态快照。"""
+    """运行状态经 Redis 共享；执行发生在 worker 进程里。
+
+    API 进程与 worker 进程用的是同一个类，但走的分支不同：
+    API 调 start() 创建运行并投递，worker 调 execute_run() 真正执行。
+    状态全在 Redis 上，两边不需要交换别的上下文。
+    """
 
     def __init__(
         self,
         agent_factory: Optional[Callable[[], Any]] = None,
         session_factory: Callable[[], Any] = SessionLocal,
         state_store: Optional[AgentStateStore] = None,
+        run_dispatcher: Optional[Callable[[str], Awaitable[bool]]] = None,
     ) -> None:
         self._agent_factory = agent_factory
         self._session_factory = session_factory
         self._state = state_store or get_agent_state_store()
-        # 只保存「本实例正在执行」的运行。读取方不查它，一律走 Redis。
+        self._dispatch_run = run_dispatcher or _enqueue_run
+        # 只有执行方（worker）会往里放东西；查询、取消一律走 Redis，
+        # 所以 API 进程里它始终是空的。
         self._runs: Dict[str, RuntimeRun] = {}
         self._lock = asyncio.Lock()
 
@@ -175,9 +183,8 @@ class AgentRuntimeService:
         *,
         allow_external_research: bool = False,
     ) -> RuntimeRun:
-        """创建并启动一次运行；同一会话只允许一个活动运行。"""
+        """创建一次运行并投递给 worker；同一会话只允许一个活动运行。"""
         async with self._lock:
-            self._cleanup_finished_runs()
             run_id = str(uuid.uuid4())
             self._claim_session(session_id, run_id)
 
@@ -187,7 +194,6 @@ class AgentRuntimeService:
                 query=query,
                 allow_external_research=bool(allow_external_research),
             )
-            self._runs[run_id] = run
             # 先写注册表再追加事件：SSE 可能在任何时刻连上来，
             # 注册表不在的话它会以为这条运行不存在。
             self._state.create_run(
@@ -204,11 +210,98 @@ class AgentRuntimeService:
                 {"query": query, "status": AgentRunStatus.PENDING.value},
             )
             await asyncio.to_thread(self._persist_start, run)
-            run.task = asyncio.create_task(
-                self._execute(run),
-                name=f"agent-run-{run.run_id}",
+
+        # 投递放在锁外：这是一次网络调用，没必要占着会话锁等它。
+        try:
+            dispatched = await self._dispatch_run(run.run_id)
+        except Exception as exc:
+            await self._abort_unstarted_run(run, exc)
+            raise AgentRuntimeError(f"任务队列不可用，运行未能启动: {exc}") from exc
+        if not dispatched:
+            # arq 对已存在的 job_id 返回 None，说明这条运行已经在队列里了。
+            # 正常路径走不到（run_id 是新生成的 uuid），但不该让调用方
+            # 以为它跑起来了。
+            await self._abort_unstarted_run(run, AgentRunConflict("该运行已经在队列中"))
+            raise AgentRunConflict("该运行已经在队列中")
+        return run
+
+    async def _abort_unstarted_run(self, run: RuntimeRun, exc: Exception) -> None:
+        """投递失败时把运行收尾掉。
+
+        不收拾的话它会永远停在 pending，而**会话锁还握着**——用户之后每次
+        提问都会被判「会话忙」，且要等到锁的 TTL 到期才能恢复。
+        """
+        logger.error("Agent 运行投递失败: run_id=%s error=%s", run.run_id, exc)
+        run.status = AgentRunStatus.FAILED
+        run.error = "运行未能启动"
+        self._append_terminal_event(
+            run, AgentEventType.RUN_ERROR, {"message": run.error, "code": "dispatch_failed"}
+        )
+        run.finished_at = time.time()
+        await asyncio.to_thread(self._persist_terminal, run)
+        self._finalize_state(run)
+
+    async def execute_run(self, run_id: str) -> None:
+        """在 worker 进程里执行一次已经创建好的运行。
+
+        状态全在 Redis 上，所以这里只要一个 run_id 就够了——不需要把查询、
+        会话等信息从 API 进程传过来，也就不会出现「参数与注册表不一致」。
+        """
+        state = await self._load_state(run_id)
+        if state is None:
+            raise AgentRuntimeError(f"运行不存在或已过期: {run_id}")
+        if state["status"] in TERMINAL_STATUS_VALUES:
+            # 被重复消费，或者终态已经写过了。
+            logger.info(
+                "运行已是终态，跳过执行: run_id=%s status=%s", run_id, state["status"]
             )
-            return run
+            return
+        if state["status"] == AgentRunStatus.CANCELLING.value:
+            # 投递到执行之间用户取消了。不该白跑一遍，但**必须写下终止事件**——
+            # 否则订阅 SSE 的客户端会一直等一个永远不会到来的终止信号。
+            logger.info("运行在排队期间已被取消，跳过执行: run_id=%s", run_id)
+            await self._finish_skipped_cancellation(state)
+            return
+
+        run = RuntimeRun(
+            run_id=state["run_id"],
+            session_id=state["session_id"],
+            query=state["query"],
+            allow_external_research=state["allow_external_research"],
+            status=AgentRunStatus.RUNNING,
+            # 从注册表接着数：RUN_STARTED 是 API 进程写进去的，
+            # 序号从 0 重新开始的话前端会看到回溯的事件 id。
+            sequence=state["sequence"],
+            started_at=state["started_at"] or time.time(),
+        )
+        self._runs[run_id] = run
+        try:
+            await self._execute(run)
+        finally:
+            self._runs.pop(run_id, None)
+
+    async def _finish_skipped_cancellation(self, state: Dict[str, Any]) -> None:
+        """把排队期间被取消的运行直接收尾。
+
+        SSE 客户端只认终止事件，所以这里必须补一条 RUN_CANCELLED——
+        只把状态改掉的话，客户端会挂在那里等。
+        """
+        run = RuntimeRun(
+            run_id=state["run_id"],
+            session_id=state["session_id"],
+            query=state["query"],
+            allow_external_research=state["allow_external_research"],
+            status=AgentRunStatus.CANCELLED,
+            sequence=state["sequence"],
+            started_at=state["started_at"] or time.time(),
+        )
+        run.error = "运行已由用户停止"
+        run.finished_at = time.time()
+        self._append_terminal_event(
+            run, AgentEventType.RUN_CANCELLED, {"message": run.error}
+        )
+        await asyncio.to_thread(self._persist_terminal, run)
+        self._finalize_state(run)
 
     def _claim_session(self, session_id: str, run_id: str) -> None:
         """抢占会话锁，抢不到就报冲突。
@@ -235,20 +328,37 @@ class AgentRuntimeService:
             # 接管过程中被别人抢先了。
             raise AgentRunConflict("当前会话已有正在运行的请求，请等待完成或先停止")
 
-    def _cleanup_finished_runs(self) -> None:
-        """清掉本实例里已经结束的运行句柄。
+    def _publish_terminal_state(self, run: RuntimeRun) -> None:
+        """把终态写进注册表。
 
-        注册表和事件流的保留期由 Redis 的 TTL 负责，这里只管本地字典——
-        它是执行句柄，不是读取方的事实来源。
+        **必须在追加终止事件之前调用**：状态和事件是两个存储，客户端收到
+        run_completed 之后往往会立刻查一次状态，先发事件的话那一查会看到
+        running——一个只在两个存储之间存在的窗口。
         """
-        cutoff = time.time() - settings.agent_run_retention_seconds
-        expired = [
-            run_id
-            for run_id, run in self._runs.items()
-            if run.terminal and (run.finished_at or run.started_at) < cutoff
-        ]
-        for run_id in expired:
-            self._runs.pop(run_id, None)
+        if run.finished_at is None:
+            run.finished_at = time.time()
+        try:
+            self._state.save_terminal(
+                run_id=run.run_id,
+                status=run.status.value,
+                error=run.error,
+                response=(
+                    run.response.model_dump(mode="json") if run.response else None
+                ),
+                finished_at=run.finished_at,
+            )
+        except AgentStateUnavailable as exc:
+            logger.warning("写入运行终态失败: run_id=%s error=%s", run.run_id, exc)
+
+    def _append_terminal_event(
+        self,
+        run: RuntimeRun,
+        event_type: AgentEventType,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> AgentRuntimeEvent:
+        """先落终态、再发终止事件。顺序理由见 _publish_terminal_state。"""
+        self._publish_terminal_state(run)
+        return self._append_event(run, event_type, data)
 
     def _append_event(
         self,
@@ -344,7 +454,7 @@ class AgentRuntimeService:
                     {"content": response.response},
                 )
             run.status = AgentRunStatus.COMPLETED
-            self._append_event(
+            self._append_terminal_event(
                 run,
                 AgentEventType.RUN_COMPLETED,
                 {"response": response.model_dump(mode="json")},
@@ -355,7 +465,7 @@ class AgentRuntimeService:
                 # 否则用户会以为是自己点了停止。
                 run.status = AgentRunStatus.FAILED
                 run.error = f"运行时状态存储不可用: {run.state_broken}"
-                self._append_event(
+                self._append_terminal_event(
                     run,
                     AgentEventType.RUN_ERROR,
                     {"message": run.error, "code": "state_unavailable"},
@@ -363,7 +473,7 @@ class AgentRuntimeService:
             else:
                 run.status = AgentRunStatus.CANCELLED
                 run.error = "运行已由用户停止"
-                self._append_event(
+                self._append_terminal_event(
                     run,
                     AgentEventType.RUN_CANCELLED,
                     {"message": run.error},
@@ -380,7 +490,7 @@ class AgentRuntimeService:
                 retryable=True,
                 message=run.error,
             )
-            self._append_event(
+            self._append_terminal_event(
                 run,
                 AgentEventType.RUN_ERROR,
                 {"message": run.error, "code": "run_timeout"},
@@ -416,7 +526,7 @@ class AgentRuntimeService:
                 exception=exc,
                 run_id=run.run_id,
             )
-            self._append_event(
+            self._append_terminal_event(
                 run,
                 AgentEventType.RUN_ERROR,
                 {"message": run.error, "code": type(exc).__name__},
@@ -874,6 +984,13 @@ class AgentRuntimeService:
             }
         finally:
             db.close()
+
+
+async def _enqueue_run(run_id: str) -> bool:
+    """默认投递实现。延迟导入避免 tasks 与 runtime 之间的循环依赖。"""
+    from backend.app.tasks.queue import enqueue_agent_run
+
+    return await enqueue_agent_run(run_id)
 
 
 runtime_instance: Optional[AgentRuntimeService] = None

@@ -210,6 +210,11 @@ class Settings(BaseSettings):
     arq_asr_queue: str = "arq:asr"
     arq_asr_max_jobs: int = Field(default=4, ge=1, le=32)
 
+    # Agent 运行队列。与索引、ASR 分开：一次运行可能跑满 180 秒，
+    # 而且它是要被人盯着看的交互式任务，不该排在后台批处理的后面。
+    arq_agent_queue: str = "arq:agent"
+    arq_agent_max_jobs: int = Field(default=4, ge=1, le=32)
+
     # 旧 data/docs 兼容索引；新部署默认只使用 Wiki 主数据。
     sync_legacy_docs_on_startup: bool = False
 

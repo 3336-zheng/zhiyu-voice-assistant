@@ -113,12 +113,9 @@ async def lifespan(app: FastAPI):
     from ..services.runtime.agent_runtime_service import get_agent_runtime_service
 
     agent_runtime = get_agent_runtime_service()
-    try:
-        interrupted_runs = agent_runtime.recover_interrupted_runs()
-        if interrupted_runs:
-            logger.warning("已将 %s 个中断的 Agent 运行标记为失败", interrupted_runs)
-    except Exception as exc:
-        logger.warning("Agent 运行恢复失败（不影响启动）: %s", exc, exc_info=True)
+    # 这里**不再**回收「运行中」的任务：Agent 运行现在跑在 worker 进程里，
+    # API 重启不该把它们标记成失败（滚动重启会把正在进行的对话全杀掉）。
+    # 回收改由 agent worker 在自己的启动流程里做，见 tasks/worker.py。
     settings.get_upload_dir()
     _migrate_relative_paths()
 

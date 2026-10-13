@@ -110,6 +110,24 @@ async def _enqueue_one(pool: ArqRedis, task_id: str) -> None:
     )
 
 
+async def enqueue_agent_run(run_id: str) -> bool:
+    """把一次 Agent 运行投给 worker 执行。返回 False 表示这次运行已经在队列里。
+
+    执行发生在 worker 进程里，API 只负责创建运行、订阅事件和转发取消——
+    这样 API 重启不会打断正在跑的运行，API 实例也可以任意扩缩。
+
+    job_id 用运行 id：同一条运行重复投递会被 arq 挡掉，不会被执行两次。
+    """
+    pool = await ensure_pool()
+    job = await pool.enqueue_job(
+        "run_agent",
+        run_id,
+        _job_id=f"agent:{run_id}",
+        _queue_name=settings.arq_agent_queue,
+    )
+    return job is not None
+
+
 async def _enqueue_many(pool: ArqRedis, task_ids: List[str]) -> None:
     for task_id in task_ids:
         await _enqueue_one(pool, task_id)

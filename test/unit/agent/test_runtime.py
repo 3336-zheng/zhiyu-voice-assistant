@@ -236,6 +236,25 @@ class SlowAgent:
         await asyncio.sleep(10)
 
 
+class TracingAgent:
+    """返回带完整追踪信息的响应，用于验证这些字段有没有落库。"""
+
+    async def run(self, query, session_id, db, event_callback, cancel_check,
+                  raise_errors, allow_external_research=False):
+        event_callback(AgentEventType.TOKEN, {"content": "答"})
+        return AgentResponse(
+            query=query,
+            response="答",
+            session_id=session_id,
+            timestamp=datetime.now(),
+            execution_time_ms=7,
+            timeline=[{"stage": "retrieval.recall", "duration_ms": 3.0}],
+            retrieval_stats={"fused": 5, "reranked": 3},
+            model_usage={"call_count": 2, "total_tokens": 123},
+            token_budget={"used": 100, "limit": 4000},
+        )
+
+
 class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -513,6 +532,29 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             saves_before,
             "终止事件发出时终态还没写——客户端会读到过期的 running",
         )
+
+    async def test_执行搬到_worker_后追踪字段仍然落库(self):
+        """计划里标记的「已知坑」：这三个字段会不会因为执行换了进程而变空。
+
+        它们来自 run.response，而落库（_persist_terminal）与执行（_execute）
+        始终在同一个进程里——所以执行搬到 worker 之后依然成立。
+        这条测试把结论钉住，避免以后有人把落库挪到 API 侧时静默丢数据。
+        """
+        runtime = self._runtime(agent_factory=TracingAgent)
+        run = await runtime.start("问题", "session-tracing")
+        await self._run_to_completion(runtime, run.run_id)
+
+        session = self.session_factory()
+        try:
+            row = session.get(AgentRun, run.run_id)
+        finally:
+            session.close()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row.timeline, [{"stage": "retrieval.recall", "duration_ms": 3.0}])
+        self.assertEqual(row.retrieval_stats, {"fused": 5, "reranked": 3})
+        self.assertEqual(row.model_usage, {"call_count": 2, "total_tokens": 123})
+        self.assertEqual((row.runtime_snapshot or {}).get("token_budget"), {"used": 100, "limit": 4000})
 
     async def test_run_completion_releases_session_lock(self):
         # 锁没释放的话，用户跑完一轮再问第二个问题会被判「会话忙」。

@@ -167,4 +167,7 @@ async def lifespan(app: FastAPI):
         from ..services.runtime.agent_state import get_agent_state_store
 
         get_agent_state_store().close()
+        from .observability import close_recent_trace_store
+
+        close_recent_trace_store()
         logger.info("应用已关闭")

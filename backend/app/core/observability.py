@@ -11,6 +11,7 @@ from copy import deepcopy
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from .errors import ErrorCode, classify_stage_error, normalize_error_code, safe_error_message
+from .trace_store import RecentTraceStore
 
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _request_id: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
@@ -33,6 +34,8 @@ _context_usage: ContextVar[Optional[Dict[str, Dict[str, Any]]]] = ContextVar(
 _recent_traces: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _recent_traces_lock = threading.RLock()
 _recent_trace_limit = 500
+# 进程内的表只是快路径与降级路径，跨实例可见性由 Redis 那份负责
+_trace_store = RecentTraceStore(limit=_recent_trace_limit)
 
 
 def start_request(
@@ -275,24 +278,38 @@ def store_current_trace(
         _recent_traces.move_to_end(request_id)
         while len(_recent_traces) > _recent_trace_limit:
             _recent_traces.popitem(last=False)
+    # 同时写一份到 Redis：进程内这张表只有本实例看得到，
+    # 多实例下查追踪会变成抽奖。写失败不影响本地记录。
+    _trace_store.put(request_id, snapshot, snapshot["completed_at"])
     return snapshot
 
 
 def get_recent_trace(request_id: str) -> Optional[Dict[str, Any]]:
+    """读取追踪快照。
+
+    先查本进程的表——刚写完的追踪就在里面，命中时省一次网络往返；没有再查
+    Redis，这样别的实例产生的追踪也读得到。
+    """
     with _recent_traces_lock:
         snapshot = _recent_traces.get(request_id)
-        return deepcopy(snapshot) if snapshot else None
+        if snapshot is not None:
+            return deepcopy(snapshot)
+    return _trace_store.get(request_id)
 
 
 def list_recent_traces(limit: int = 50) -> List[Dict[str, Any]]:
-    """按完成时间倒序返回 Agent 查询摘要，不包含模型输入输出。"""
+    """按完成时间倒序返回 Agent 查询摘要，不包含模型输入输出。
+
+    以 Redis 为准（多实例下才看得到全部记录），Redis 不可用时退回进程内的表。
+    """
     normalized_limit = max(1, min(int(limit), 100))
-    with _recent_traces_lock:
-        snapshots = [
-            item
-            for item in reversed(_recent_traces.values())
-            if item.get("trace_type") == "agent"
-        ][:normalized_limit]
+    snapshots = _trace_store.list_recent(normalized_limit)
+    if not snapshots:
+        with _recent_traces_lock:
+            snapshots = list(reversed(_recent_traces.values()))
+    selected = [
+        item for item in snapshots if item.get("trace_type") == "agent"
+    ][:normalized_limit]
     return [
         {
             "request_id": item["request_id"],
@@ -304,8 +321,13 @@ def list_recent_traces(limit: int = 50) -> List[Dict[str, Any]]:
             "error_code": (item.get("error") or {}).get("error_code"),
             **(item.get("answer_quality") or {}),
         }
-        for item in snapshots
+        for item in selected
     ]
+
+
+def close_recent_trace_store() -> None:
+    """应用退出时释放追踪存储连接。"""
+    _trace_store.close()
 
 
 @contextmanager

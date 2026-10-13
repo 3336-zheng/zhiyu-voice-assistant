@@ -164,4 +164,7 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(*tasks, return_exceptions=True)
         app.state.background_tasks = []
         await close_dispatcher()
+        from ..services.runtime.agent_state import get_agent_state_store
+
+        get_agent_state_store().close()
         logger.info("应用已关闭")

@@ -124,9 +124,12 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # API 实例与三个 worker 都刻意不写 container_name：Compose 不允许对
+  # 具名容器做 --scale。去掉之后容器名由 Compose 生成（<项目名>-<服务名>-<序号>），
+  # docker exec 时要按新名字来。
+  # 数据库类服务（mysql / redis / chroma）保留具名——它们不需要多开。
   zhiyu:
     build: .
-    container_name: zhiyu-assistant
     ports:
       - "${PORT:-8337}:8337"
     volumes: *app-volumes
@@ -141,7 +144,6 @@ services:
   # 可以 --scale arq-worker=3 横向扩，任务由队列保证只被一个 worker 取走。
   arq-worker:
     build: .
-    container_name: zhiyu-arq-worker
     command: arq backend.app.tasks.worker.WorkerSettings
     volumes: *app-volumes
     env_file:
@@ -155,7 +157,6 @@ services:
   # 可以 --scale，并发上限由 ARQ_ASR_MAX_JOBS 控制，远程 API 不占本地显存。
   arq-worker-asr:
     build: .
-    container_name: zhiyu-arq-worker-asr
     command: arq backend.app.tasks.worker.AsrWorkerSettings
     volumes: *app-volumes
     env_file:
@@ -169,7 +170,6 @@ services:
   # 它也是唯一执行 Agent 的进程，API 重启不影响正在进行的对话。
   arq-worker-agent:
     build: .
-    container_name: zhiyu-arq-worker-agent
     command: arq backend.app.tasks.worker.AgentWorkerSettings
     volumes: *app-volumes
     env_file:

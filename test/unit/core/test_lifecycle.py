@@ -4,7 +4,7 @@ import asyncio
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from backend.app.core import lifecycle
 from backend.app.core.observability import (
@@ -40,7 +40,6 @@ class LifecycleTestCase(unittest.IsolatedAsyncioTestCase):
             patch.object(lifecycle, "_migrate_relative_paths"),
             patch.object(lifecycle, "_sync_document_index"),
             patch.object(lifecycle, "_rebuild_bm25_index") as rebuild_bm25,
-            patch.object(lifecycle, "_recover_wiki_index_tasks"),
             patch.object(lifecycle, "_periodic_cleanup", fake_cleanup),
             patch(
                 "backend.app.tasks.queue.init_dispatcher", fake_init_dispatcher
@@ -58,6 +57,44 @@ class LifecycleTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(dispatcher_ready.is_set())
         self.assertEqual(app.state.background_tasks, [])
+
+    async def test_cleanup_skips_when_lock_not_acquired(self):
+        """没抢到选主锁的实例不执行清理——多实例下只该有一个在跑。
+
+        抢不到就跳过是这里的全部意义：如果抢不到还照跑一份，
+        这个锁就等于没加。
+        """
+
+        async def deny(_name, _ttl):
+            return False
+
+        with (
+            patch("backend.app.core.leader_lock.try_acquire", deny),
+            patch(
+                "backend.app.services.memory.memory_service.get_memory_service"
+            ) as get_service,
+        ):
+            await lifecycle._cleanup_once()
+        get_service.assert_not_called()
+
+    async def test_cleanup_runs_when_lock_acquired(self):
+        """抢到锁的实例正常执行清理，并用线程池跑同步的数据库操作。"""
+
+        async def allow(_name, _ttl):
+            return True
+
+        service = MagicMock()
+        service.cleanup_expired_sessions.return_value = {"cleaned_sessions": 2}
+        with (
+            patch("backend.app.core.leader_lock.try_acquire", allow),
+            patch("backend.app.core.database.SessionLocal", MagicMock()),
+            patch(
+                "backend.app.services.memory.memory_service.get_memory_service",
+                lambda: service,
+            ),
+        ):
+            await lifecycle._cleanup_once()
+        self.assertEqual(service.cleanup_expired_sessions.call_count, 1)
 
     async def test_observability_context_is_reset(self):
         (

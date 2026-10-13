@@ -173,7 +173,14 @@ class APIIntegrationTestCase(unittest.TestCase):
         self.assertEqual(completed.status_code, 200)
         self.assertEqual(completed.json()["completed"], 1)
 
-    def test_processing_task_is_recovered_after_service_restart(self):
+    def test_fresh_processing_task_survives_stale_recovery(self):
+        """刚被 worker 领走的任务，不该被「卡死回收」误伤。
+
+        启动时那条无差别恢复（把所有 processing 改回 pending）已经拿掉了：
+        索引执行搬到 arq worker 之后，API 重启不代表执行者死了，这么做会把
+        别的 worker 正在索引的页面重新投一遍。现在唯一的回收路径是按
+        locked_at 判超时的 recover_stale，它必须放过心跳还新鲜的任务。
+        """
         db = self.session_factory()
         try:
             service = PageService(
@@ -184,8 +191,10 @@ class APIIntegrationTestCase(unittest.TestCase):
             service.create_page(title="恢复测试", content="正文")
             task = db.query(WikiIndexTask).one()
             task.status = "processing"
+            # 刚写下的 locked_at：执行者还在跑，远没到「卡死」的判据
             task.locked_at = datetime.now()
             db.commit()
+            task_id = task.id
         finally:
             db.close()
 
@@ -196,11 +205,15 @@ class APIIntegrationTestCase(unittest.TestCase):
                 pages_dir=str(self.root / "pages"),
                 index_service=self.indexer,
             )
-            result = restarted.recover_index_tasks()
-            self.assertEqual(result["recovered"], 1)
-            task = restarted_db.query(WikiIndexTask).one()
-            self.assertEqual(task.status, "pending")
-            self.assertIsNone(task.locked_at)
+            result = restarted.recover_stale_index_tasks(threshold_seconds=600)
+            self.assertEqual(result["recovered"], 0)
+            task = (
+                restarted_db.query(WikiIndexTask)
+                .filter(WikiIndexTask.id == task_id)
+                .one()
+            )
+            self.assertEqual(task.status, "processing")
+            self.assertIsNotNone(task.locked_at)
         finally:
             restarted_db.close()
 

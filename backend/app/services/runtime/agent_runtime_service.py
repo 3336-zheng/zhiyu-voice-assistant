@@ -249,7 +249,15 @@ class AgentRuntimeService:
         """
         state = await self._load_state(run_id)
         if state is None:
-            raise AgentRuntimeError(f"运行不存在或已过期: {run_id}")
+            # 运行注册表有 TTL，任务可能在队列里排到过期才被消费；worker 停机
+            # 重启后重放旧任务也会走到这里。**这是预期路径，不是故障**——
+            # 用 info 记一条即可，别让它以 ERROR 刷屏并触发队列的重试告警。
+            logger.info(
+                "运行已过期或不在本队列（跳过）: run_id=%s。"
+                "常见原因是任务在队列里排队超过了运行保留期。",
+                run_id,
+            )
+            return
         if state["status"] in TERMINAL_STATUS_VALUES:
             # 被重复消费，或者终态已经写过了。
             logger.info(

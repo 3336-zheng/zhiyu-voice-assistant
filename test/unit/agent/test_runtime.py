@@ -556,6 +556,17 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row.model_usage, {"call_count": 2, "total_tokens": 123})
         self.assertEqual((row.runtime_snapshot or {}).get("token_budget"), {"used": 100, "limit": 4000})
 
+    async def test_运行已过期时安静跳过而不是报错(self):
+        """注册表有 TTL，任务可能在队列里排到过期才被消费。
+
+        这是**预期路径**不是故障：worker 停机重启后重放旧任务、
+        或任务排队超过保留期，都会走到这里。当成异常抛的话会以 ERROR 刷屏
+        并触发队列的重试告警，把真正的故障淹掉。
+        """
+        runtime = self._runtime()
+        # 不存在的 run_id：不该抛异常
+        await runtime.execute_run("expired-run-id")
+
     async def test_run_completion_releases_session_lock(self):
         # 锁没释放的话，用户跑完一轮再问第二个问题会被判「会话忙」。
         agent = StreamingAgent()

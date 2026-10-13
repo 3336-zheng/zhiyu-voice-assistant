@@ -6,6 +6,44 @@
 # 本地直接运行 python main.py 时走 .env 里的宿主机地址；
 # 容器内则由下面的 environment 覆盖为 compose 内网服务名。
 
+# 应用容器（API 与 arq worker）共用同一套挂载、环境变量和依赖。
+# 抽成锚点是因为两者必须完全一致——worker 也要读同一份 .env、连同一个 MySQL 和
+# Redis、挂同一份模型；分开写的话，改一处忘另一处就是「API 能跑、worker 连不上」
+# 这种半坏状态，排查起来很费劲。
+x-app-volumes: &app-volumes
+  # 环境变量配置文件
+  - ./.env:/app/.env:ro
+  # 数据持久化（数据库、上传文件、向量库、日志）
+  - ./data:/app/data
+  # 模型文件挂载（用户在 .env 中配置路径）
+  - ${WHISPER_MODEL_PATH}:/app/models/whisper:ro
+  - ${EMBEDDING_MODEL_PATH}:/app/models/embedding:ro
+  - ${RERANKER_MODEL_PATH}:/app/models/reranker:ro
+
+x-app-environment: &app-environment
+  # 覆盖 .env 中的模型路径为容器内路径
+  - WHISPER_MODEL_PATH=/app/models/whisper
+  - EMBEDDING_MODEL_PATH=/app/models/embedding
+  - RERANKER_MODEL_PATH=/app/models/reranker
+  # .env 里的地址是宿主机视角（127.0.0.1:3316 / 6382 / 8001），供本地直接运行使用；
+  # 容器内必须改写为 compose 内网服务名，否则 127.0.0.1 会指向容器自身。
+  # 这里用插值而不是写死连接串，是为了让密码只存在于 .env 一处。
+  - DATABASE_URL=mysql+pymysql://${MYSQL_USER:-zhiyu}:${MYSQL_PASSWORD:?必须在 .env 中设置 MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-zhiyu}?charset=utf8mb4
+  - REDIS_URL=redis://redis:6379/0
+  # 容器内固定走 server 模式：向量库是独立容器，embedded 会去读 /app/data 下
+  # 那份文件，和 chroma 容器同时写同一份索引，正是 Stage 4 要消灭的情况。
+  - CHROMA_MODE=server
+  - CHROMA_HOST=chroma
+  - CHROMA_PORT=8000
+
+x-app-depends: &app-depends
+  mysql:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+  chroma:
+    condition: service_healthy
+
 services:
   mysql:
     image: mysql:8.0
@@ -93,39 +131,25 @@ services:
     container_name: zhiyu-assistant
     ports:
       - "${PORT:-8337}:8337"
-    volumes:
-      # 环境变量配置文件
-      - ./.env:/app/.env:ro
-      # 数据持久化（数据库、上传文件、向量库、日志）
-      - ./data:/app/data
-      # 模型文件挂载（用户在 .env 中配置路径）
-      - ${WHISPER_MODEL_PATH}:/app/models/whisper:ro
-      - ${EMBEDDING_MODEL_PATH}:/app/models/embedding:ro
-      - ${RERANKER_MODEL_PATH}:/app/models/reranker:ro
+    volumes: *app-volumes
     env_file:
       - .env
-    environment:
-      # 覆盖 .env 中的模型路径为容器内路径
-      - WHISPER_MODEL_PATH=/app/models/whisper
-      - EMBEDDING_MODEL_PATH=/app/models/embedding
-      - RERANKER_MODEL_PATH=/app/models/reranker
-      # .env 里的地址是宿主机视角（127.0.0.1:3316 / 6382 / 8001），供本地直接运行使用；
-      # 容器内必须改写为 compose 内网服务名，否则 127.0.0.1 会指向容器自身。
-      # 这里用插值而不是写死连接串，是为了让密码只存在于 .env 一处。
-      - DATABASE_URL=mysql+pymysql://${MYSQL_USER:-zhiyu}:${MYSQL_PASSWORD:?必须在 .env 中设置 MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-zhiyu}?charset=utf8mb4
-      - REDIS_URL=redis://redis:6379/0
-      # 容器内固定走 server 模式：向量库是独立容器，embedded 会去读 /app/data 下
-      # 那份文件，和 chroma 容器同时写同一份索引，正是本 Stage 要消灭的情况。
-      - CHROMA_MODE=server
-      - CHROMA_HOST=chroma
-      - CHROMA_PORT=8000
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      chroma:
-        condition: service_healthy
+    environment: *app-environment
+    depends_on: *app-depends
+    restart: unless-stopped
+
+  # 索引任务的消费者。独立成进程之后，API 重启不再打断正在跑的索引，
+  # worker 崩溃也不会拖垮 API；两边通过 Redis 队列和一个共享的任务表协作。
+  # 可以 --scale arq-worker=3 横向扩，任务由队列保证只被一个 worker 取走。
+  arq-worker:
+    build: .
+    container_name: zhiyu-arq-worker
+    command: arq backend.app.tasks.worker.WorkerSettings
+    volumes: *app-volumes
+    env_file:
+      - .env
+    environment: *app-environment
+    depends_on: *app-depends
     restart: unless-stopped
 
 volumes:

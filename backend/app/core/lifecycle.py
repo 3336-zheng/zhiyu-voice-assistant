@@ -134,15 +134,22 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("BM25 持久化索引恢复失败（不影响启动）: %s", exc, exc_info=True)
 
+    # 投递器必须先于任务恢复就绪：恢复会把卡在 processing 的任务改回 pending
+    # 并立即投递，投递器没起来的话它们就只能等兜底扫描了。
+    from ..tasks.queue import close_dispatcher, init_dispatcher
+
+    try:
+        await init_dispatcher()
+    except Exception as exc:
+        # Redis 不可用不该拦住应用启动——任务留在表里，等队列恢复后由兜底扫描补投。
+        logger.warning("任务投递器初始化失败（索引任务将由兜底扫描补投）: %s", exc)
+
     try:
         _recover_wiki_index_tasks()
     except Exception as exc:
         logger.warning("Wiki 索引任务恢复失败（不影响启动）: %s", exc, exc_info=True)
 
-    from ..services.wiki.wiki_index_worker import run_wiki_index_worker
-
     tasks = [
-        asyncio.create_task(run_wiki_index_worker(), name="wiki-index-worker"),
         asyncio.create_task(_periodic_cleanup(), name="session-cleanup-worker"),
     ]
     app.state.background_tasks = tasks
@@ -156,4 +163,5 @@ async def lifespan(app: FastAPI):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         app.state.background_tasks = []
+        await close_dispatcher()
         logger.info("应用已关闭")

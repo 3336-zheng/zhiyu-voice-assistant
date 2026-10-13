@@ -192,10 +192,17 @@ class Settings(BaseSettings):
     max_concurrent_requests: int = 10
     timeout_seconds: int = 300
 
-    # Wiki 索引 worker 配置
-    wiki_index_poll_seconds: float = 5.0
-    wiki_index_batch_size: int = 5
-    wiki_index_max_backoff_seconds: int = 300
+    # Wiki 索引任务配置
+    wiki_index_sweep_limit: int = Field(default=100, ge=1, le=1000)
+    wiki_index_max_backoff_seconds: int = Field(default=300, gt=0)
+    # 超过这个时间还停在 processing 的任务，视为执行它的 worker 已经死了，回收重跑。
+    # 必须大于 arq_job_timeout_seconds，否则正在正常执行的长任务会被误判成卡死。
+    wiki_index_stale_seconds: int = Field(default=600, gt=0)
+
+    # arq 任务队列
+    arq_index_queue: str = "arq:index"
+    arq_index_max_jobs: int = Field(default=10, ge=1, le=100)
+    arq_job_timeout_seconds: int = Field(default=300, gt=0, le=3600)
 
     # 旧 data/docs 兼容索引；新部署默认只使用 Wiki 主数据。
     sync_legacy_docs_on_startup: bool = False

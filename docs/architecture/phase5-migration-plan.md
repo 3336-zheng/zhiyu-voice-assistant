@@ -187,7 +187,7 @@ utf8mb4 下每字符最多 4 字节，InnoDB 索引键上限 3072 字节，即�
 
 ---
 
-## Stage 4 — Chroma server 模式 + 收封装泄漏 `S` ✅ 已完成（验收未做）
+## Stage 4 — Chroma server 模式 + 收封装泄漏 `S` ✅ 已完成
 
 **改动**
 - `backend/app/services/retrieval/chroma_service.py`
@@ -249,7 +249,10 @@ utf8mb4 下每字符最多 4 字节，InnoDB 索引键上限 3072 字节，即�
   死锁那条做过反向验证：注入「池内任务又向同一个池提交」后确实挂死，
   证明测试真的在检验死锁而不是恰好通过
 
-**验收（未执行，见「剩余工作」）**：embedded 与 server 两种模式下检索结果一致。
+**验收 ✅**（2026-10-13）：embedded 与 server 两种模式下检索结果一致。
+973 chunk、5 组检索的 doc_id 序列完全一致，内容与元数据摘要逐字节一致，
+分数最大相对偏差 2.19e-06（f32 序列化精度）。判据经反向验证 7/7 符合预期，
+详见「剩余工作」段落。
 
 ---
 
@@ -333,33 +336,32 @@ def recover_interrupted_runs(db, distributed: bool, stale_cutoff: datetime):
 
 ---
 
-## 剩余工作（2026-09-18 暂停时点）
+## 剩余工作（2026-10-13）
 
-### Stage 4 验收（继续时的第一步）
-- 代码已全部完成并通过测试（全量 140 passed + subtests；新增 13 + 4 全过），
-  暂停前剩最后一步：端到端双模式一致性验收。
-  做法：`docker compose up -d chroma` 起容器（bind mount 已指向 `./data/database/chromadb`，
-  实测同版本 server 可直接读 embedded 写出的数据）；本机运行需设
-  `NO_PROXY=127.0.0.1,localhost,chroma`（macOS 系统代理会让 httpx 连本机容器返回 502，
-  而 curl 不受影响）；分别以 `CHROMA_MODE=embedded` 与 `server` 跑同一批查询，
-  对比 doc_id 序列与分数。
-- 探针脚本已写好：`test/integration/dual_mode_probe.py`（未提交，仍在工作区）。
-  用固定种子向量采集两端指纹（count、5 组 top_k 检索、全量拉取摘要、元数据摘要、
-  按 ID 批量取），diff 两个 JSON。用固定向量而非真实 embedding，避免浮点噪声盖过真差异。
-- 顺带要测的两项（此前标记未知）：
-  1. server 下 `get_all_chunks` 全量拉取（约 973 条）单次 `get()` 是否需要分页
-  2. `HttpClient` 查询超时——已查明 `chroma_query_request_timeout_seconds` 默认 60s，
-     结论是「不设显式超时也等得起」，无需为超时加 shutdown 钩子
+### Stage 4 验收结果 ✅
+
+- 探针 `test/integration/dual_mode_probe.py` 用固定种子向量采集两种模式的指纹
+  （count、5 组 top_k 检索、全量拉取摘要、元数据摘要、按 ID 批量取）；
+  比较脚本 `test/integration/compare_dual_mode.py` 做容差判定。
+  用固定向量而非真实 embedding，避免模型自身的浮点抖动盖过真差异。
+- **结果**：973 chunk 两边一致；5 组检索的 doc_id 序列**完全一致**；
+  内容/元数据/按 ID 取三个摘要**逐字节一致**。分数最大相对偏差 2.19e-06——
+  server 端 HTTP JSON 把分数序列化成 f32 造成的表示差异，不影响排序。
+- **判据做了反向验证（7/7 符合预期）**：交换召回顺序、少召回一条、首名分数改大、
+  内容摘要变化、元数据摘要变化、count 少 1 都能逮住；5e-7 的扰动
+  （f32 噪声量级）正确放过。证明「验收通过」不是因为判据太松。
+- **代理坑已不复现**：根因是 Clash 规则缺 `127.0.0.0/8` 直连（不是 macOS
+  系统代理本身），现在规则已修——经 7890 访问 chroma 返回 200，不设 `NO_PROXY`
+  也通。`NO_PROXY` 保留为防御性配置，不再是必须项。
+- 顺带测掉两项此前未知：
+  1. server 下 `get_all_chunks` 拉 973 条单次 `get()` 成功，**不需要分页**
+  2. `HttpClient` 查询超时 `chroma_query_request_timeout_seconds` 默认 60s，
+     不是无限挂起，无需为超时加 shutdown 钩子
 
 ### 提交相关
-- 分支 `feat/phase5-distributed` 无上游，后续 push 用 `git push -u origin`。
+- 分支 `feat/phase5-distributed` 已建立上游（`git push -u origin` 已执行）。
 - 根目录 11 个 LeetCode 文件绝不能进 commit，`git add` 必须显式列文件。
 - 公开仓库历史里有一枚未吊销的 DeepSeek key，历史清理需单独授权。
-
-### 文档欠账
-- Obsidian 侧：Stage 4 笔记未写（9 段结构、必含选型对比与后续完善）；总览文档的
-  进度表、Stage 4 索引双链、各 Stage 状态待更新。
-- 仓库侧：本计划的 Stage 4 状态标注「验收未做」，验收通过后改回 ✅ 并删掉本段第一条。
 
 ### 后续阶段（未开工）
 Stage 5（索引/ASR 迁 arq）→ Stage 6（AgentRuntimeService 分布式化）→ Stage 7（多实例）

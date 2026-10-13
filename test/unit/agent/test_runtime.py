@@ -18,8 +18,10 @@ from backend.app.core.database import Base
 from backend.app.models.observability import AgentRun
 from backend.app.services.runtime.agent_runtime_service import (
     AgentRunConflict,
+    AgentRunNotFound,
     AgentRunStatus,
     AgentRuntimeService,
+    RuntimeRun,
 )
 
 
@@ -39,6 +41,7 @@ class FakeAgentStateStore:
         self.runs = {}
         self.streams = {}
         self.sessions = {}
+        self.cancels = {}
         self._entry = 0
 
     # ---------------------------------------------------------- 运行注册表
@@ -137,6 +140,17 @@ class FakeAgentStateStore:
     def has_stream(self, run_id):
         # 与 Redis 一致：键只在第一次 XADD 之后才存在，空列表等同于不存在
         return bool(self.streams.get(run_id))
+
+    # ---------------------------------------------------------- 取消信号
+
+    def request_cancel(self, run_id, ttl_seconds):
+        self.cancels[run_id] = ttl_seconds
+
+    def is_cancel_requested(self, run_id):
+        return run_id in self.cancels
+
+    def clear_cancel(self, run_id):
+        self.cancels.pop(run_id, None)
 
     def close(self):
         pass
@@ -309,6 +323,76 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self._stream_events(run.run_id)[-1].type, AgentEventType.RUN_CANCELLED
         )
+
+    async def _await_cancelled(self, run: RuntimeRun, timeout: float = 5.0) -> None:
+        """等运行结束，并确认它是被「协作式取消」停下的。
+
+        只断言 status == CANCELLED 是不够的：asyncio.wait_for 超时会取消任务，
+        而 _execute 捕获 CancelledError 时同样把状态设成 CANCELLED（错误信息是
+        「服务退出」）。两者混在一起时，取消信号根本没送达也会让断言通过。
+        所以这里断言只有协作式取消路径才会写下的错误信息。
+        """
+        await asyncio.wait_for(run.task, timeout=timeout)
+        self.assertEqual(run.status, AgentRunStatus.CANCELLED)
+        self.assertEqual(
+            run.error,
+            "运行已由用户停止",
+            "运行不是被取消信号停下的（可能是测试超时把任务取消了）",
+        )
+
+    async def test_另一个实例可以取消运行(self):
+        # 本阶段的核心能力之一：取消请求落在哪个实例上都该生效。
+        # 执行它的实例靠轮询把 Redis 上的信号同步到本地。
+        agent = BlockingAgent()
+        executor = self._runtime(agent_factory=lambda: agent)
+        run = await executor.start("被取消的问题", "session-cross-cancel")
+        await asyncio.wait_for(agent.started.wait(), timeout=1)
+
+        # 另一个实例：本地没有运行句柄，只有共享的状态存储
+        other_instance = self._runtime()
+        snapshot = await other_instance.cancel(run.run_id, run.session_id)
+        self.assertEqual(snapshot["status"], AgentRunStatus.CANCELLING.value)
+
+        await self._await_cancelled(run)
+        self.assertEqual(
+            self.state.get_run(run.run_id)["status"], AgentRunStatus.CANCELLED.value
+        )
+
+    async def test_取消信号在运行结束后被清掉(self):
+        # 不清的话它会留到 TTL 到期，期间的行为难以解释
+        agent = BlockingAgent()
+        executor = self._runtime(agent_factory=lambda: agent)
+        run = await executor.start("被取消的问题", "session-clear-cancel")
+        await asyncio.wait_for(agent.started.wait(), timeout=1)
+
+        other_instance = self._runtime()
+        await other_instance.cancel(run.run_id, run.session_id)
+        await self._await_cancelled(run)
+
+        self.assertFalse(self.state.is_cancel_requested(run.run_id))
+
+    async def test_取消已结束的运行是幂等的(self):
+        agent = StreamingAgent()
+        runtime = self._runtime(agent_factory=lambda: agent)
+        run = await runtime.start("已完成的问题", "session-idempotent")
+        await run.task
+
+        snapshot = await runtime.cancel(run.run_id, run.session_id)
+        self.assertEqual(snapshot["status"], AgentRunStatus.COMPLETED.value)
+
+    async def test_取消不存在或会话不符的运行会报错(self):
+        agent = BlockingAgent()
+        runtime = self._runtime(agent_factory=lambda: agent)
+        run = await runtime.start("问题", "session-owner")
+        await asyncio.wait_for(agent.started.wait(), timeout=1)
+        try:
+            with self.assertRaises(AgentRunNotFound):
+                await runtime.cancel(run.run_id, "session-other")
+            with self.assertRaises(AgentRunNotFound):
+                await runtime.cancel("no-such-run", "session-owner")
+        finally:
+            await runtime.cancel(run.run_id, run.session_id)
+            await asyncio.wait_for(run.task, timeout=5)
 
     async def test_run_completion_releases_session_lock(self):
         # 锁没释放的话，用户跑完一轮再问第二个问题会被判「会话忙」。

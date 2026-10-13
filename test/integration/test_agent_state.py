@@ -12,10 +12,11 @@ import time
 import unittest
 
 from backend.app.services.runtime.agent_state import (
-    AgentStateStore,
+    CANCEL_KEY,
     EVENTS_KEY,
     RUN_KEY,
     SESSION_KEY,
+    AgentStateStore,
 )
 
 TEST_REDIS_URL = "redis://127.0.0.1:6382/11"
@@ -181,6 +182,37 @@ class AgentStateStoreTestCase(unittest.TestCase):
     def test_运行键带过期时间(self):
         self.store.create_run("r1", "s1", "问题", "pending", False, 0.0)
         self.assertGreater(self.client.ttl(RUN_KEY.format(run_id="r1")), 0)
+
+    # ------------------------------------------------------------ 取消信号
+
+    def test_取消请求可被跨实例看到(self):
+        # 发起取消的请求可能落在任何一个实例上，而执行者只有一个。
+        # 信号存在 Redis 上，两边看到的是同一个。
+        self.assertFalse(self.store.is_cancel_requested("r1"))
+        self.store.request_cancel("r1", 120)
+        self.assertTrue(self.store.is_cancel_requested("r1"))
+
+        other_instance = AgentStateStore(client_factory=lambda: self.client)
+        self.assertTrue(other_instance.is_cancel_requested("r1"))
+
+    def test_取消信号带过期时间(self):
+        # 执行者崩溃后没人清它，不能留一个永不过期的键
+        self.store.request_cancel("r1", 120)
+        ttl = self.client.ttl(CANCEL_KEY.format(run_id="r1"))
+        self.assertGreater(ttl, 0)
+        self.assertLessEqual(ttl, 120)
+
+    def test_取消信号可以被清掉(self):
+        self.store.request_cancel("r1", 120)
+        self.store.clear_cancel("r1")
+        self.assertFalse(self.store.is_cancel_requested("r1"))
+
+    def test_删除运行会一并清掉取消信号(self):
+        self.store.create_run("r1", "s1", "问题", "pending", False, 0.0)
+        self.store.request_cancel("r1", 120)
+        self.store.delete_run("r1")
+        self.assertFalse(self.store.is_cancel_requested("r1"))
+        self.assertFalse(self.store.has_stream("r1"))
 
     # ------------------------------------------------------------ 隔离
 

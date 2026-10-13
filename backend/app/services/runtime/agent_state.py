@@ -38,6 +38,7 @@ READ_COUNT = 500
 RUN_KEY = "zhiyu:agent:run:{run_id}"
 SESSION_KEY = "zhiyu:agent:session:{session_id}"
 EVENTS_KEY = "zhiyu:agent:events:{run_id}"
+CANCEL_KEY = "zhiyu:agent:cancel:{run_id}"
 
 # 会话锁的存活时间与续期间隔。运行最长 180 秒，所以必须续期；
 # TTL 取 3 倍续期间隔，容忍两次续期丢失。
@@ -170,7 +171,28 @@ class AgentStateStore:
 
     def delete_run(self, run_id: str) -> None:
         client = self._get_client()
-        client.delete(RUN_KEY.format(run_id=run_id), EVENTS_KEY.format(run_id=run_id))
+        client.delete(
+            RUN_KEY.format(run_id=run_id),
+            EVENTS_KEY.format(run_id=run_id),
+            CANCEL_KEY.format(run_id=run_id),
+        )
+
+    # ------------------------------------------------------------------ 取消信号
+
+    def request_cancel(self, run_id: str, ttl_seconds: int) -> None:
+        """请求取消一次运行。
+
+        写在 Redis 上而不是直接改执行进程的内存：发起取消的请求可能落在
+        任何一个实例上，而运行的执行者只有一个。执行者靠轮询把它同步到
+        本地的 threading.Event（见 agent_runtime_service._watch_cancel）。
+        """
+        self._get_client().set(CANCEL_KEY.format(run_id=run_id), "1", ex=ttl_seconds)
+
+    def is_cancel_requested(self, run_id: str) -> bool:
+        return bool(self._get_client().exists(CANCEL_KEY.format(run_id=run_id)))
+
+    def clear_cancel(self, run_id: str) -> None:
+        self._get_client().delete(CANCEL_KEY.format(run_id=run_id))
 
     # ------------------------------------------------------------------ 会话锁
 

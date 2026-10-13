@@ -54,6 +54,10 @@ logger = logging.getLogger(__name__)
 # 这里控制的是「读了多少轮都没事件才发心跳」。
 HEARTBEAT_SECONDS = 15
 
+# 轮询取消信号的间隔。取消是用户点了按钮在等反馈，半秒内生效够快；
+# 再密就只是白白增加 Redis 压力。
+CANCEL_POLL_SECONDS = 0.5
+
 
 class AgentRunStatus(StrEnum):
     PENDING = "pending"
@@ -301,6 +305,11 @@ class AgentRuntimeService:
             self._renew_session_loop(run),
             name=f"agent-session-heartbeat-{run.run_id}",
         )
+        # 取消请求写在 Redis 上（可能来自别的实例），这里轮询同步到本地信号。
+        watcher = asyncio.create_task(
+            self._watch_cancel(run),
+            name=f"agent-cancel-watch-{run.run_id}",
+        )
 
         (
             _,
@@ -413,9 +422,10 @@ class AgentRuntimeService:
                 {"message": run.error, "code": type(exc).__name__},
             )
         finally:
-            heartbeat.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await heartbeat
+            for helper in (heartbeat, watcher):
+                helper.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await helper
 
             run.finished_at = time.time()
             duration_ms = (run.finished_at - run.started_at) * 1000
@@ -478,6 +488,23 @@ class AgentRuntimeService:
                 logger.warning("会话锁续期失败: %s", exc)
                 return
 
+    async def _watch_cancel(self, run: RuntimeRun) -> None:
+        """把 Redis 上的取消请求同步到本地的取消信号。
+
+        cancel_check 每个 token 都会被调用一次，每次都去问 Redis 会让流式输出
+        每个 token 多一次网络往返。所以本地保留一个 threading.Event 作为镜像，
+        由这个循环定期同步——半秒的延迟对「点取消」这个动作完全够用。
+        """
+        while True:
+            await asyncio.sleep(CANCEL_POLL_SECONDS)
+            try:
+                if self._state.is_cancel_requested(run.run_id):
+                    run.cancel_signal.set()
+                    return
+            except AgentStateUnavailable as exc:
+                logger.warning("取消信号轮询失败: run_id=%s error=%s", run.run_id, exc)
+                return
+
     def _set_status(self, run_id: str, status: AgentRunStatus) -> None:
         """把状态同步到 Redis；状态存储不可用时只记日志。
 
@@ -502,6 +529,10 @@ class AgentRuntimeService:
                 finished_at=run.finished_at or time.time(),
             )
             self._state.release_session(run.session_id, run.run_id)
+            # 清掉取消信号：不清的话它会在 TTL 内一直留着，
+            # 而这期间若有人去取消一个同 id 的运行（uuid 不会重复，纯属防御）
+            # 会立刻生效，行为难以解释。
+            self._state.clear_cancel(run.run_id)
         except AgentStateUnavailable as exc:
             # 锁没能释放会一直占到 TTL 到期；这是可接受的降级，
             # 但要留下痕迹，否则用户会遇到「刚跑完却说会话忙」而查不出原因。
@@ -513,18 +544,46 @@ class AgentRuntimeService:
     async def cancel(self, run_id: str, session_id: str) -> Dict[str, Any]:
         """幂等触发协作式取消。
 
-        取消信号目前仍在执行进程的内存里，所以**只能取消本实例发起的运行**；
-        别的实例发起的运行会走到「不存在于当前进程」的报错。跨实例取消需要把
-        信号也放到 Redis（下一步做）。
+        取消信号写在 Redis 上，所以**任何实例都能取消任何实例发起的运行**。
+        执行它的那个实例由后台轮询把信号同步到本地的 threading.Event——
+        cancel_check 每个 token 都会被调用一次，不能每次都去问 Redis。
         """
-        run = await self._get_authorized_run(run_id, session_id)
-        if run.terminal:
-            return self._snapshot(run)
-        run.cancel_signal.set()
-        run.status = AgentRunStatus.CANCELLING
-        await asyncio.to_thread(self._persist_status, run.run_id, run.status, None)
-        self._set_status(run.run_id, run.status)
-        return self._snapshot(run)
+        state = await self._load_state(run_id)
+        if state is None:
+            persisted = await asyncio.to_thread(self._load_persisted, run_id, session_id)
+            if persisted is None:
+                raise AgentRunNotFound("Agent 运行不存在")
+            return persisted
+        if state["session_id"] != session_id:
+            raise AgentRunNotFound("Agent 运行不存在")
+        if state["status"] in TERMINAL_STATUS_VALUES:
+            return self._state_snapshot(state)
+
+        # 本实例发起的运行直接置位，省掉最多一个轮询周期的延迟
+        local = self._runs.get(run_id)
+        if local is not None and not local.terminal:
+            local.cancel_signal.set()
+            local.status = AgentRunStatus.CANCELLING
+
+        try:
+            # TTL 只要覆盖运行本身；收尾时会主动清掉，这里是兜底——
+            # 进程崩溃时不至于留下一个永不消失的键。
+            self._state.request_cancel(
+                run_id, int(settings.agent_run_timeout_seconds) + 60
+            )
+        except AgentStateUnavailable as exc:
+            if local is None:
+                # 运行在别的实例上，信号送不到就等于取消失败。宁可报错，
+                # 也不要让用户以为已经停了。
+                raise AgentRuntimeError(f"无法连接 Redis，取消请求无法送达: {exc}") from exc
+            logger.warning("取消信号未能写入 Redis，仅在本实例生效: run_id=%s", run_id)
+
+        await asyncio.to_thread(
+            self._persist_status, run_id, AgentRunStatus.CANCELLING, None
+        )
+        self._set_status(run_id, AgentRunStatus.CANCELLING)
+        state["status"] = AgentRunStatus.CANCELLING.value
+        return self._state_snapshot(state)
 
     async def get(self, run_id: str, session_id: str) -> Dict[str, Any]:
         """读取当前运行或已经持久化的终态快照。
@@ -536,18 +595,22 @@ class AgentRuntimeService:
         if state is not None:
             if state["session_id"] != session_id:
                 raise AgentRunNotFound("Agent 运行不存在")
-            return {
-                "run_id": state["run_id"],
-                "session_id": state["session_id"],
-                "status": state["status"],
-                "last_sequence": state["sequence"],
-                "response": state["response"],
-                "error": state["error"],
-            }
+            return self._state_snapshot(state)
         persisted = await asyncio.to_thread(self._load_persisted, run_id, session_id)
         if persisted is None:
             raise AgentRunNotFound("Agent 运行不存在")
         return persisted
+
+    @staticmethod
+    def _state_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "run_id": state["run_id"],
+            "session_id": state["session_id"],
+            "status": state["status"],
+            "last_sequence": state["sequence"],
+            "response": state["response"],
+            "error": state["error"],
+        }
 
     async def _load_state(self, run_id: str) -> Optional[Dict[str, Any]]:
         """读取运行状态；Redis 不可用时返回 None 交给数据库兜底。"""
@@ -556,12 +619,6 @@ class AgentRuntimeService:
         except AgentStateUnavailable as exc:
             logger.warning("读取运行状态失败，回落到数据库: run_id=%s error=%s", run_id, exc)
             return None
-
-    async def _get_authorized_run(self, run_id: str, session_id: str) -> RuntimeRun:
-        run = self._runs.get(run_id)
-        if run is None or run.session_id != session_id:
-            raise AgentRunNotFound("Agent 运行不存在或已不在当前进程中")
-        return run
 
     async def iter_events(
         self,
@@ -711,17 +768,6 @@ class AgentRuntimeService:
             return len(rows)
         finally:
             db.close()
-
-    @staticmethod
-    def _snapshot(run: RuntimeRun) -> Dict[str, Any]:
-        return {
-            "run_id": run.run_id,
-            "session_id": run.session_id,
-            "status": run.status.value,
-            "last_sequence": run.sequence,
-            "response": run.response.model_dump(mode="json") if run.response else None,
-            "error": run.error,
-        }
 
     def _persist_start(self, run: RuntimeRun) -> None:
         db = self._session_factory()

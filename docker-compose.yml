@@ -150,6 +150,20 @@ services:
     depends_on: *app-depends
     restart: unless-stopped
 
+  # ASR 转写专用 worker。与索引分开是因为时长差一个量级：索引是几百毫秒的短活，
+  # 一次转写可能跑满 180 秒，混在一起会让短任务排在长任务后面。
+  # 可以 --scale，并发上限由 ARQ_ASR_MAX_JOBS 控制，远程 API 不占本地显存。
+  arq-worker-asr:
+    build: .
+    container_name: zhiyu-arq-worker-asr
+    command: arq backend.app.tasks.worker.AsrWorkerSettings
+    volumes: *app-volumes
+    env_file:
+      - .env
+    environment: *app-environment
+    depends_on: *app-depends
+    restart: unless-stopped
+
 volumes:
   mysql_data:
   redis_data:

@@ -12,15 +12,22 @@ from sqlalchemy.orm import Session
 from backend.app.core.database import get_db
 from backend.app.core.config import settings
 from backend.app.services.ingestion.asr_service import (
-    ASRAlreadyRunningError,
     ASRConfigurationError,
-    ASRExecutionError,
-    ASRInputError,
     ASRProviderNotFoundError,
-    ASRTimeoutError,
-    get_asr_execution_service,
     get_available_asr_providers,
+    resolve_provider,
 )
+from backend.app.tasks.asr_tasks import asr_job_id, release_asr_job
+from backend.app.tasks.queue import ensure_pool
+
+# 转写任务的失败码到 HTTP 状态的映射。测试会验证它覆盖了
+# asr_tasks.FAILURE_CODES 里的每一种，防止新增失败类型后静默落进 502。
+ASR_FAILURE_STATUS = {
+    "not_found": 404,
+    "provider_not_found": 422,
+    "not_configured": 503,
+    "input": 413,
+}
 from backend.app.services.ingestion.audio_processing import (
     AudioProcessingError,
     AudioTooLargeError,
@@ -160,59 +167,79 @@ async def transcribe_audio(
     provider: str | None = Query(None, description="ASR Provider，不传则使用默认配置"),
     db: Session = Depends(get_db),
 ):
-    """在线程中执行同步 ASR，并持久化统一结果。"""
+    """把转写交给 ASR worker 执行，同步等它返回。
+
+    接口形态没变（提交后等结果），变的是执行位置：转写与落库都在 worker 进程里，
+    API 只负责提交和等待。这样 API 重启不会打断已在跑的转写，API 进程也不必
+    为一次 180 秒的调用占住线程。
+    """
+    # 先做本地能做的校验，避免为一个明显无效的请求去占用队列。
     try:
-        audio = db.query(Audio).filter(Audio.id == audio_id).first()
-        if not audio:
-            raise HTTPException(status_code=404, detail="音频文件未找到")
-
-        file_path = audio.file_path
-        if file_path and not os.path.isabs(file_path):
-            file_path = os.path.abspath(file_path)
-            audio.file_path = file_path
-            db.commit()
-
-        if not file_path or not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail="音频文件不存在")
-
-        result = await get_asr_execution_service().transcribe(
-            audio_id=audio_id,
-            audio_path=file_path,
-            provider=provider,
-        )
-
-        audio.transcription = result["transcription"]
-        audio.transcription_segments = result.get("segments", [])
-        audio.language = result["language"]
-        audio.duration = result.get("duration", audio.duration)
-        db.commit()
-
-        return {
-            "message": "转录成功",
-            "audio_id": audio.id,
-            "transcription": result["transcription"],
-            "segments": result.get("segments", []),
-            "duration": result.get("duration"),
-            "transcribe_time": result["transcribe_time"],
-            "rtf": result["rtf"],
-        }
-    except ASRAlreadyRunningError as exc:
-        raise HTTPException(status_code=409, detail="该音频正在转写，请勿重复提交") from exc
+        provider_id = resolve_provider(provider)
     except ASRProviderNotFoundError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except ASRInputError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except ASRConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ASRTimeoutError as exc:
+
+    audio = db.query(Audio).filter(Audio.id == audio_id).first()
+    if not audio:
+        raise HTTPException(status_code=404, detail="音频文件未找到")
+
+    file_path = audio.file_path
+    if file_path and not os.path.isabs(file_path):
+        file_path = os.path.abspath(file_path)
+        audio.file_path = file_path
+        db.commit()
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="音频文件不存在")
+
+    # job_id 固定为音频维度：同一个音频同时只允许一个转写任务。
+    # arq 对已存在的 job_id 会返回 None，这就是跨实例的重复提交拦截。
+    job_id = asr_job_id(audio_id)
+    pool = await ensure_pool()
+    job = await pool.enqueue_job(
+        "transcribe_audio",
+        audio_id,
+        provider_id,
+        "auto",
+        _job_id=job_id,
+        _queue_name=settings.arq_asr_queue,
+    )
+    if job is None:
+        raise HTTPException(status_code=409, detail="该音频正在转写，请勿重复提交")
+
+    try:
+        outcome = await asyncio.wait_for(
+            job.result(), timeout=settings.asr_timeout_seconds
+        )
+    except asyncio.TimeoutError as exc:
+        # 任务可能还在 worker 里跑完并落库，所以不删 job 键——
+        # 留着才能继续拦住重复提交。
         raise HTTPException(status_code=504, detail="语音转写超时，请稍后重试") from exc
-    except ASRExecutionError as exc:
+    except Exception as exc:  # noqa: BLE001 — 取结果失败（Redis 中断、worker 被杀）
+        logger.exception("获取转写结果失败: audio_id=%s", audio_id)
         raise HTTPException(status_code=502, detail="语音转写服务暂时不可用") from exc
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("转写结果持久化失败: audio_id=%s", audio_id)
-        raise HTTPException(status_code=500, detail="转写结果保存失败") from exc
+
+    # 拿到结果就释放 job_id，让同一个音频可以立刻换引擎重转；
+    # 不释放的话要等 keep_result 过期，用户会觉得「刚转完就不让再转了」。
+    await release_asr_job(pool, job_id)
+
+    if not outcome or not outcome.get("ok"):
+        code = (outcome or {}).get("code", "execution")
+        message = (outcome or {}).get("message", "语音转写服务暂时不可用")
+        status = ASR_FAILURE_STATUS.get(code, 502)
+        raise HTTPException(status_code=status, detail=message)
+
+    result = outcome["result"]
+    return {
+        "message": "转录成功",
+        "audio_id": audio_id,
+        "transcription": result["transcription"],
+        "segments": result.get("segments", []),
+        "duration": result.get("duration"),
+        "transcribe_time": result.get("transcribe_time"),
+        "rtf": result.get("rtf"),
+    }
 
 
 @router.get("/{audio_id}/transcript")

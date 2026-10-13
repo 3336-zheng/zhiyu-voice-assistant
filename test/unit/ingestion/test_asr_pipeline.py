@@ -8,20 +8,23 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 from backend.app.core.config import settings
+from backend.app.core.database import Base
+from backend.app.models import Audio
 from backend.app.services.ingestion.asr_service import (
-    ASRAlreadyRunningError,
-    ASRExecutionError,
-    ASRExecutionService,
     ASRInputError,
     ASRProviderNotFoundError,
-    ASRTimeoutError,
+    resolve_provider,
 )
 from backend.app.services.ingestion.audio_processing import (
     AudioTooLargeError,
     normalize_upload,
 )
 from backend.app.services.ingestion.mimo_asr_service import MiMoASRService
+from backend.app.tasks.asr_tasks import FAILURE_CODES, asr_job_id, transcribe_audio
 
 
 def asr_result(text: str = "测试转写") -> dict:
@@ -35,103 +38,108 @@ def asr_result(text: str = "测试转写") -> dict:
     }
 
 
-class ASRExecutionServiceTestCase(unittest.IsolatedAsyncioTestCase):
+class AsrTaskTestCase(unittest.IsolatedAsyncioTestCase):
+    """转写任务的行为。
+
+    执行调度（去重、超时、并发）现在归 arq 队列管，这里测的是搬过去之后
+    任务本身：写回音频表、失败时返回结构化结果而不是抛异常
+    （任务在另一个进程里跑，异常要跨进程序列化才能传回 API）。
+    """
+
     def setUp(self):
-        self.previous_key = settings.mimo_asr_api_key
-        self.previous_timeout = settings.asr_timeout_seconds
-        settings.mimo_asr_api_key = "test-key"
-        settings.asr_timeout_seconds = 1.0
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        engine = create_engine(f"sqlite:///{self.root / 'asr.db'}")
+        Base.metadata.create_all(engine)
+        self.Session = sessionmaker(bind=engine)
+        self.audio_file = self.root / "sample.wav"
+        self.audio_file.write_bytes(b"RIFF....")
+
+        db = self.Session()
+        db.add(Audio(id=7, filename="sample.wav", file_path=str(self.audio_file)))
+        db.commit()
+        db.close()
+
+        self._session_patch = patch(
+            "backend.app.tasks.asr_tasks.SessionLocal", self.Session
+        )
+        self._session_patch.start()
 
     def tearDown(self):
-        settings.mimo_asr_api_key = self.previous_key
-        settings.asr_timeout_seconds = self.previous_timeout
+        self._session_patch.stop()
+        self._tmp.cleanup()
 
-    async def test_same_audio_id_cannot_run_twice(self):
-        started = threading.Event()
-        release = threading.Event()
-
-        def blocking_transcribe(*_args):
-            started.set()
-            release.wait(1)
-            return asr_result()
-
-        service = ASRExecutionService()
+    async def test_转写成功会写回音频表(self):
         with patch(
-            "backend.app.services.ingestion.asr_service._transcribe_sync",
-            side_effect=blocking_transcribe,
+            "backend.app.services.ingestion.asr_service.transcribe_sync",
+            return_value=asr_result("识别出来的内容"),
         ):
-            first = asyncio.create_task(service.transcribe(7, "audio.wav", "mimo"))
-            await asyncio.to_thread(started.wait, 1)
-            with self.assertRaises(ASRAlreadyRunningError):
-                await service.transcribe(7, "audio.wav", "mimo")
-            release.set()
-            await first
+            outcome = await transcribe_audio({}, 7, "mimo", "auto")
 
-    async def test_timeout_keeps_audio_claimed_until_thread_finishes(self):
-        settings.asr_timeout_seconds = 0.01
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(outcome["result"]["transcription"], "识别出来的内容")
 
-        def slow_transcribe(*_args):
-            time.sleep(0.08)
-            return asr_result()
+        db = self.Session()
+        try:
+            audio = db.get(Audio, 7)
+            self.assertEqual(audio.transcription, "识别出来的内容")
+        finally:
+            db.close()
 
-        service = ASRExecutionService()
+    async def test_音频不存在时返回结构化结果而不是抛异常(self):
+        # 任务在另一个进程里跑，抛异常得跨进程序列化才能传回 API，
+        # 而自定义异常类在两端版本不一致时会变成难查的解析错误。
+        outcome = await transcribe_audio({}, 999, "mimo", "auto")
+        self.assertFalse(outcome["ok"])
+        self.assertEqual(outcome["code"], "not_found")
+
+    async def test_转写失败时不写入半截数据(self):
         with patch(
-            "backend.app.services.ingestion.asr_service._transcribe_sync",
-            side_effect=slow_transcribe,
+            "backend.app.services.ingestion.asr_service.transcribe_sync",
+            side_effect=RuntimeError("上游挂了"),
         ):
-            with self.assertRaises(ASRTimeoutError):
-                await service.transcribe(8, "audio.wav", "mimo")
-            with self.assertRaises(ASRAlreadyRunningError):
-                await service.transcribe(8, "audio.wav", "mimo")
-            await asyncio.sleep(0.1)
+            outcome = await transcribe_audio({}, 7, "mimo", "auto")
 
-    async def test_removed_local_provider_is_rejected(self):
-        # 本地 whisper 已移除。配置或调用里再出现它必须立刻报错，
-        # 而不是悄悄回退到某个远程 provider 跑起来——静默降级会让人以为
-        # 还在用本地模型，实际每次都在调外部 API。
-        service = ASRExecutionService()
-        with self.assertRaises(ASRProviderNotFoundError):
-            await service.transcribe(1, "audio.wav", "whisper")
+        self.assertFalse(outcome["ok"])
+        self.assertEqual(outcome["code"], "execution")
+        db = self.Session()
+        try:
+            self.assertIsNone(db.get(Audio, 7).transcription)
+        finally:
+            db.close()
 
-    async def test_remote_providers_are_not_serialized(self):
-        # 移除本地模型后不再有单并发限制：串行化是为了让 whisper 不被加载多份，
-        # 远程调用没有这个问题，拦一道只会白白拖慢批量转写。
-        active = 0
-        max_active = 0
-        state_lock = threading.Lock()
-
-        def tracked_transcribe(*_args):
-            nonlocal active, max_active
-            with state_lock:
-                active += 1
-                max_active = max(max_active, active)
-            time.sleep(0.05)
-            with state_lock:
-                active -= 1
-            return asr_result()
-
-        service = ASRExecutionService()
+    async def test_失败信息不泄露上游细节(self):
         with patch(
-            "backend.app.services.ingestion.asr_service._transcribe_sync",
-            side_effect=tracked_transcribe,
-        ):
-            await asyncio.gather(
-                service.transcribe(101, "one.wav", "mimo"),
-                service.transcribe(102, "two.wav", "mimo"),
-                service.transcribe(103, "three.wav", "mimo"),
-            )
-        self.assertGreater(max_active, 1, "远程 provider 不该被串行化")
-
-    async def test_provider_error_is_not_exposed(self):
-        service = ASRExecutionService()
-        with patch(
-            "backend.app.services.ingestion.asr_service._transcribe_sync",
+            "backend.app.services.ingestion.asr_service.transcribe_sync",
             side_effect=RuntimeError("upstream leaked api_key=secret"),
         ):
-            with self.assertRaises(ASRExecutionError) as context:
-                await service.transcribe(9, "audio.wav", "mimo")
-        self.assertEqual(str(context.exception), "语音转写服务暂时不可用")
-        self.assertNotIn("secret", str(context.exception))
+            outcome = await transcribe_audio({}, 7, "mimo", "auto")
+
+        self.assertEqual(outcome["message"], "语音转写服务暂时不可用")
+        self.assertNotIn("secret", outcome["message"])
+
+    async def test_已移除的本地_provider_被拒绝(self):
+        # whisper 已移除。调用里再出现它必须立刻报错，而不是悄悄回退到某个
+        # 远程 provider 跑起来——静默降级会让人以为还在用本地模型。
+        with self.assertRaises(ASRProviderNotFoundError):
+            resolve_provider("whisper")
+
+    async def test_job_id_按音频维度(self):
+        # 同一个音频同时只允许一个转写任务，靠 job_id 的唯一性实现；
+        # 换成进程内集合的话多实例下每个进程各有一份，拦不住别的实例。
+        self.assertEqual(asr_job_id(7), "asr:7")
+        self.assertNotEqual(asr_job_id(7), asr_job_id(8))
+
+    async def test_每种失败码都有对应的_HTTP_状态(self):
+        # worker 新增一种失败而 API 没跟上时，会静默落进默认的 502，
+        # 用户看到「服务不可用」但其实是他自己的输入有问题。这条守住两者的同步。
+        from backend.app.api.ingestion.audio import ASR_FAILURE_STATUS
+
+        missing = [
+            code for code in FAILURE_CODES
+            if code != "execution" and code not in ASR_FAILURE_STATUS
+        ]
+        self.assertEqual(missing, [], f"这些失败码没有对应的 HTTP 状态: {missing}")
 
 
 class AudioProcessingTestCase(unittest.TestCase):

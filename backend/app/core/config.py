@@ -205,6 +205,11 @@ class Settings(BaseSettings):
     arq_index_max_jobs: int = Field(default=10, ge=1, le=100)
     arq_job_timeout_seconds: int = Field(default=300, gt=0, le=3600)
 
+    # ASR 队列。与索引分开：转写一次可能跑满 180 秒，混在索引 worker 里
+    # 会占住并发槽，让几百毫秒的索引任务排队。
+    arq_asr_queue: str = "arq:asr"
+    arq_asr_max_jobs: int = Field(default=4, ge=1, le=32)
+
     # 旧 data/docs 兼容索引；新部署默认只使用 Wiki 主数据。
     sync_legacy_docs_on_startup: bool = False
 

@@ -256,10 +256,10 @@ utf8mb4 下每字符最多 4 字节，InnoDB 索引键上限 3072 字节，即�
 
 ---
 
-## Stage 5 — 索引与 ASR 迁移到 arq `L`
+## Stage 5 — 索引与 ASR 迁移到 arq `L` ✅ 已完成
 
-分两步做：**5a 索引（✅ 已完成）**、**5b ASR（未开工）**。拆开是因为 ASR 那半会改变
-API 的接口语义，混在一起出问题时不好定位。
+分两步做：**5a 索引**、**5b ASR**。拆开是因为 ASR 那半会改变 API 的调用方语义，
+混在一起出问题时不好定位。
 
 ### 5a — 索引任务迁 arq ✅ 已完成
 
@@ -306,23 +306,55 @@ API 的接口语义，混在一起出问题时不好定位。
 
 **验收**：见下。
 
-### 5b — ASR 迁移到 arq（未开工，范围已变更）
+### 5b — ASR 迁移到 arq ✅ 已完成
 
 **原计划的描述与实际不符**：`asr_service.py` 是**请求内同步等待**（`audio.py` 直接
 `await transcribe(...)` 拿结果 → 写 audio 表 → 返回前端），不是后台任务；
 `_running_audio_ids` 是**并发去重**（重复提交返 409），不是任务调度。
-所以 5b 不是「搬移」，是把 API 的同步接口改成跨进程等结果。
+所以 5b 不是「搬移」，是把执行位置从 API 进程挪到 worker 进程。
 
-**范围变更（2026-10-13 决定）**：本地 whisper provider 不再使用，ASR 走网关模型
-（保留 dashscope + mimo 两个远程 provider）。因此：
-- 原计划「`asr` 队列 `max_jobs=1` 替代 `Semaphore(1)`，独占 Whisper 模型」这个理由消失
-  ——远程 API 不占本地显存，没有全局单并发的必要
-- 但 5b 仍要做：ASR 超时 180 秒，占用 API 进程线程；放 worker 后 API 可任意扩、
-  重启不打断已在跑的任务
-- 要重新设计的失败模式：超时语义（现在 `shield` + 后台继续跑）、worker 没起来、
-  Redis 抖动时提交失败
+**范围变更（2026-10-13）**：本地 whisper 已移除（见下），ASR 走网关模型
+（dashscope + mimo）。原计划「`asr` 队列 `max_jobs=1` 替代 `Semaphore(1)` 独占
+Whisper 模型」这个理由消失——远程 API 不占本地显存，没有全局单并发的必要。
 
-**验收**：`docker compose up --scale arq-worker=2`，提交 10 个索引任务无重复执行。
+**改动**
+- 新增 `backend/app/tasks/asr_tasks.py`：`transcribe_audio` 任务（转写 + 落库）、
+  `asr_job_id`、`release_asr_job`、失败码全集 `FAILURE_CODES`
+- `asr_service.py`：**删除 `ASRExecutionService`**——它的三个职责都被 arq 接管
+  （去重→job_id、超时→wait_for/job_timeout、线程→worker 里的 to_thread），
+  保留只会在 worker 进程里再维护一份没意义的进程内状态；同时删掉随之成为
+  死代码的 `ASRAlreadyRunningError` / `ASRTimeoutError` / `ASRExecutionError`
+- `api/ingestion/audio.py`：端点改为「提交 + 等结果」，语义对前端不变
+- `worker.py`：新增 `AsrWorkerSettings`；compose 新增 `arq-worker-asr` 服务
+
+**几个刻意的决定**
+1. **落库放在 worker 侧**：转写和写 audio 表是同一件事，拆开的话 API 超时那一刻
+   结果就丢了，而任务其实还在跑。放 worker 则无论 API 是否还在等，结果都会落库。
+2. **worker 返回结构化结果而不是抛异常**：任务在另一个进程里跑，异常要跨进程
+   序列化才能传回 API，自定义异常类在两端版本不一致时会变成难查的解析错误。
+   用 `{ok, code, message}` 把「成功」和「哪一类失败」编码进去，API 侧只做映射。
+3. **`FAILURE_CODES` 定义成常量**：API 那边有一张 code→HTTP 状态的映射表，
+   集中定义才能让「worker 新增了一种失败」有单一出处，否则会静默落进默认的 502。
+   有测试守住两者的同步。
+4. **ASR 单独一个 worker 进程**：索引是几百毫秒的短活，转写可能跑满 180 秒，
+   混在一个 worker 里会让短任务排在长任务后面。
+
+**实测发现的一个坑**：拿到结果后要释放 job_id 让用户能立刻换引擎重转，但
+**必须删两个键**——arq 判断重复投递看的是 `exists(job_key, result_key_prefix + job_id)`。
+任务完成后 job 键 arq 自己会删，只删它是空操作，重投照样被拒，表现为
+「刚转完就不让再转了」。这条是读 arq 源码才确认的，见 `release_asr_job`。
+
+**验收 ✅**（2026-10-13）：独立队列 + 独立 Redis db，投递不存在的音频 id
+（不消耗上游配额、不改任何数据）：
+- 提交 → 队列 → worker → 结构化结果回传：拿到 `{ok: False, code: not_found}`
+- 同一音频重复提交被拒（job_id 唯一性，替代进程内的 `_running_audio_ids`）
+- 释放 job_id 后可重新提交
+
+**顺带完成的范围外改动**：移除本地 whisper provider（`whisper_service.py` 115 行、
+`_whisper_slot`、`asr_provider` 的 Literal 收敛为 dashscope/mimo、requirements 去掉
+faster-whisper、compose 去掉 WHISPER_MODEL_PATH 挂载、前端不再硬编码 provider
+初始值与兜底列表）。注意 `.env` 也要同步删掉 `WHISPER_MODEL_PATH`——
+pydantic-settings 默认 `extra="forbid"`，留着未声明的变量会直接校验失败。
 
 ---
 

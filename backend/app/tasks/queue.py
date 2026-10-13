@@ -34,6 +34,19 @@ async def create_arq_pool() -> ArqRedis:
     return await create_pool(RedisSettings.from_dsn(settings.redis_url))
 
 
+async def ensure_pool() -> ArqRedis:
+    """async 调用方取连接池，未初始化时补建一次。
+
+    API 的 lifespan 会初始化它，正常路径走不到补建。兜底是为了测试和脚本——
+    它们不跑 lifespan，但也需要能投递任务。
+    """
+    global _pool, _main_loop
+    if _pool is None:
+        _main_loop = asyncio.get_running_loop()
+        _pool = await create_arq_pool()
+    return _pool
+
+
 async def init_dispatcher() -> None:
     """在应用启动时记录主事件循环并建立连接池。
 

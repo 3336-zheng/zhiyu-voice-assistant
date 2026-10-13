@@ -28,3 +28,9 @@ class AgentRun(Base):
     created_at = Column(DateTimeMs, server_default=func.now())
     updated_at = Column(DateTimeMs, server_default=func.now(), onupdate=func.now())
     completed_at = Column(DateTimeMs)
+    # 执行者活着的心跳。多实例下启动恢复靠它区分「我上次跑挂的运行」和
+    # 「别的实例正在跑的运行」——没有这个字段的话，任一实例启动都会把
+    # 所有未完成的运行标记为失败，把别人正在跑的对话一起杀掉。
+    #
+    # 不能复用 updated_at：状态变更、字段回写都会刷新它，判断不出执行者是否还活着。
+    heartbeat_at = Column(DateTimeMs, nullable=True, index=True)

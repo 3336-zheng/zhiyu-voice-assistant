@@ -1,9 +1,10 @@
 """Agent 请求运行记录。"""
 
-from sqlalchemy import Column, DateTime, Integer, JSON, String, Text
+from sqlalchemy import Column, Integer, JSON, String, Text
 from sqlalchemy.sql import func
 
 from ..core.database import Base
+from .types import DateTimeMs
 
 
 class AgentRun(Base):
@@ -24,6 +25,6 @@ class AgentRun(Base):
     error = Column(Text)
     events = Column(JSON)
     runtime_snapshot = Column(JSON)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    completed_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTimeMs, server_default=func.now())
+    updated_at = Column(DateTimeMs, server_default=func.now(), onupdate=func.now())
+    completed_at = Column(DateTimeMs)

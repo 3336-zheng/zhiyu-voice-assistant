@@ -36,34 +36,35 @@ class FakeBM25:
         ][:top_k]
 
 
-class FakeChromaCollection:
+class FakeChroma:
+    """替身实现的是 ChromaService 的公开方法，不再模拟原生 Collection。
+
+    收敛封装之前，检索服务是伸手拿 chroma_service.collection 再自己调 .get()，
+    所以替身也得跟着伪造一层 Collection。现在调用方只认 get_chunks_by_ids，
+    替身也就只需要长成服务的样子。
+    """
+
     def __init__(self):
         self.documents = {
             "page:p1:revision:1:chunk:0": "父块一的完整正文" * 12,
             "page:p2:revision:1:chunk:0": "父块二正文",
         }
 
-    def get(self, ids, include):
-        existing = [doc_id for doc_id in ids if doc_id in self.documents]
+    def get_chunks_by_ids(self, ids):
         return {
-            "ids": existing,
-            "documents": [self.documents[doc_id] for doc_id in existing],
-            "metadatas": [
-                {
+            doc_id: {
+                "content": self.documents[doc_id],
+                "metadata": {
                     "source_type": "wiki_page",
                     "page_id": "p1" if ":p1:" in doc_id else "p2",
                     "page_title": "页面一" if ":p1:" in doc_id else "页面二",
                     "parent_chunk_id": doc_id,
                     "chunk_level": "parent",
-                }
-                for doc_id in existing
-            ],
+                },
+            }
+            for doc_id in ids
+            if doc_id in self.documents
         }
-
-
-class FakeChroma:
-    def __init__(self):
-        self.collection = FakeChromaCollection()
 
     @staticmethod
     def search(embedding, top_k=20):
@@ -218,7 +219,7 @@ class ChromaSearchResilienceTestCase(unittest.TestCase):
                     "documents": [["旧内容", "有效内容"]],
                 }
 
-        service.collection = Collection()
+        service._collection = Collection()
 
         with patch("backend.app.services.retrieval.chroma_service.logger.warning") as warning:
             result = service.search([0.1, 0.2], top_k=2)

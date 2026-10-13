@@ -1,9 +1,10 @@
 """
 对话历史模型 - 支持多轮对话记忆
 """
-from sqlalchemy import Column, Integer, String, Text, DateTime, JSON
+from sqlalchemy import Column, Integer, String, Text, JSON
 from sqlalchemy.sql import func
 from ..core.database import Base
+from .types import DateTimeMs
 
 
 class Conversation(Base):
@@ -16,8 +17,8 @@ class Conversation(Base):
     summary = Column(Text)  # 会话摘要（用于长对话压缩）
     summary_message_id = Column(Integer)  # 摘要已覆盖到的原始消息 ID
     message_count = Column(Integer, default=0)  # 消息计数
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTimeMs, server_default=func.now())
+    updated_at = Column(DateTimeMs, onupdate=func.now())
 
     def __repr__(self):
         return f"<Conversation(session_id={self.session_id})>"
@@ -33,7 +34,7 @@ class ConversationMessage(Base):
     content = Column(Text, nullable=False)
     intent = Column(String(50))  # 识别的意图
     extra_data = Column(JSON)  # 附加元数据（如引用来源）
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTimeMs, server_default=func.now())
 
     def __repr__(self):
         return f"<ConversationMessage(session_id={self.session_id}, role={self.role})>"

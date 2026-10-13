@@ -10,6 +10,7 @@ from chromadb.config import Settings as ChromaSettings
 from typing import List, Tuple, Optional, Dict, Any
 import logging
 
+from backend.app.core import index_version
 from backend.app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,52 @@ def resolve_embedding_collection_name(
     safe_base = re.sub(r"[^A-Za-z0-9._-]+", "-", base_name).strip("._-") or "notes"
     safe_base = safe_base[:49].rstrip("._-") or "notes"
     return f"{safe_base}-{digest}"
+
+
+def _create_client(persist_directory: str):
+    """按 chroma_mode 创建客户端：embedded 直连本地目录，server 连独立容器。
+
+    抽成函数而不是在 __init__ 里写 if/else，是因为 client 的构造差异是本模块的
+    内部细节——全仓没有任何外部代码引用 chroma_service.client，把差异钉死在这一个
+    函数体里，其余代码只管「拿到一个 client」。也没有必要为两种模式抽基类和子类：
+    两者的 Collection API 完全一致，子类之间唯一的差别就是这几行构造代码。
+
+    server 模式下这里会主动 heartbeat 一次。多花一个来回，换的是「连不上就启动失败」
+    而不是「启动正常、第一次检索才发现召回是 0」——后者正是本 Stage 要消灭的那类
+    静默失败。
+    """
+    if settings.chroma_mode == "server":
+        client = chromadb.HttpClient(
+            host=settings.chroma_host,
+            port=settings.chroma_port,
+            settings=ChromaSettings(anonymized_telemetry=False),
+        )
+        try:
+            client.heartbeat()
+        except Exception as exc:
+            # 本机开着系统级代理时，这里是最容易卡住的一步：chromadb 内部用 httpx，
+            # 而 httpx 默认 trust_env=True，在 macOS 上会去读系统网络偏好里的代理，
+            # 于是连本机容器的请求也被送进代理，返回 502。curl 不读系统代理设置，
+            # 所以会出现「curl 通、应用连不上」这种看起来自相矛盾的现象。
+            # 解法是让 NO_PROXY 覆盖 chroma_host（环境变量优先级高于系统设置）。
+            raise RuntimeError(
+                f"连接 Chroma server 失败（{settings.chroma_host}:{settings.chroma_port}）: {exc}。"
+                f"若本机开启了系统代理，需要把 NO_PROXY 设为包含 {settings.chroma_host}。"
+            ) from exc
+        logger.info(
+            "Chroma 以 server 模式连接: %s:%s",
+            settings.chroma_host,
+            settings.chroma_port,
+        )
+        return client
+
+    logger.info("Chroma 以 embedded 模式运行，数据目录: %s", persist_directory)
+    return chromadb.PersistentClient(
+        path=persist_directory,
+        settings=ChromaSettings(
+            anonymized_telemetry=False,  # 禁用匿名遥测
+        ),
+    )
 
 
 class ChromaService:
@@ -62,21 +109,18 @@ class ChromaService:
             )
         )
 
-        # 初始化 ChromaDB 客户端（持久化模式）
-        self.client = chromadb.PersistentClient(
-            path=self.persist_directory,
-            settings=ChromaSettings(
-                anonymized_telemetry=False,  # 禁用匿名遥测
-            )
-        )
+        # 初始化 ChromaDB 客户端（embedded 或 server，由配置决定）
+        self.client = _create_client(self.persist_directory)
 
-        # 获取或创建集合
-        self.collection = self.client.get_or_create_collection(
+        # 获取或创建集合。属性名带下划线是有意的：本服务之外不该有人拿到原生
+        # Collection 再直接调 Chroma 的 API，那样会绕过 mark_index_changed()，
+        # 索引变了而版本号没涨，其他实例就不会重建——一个不报错的错。
+        self._collection = self.client.get_or_create_collection(
             name=self.collection_name,
             metadata={"hnsw:space": "cosine"}  # 使用余弦相似度
         )
-        # 进程内 generation 能识别“文档数量不变但正文已更新”的缓存失效场景。
-        self._generation = 0
+        # 索引版本号用来识别“文档数量不变但正文已更新”的缓存失效场景。
+        # 它存在 Redis 上而不是进程内，否则多实例时别人改了索引本进程不会知道。
 
         logger.info(
             "ChromaDB 服务初始化完成，集合: %s，Embedding Provider: %s",
@@ -112,7 +156,7 @@ class ChromaService:
             # 使用 note_id 作为文档ID
             doc_id = f"note_{note_id}"
 
-            self.collection.add(
+            self._collection.add(
                 ids=[doc_id],
                 embeddings=[embedding],
                 documents=[content],
@@ -155,7 +199,7 @@ class ChromaService:
 
             doc_ids = [f"note_{nid}" for nid in note_ids]
 
-            self.collection.add(
+            self._collection.add(
                 ids=doc_ids,
                 embeddings=embeddings,
                 documents=contents,
@@ -188,7 +232,7 @@ class ChromaService:
             doc_id 格式: "note_1" 或 "doc_xxx_0"
         """
         try:
-            results = self.collection.query(
+            results = self._collection.query(
                 query_embeddings=[query_embedding],
                 n_results=top_k,
                 where=where,
@@ -269,7 +313,7 @@ class ChromaService:
         """
         try:
             doc_id = f"note_{note_id}"
-            self.collection.delete(ids=[doc_id])
+            self._collection.delete(ids=[doc_id])
             logger.debug(f"成功删除向量: note_id={note_id}")
             self.mark_index_changed()
             return True
@@ -288,7 +332,7 @@ class ChromaService:
             bool: 是否成功
         """
         try:
-            self.collection.delete(where=where)
+            self._collection.delete(where=where)
             logger.info(f"成功删除符合条件的向量: {where}")
             self.mark_index_changed()
             return True
@@ -307,7 +351,7 @@ class ChromaService:
             bool: 是否成功
         """
         try:
-            self.collection.delete(where={
+            self._collection.delete(where={
                 "$and": [
                     {"source_type": "doc"},
                     {"filename": filename}
@@ -331,7 +375,7 @@ class ChromaService:
             List[Dict]: 文档块列表
         """
         try:
-            results = self.collection.get(
+            results = self._collection.get(
                 where={
                     "$and": [
                         {"source_type": "doc"},
@@ -365,7 +409,7 @@ class ChromaService:
         """
         try:
             doc_id = f"note_{note_id}"
-            result = self.collection.get(
+            result = self._collection.get(
                 ids=[doc_id],
                 include=["embeddings", "metadatas", "documents"]
             )
@@ -389,7 +433,108 @@ class ChromaService:
         Returns:
             int: 文档数量
         """
-        return self.collection.count()
+        return self._collection.count()
+
+    def add_chunks(
+        self,
+        ids: List[str],
+        embeddings: List[List[float]],
+        documents: List[str],
+        metadatas: List[Dict[str, Any]],
+    ) -> bool:
+        """批量写入分块，文档索引与 Wiki 页面索引共用。
+
+        不复用 add_embeddings_batch：那个方法的 ID 是它自己按 note_id 拼出来的
+        （note_{id}），而这里的 ID 由调用方决定（doc_{stem}_{i}、page:{id}:...），
+        两者的主键规则不同，硬凑到一起只会让 ID 从哪来变得难以追踪。
+
+        一次提交而不是循环里逐条 add：embedded 模式下两者只差几次函数调用，
+        server 模式下是 N 次 HTTP 往返和 1 次的区别。
+        """
+        if not ids:
+            return True
+        try:
+            self._collection.add(
+                ids=ids,
+                embeddings=embeddings,
+                documents=documents,
+                metadatas=metadatas,
+            )
+            # 写入点自己负责标记版本变化，调用方不需要（也不应该）再记得调一次。
+            self.mark_index_changed()
+            return True
+        except Exception as e:
+            logger.error(f"批量写入分块失败: {e}")
+            return False
+
+    def get_all_chunks(self, source_types: List[str]) -> List[Dict[str, Any]]:
+        """按 source_type 拉取全部分块，供 BM25 全量重建使用。
+
+        过滤条件下推到 Chroma 而不是拉回来再在 Python 里筛：embedded 模式下多拉的
+        那部分几乎免费，server 模式下它要先序列化、过网络、再反序列化，最后才被丢掉。
+        另外这里只 include documents 和 metadatas，不要 embeddings——向量的体积比
+        正文大一个量级，而 BM25 重建根本用不到它。
+
+        **本方法故意不捕获异常，失败时直接往上抛，不要「顺手」加 try/except 返回空列表。**
+        调用方 rebuild_bm25_from_persistent 拿到空列表会把 BM25 索引清空并标记成
+        「已同步到当前版本」，于是 Chroma 的一次临时故障会让检索永久退化成零结果，
+        而且再也不会触发重建。让异常抛出去，调用方才有机会保住旧索引、下次重试。
+
+        Returns:
+            List[Dict]: [{"id", "content", "metadata"}]
+        """
+        results = self._collection.get(
+            where={"source_type": {"$in": source_types}},
+            include=["documents", "metadatas"],
+        )
+        chunks: List[Dict[str, Any]] = []
+        for i, doc_id in enumerate(results["ids"] or []):
+            chunks.append({
+                "id": doc_id,
+                "content": results["documents"][i] if results["documents"] else "",
+                "metadata": results["metadatas"][i] if results["metadatas"] else {},
+            })
+        return chunks
+
+    def get_doc_metadatas(self) -> List[Dict[str, Any]]:
+        """拉取所有文档类分块的元数据，用于比对文件修改时间。
+
+        不 include documents：这个用途只看 filename 和 file_mtime，把正文一起拉回来
+        在 server 模式下纯属浪费带宽。
+        """
+        try:
+            results = self._collection.get(
+                where={"source_type": "doc"},
+                include=["metadatas"],
+            )
+            return list(results["metadatas"] or [])
+        except Exception as e:
+            logger.error(f"获取文档元数据失败: {e}")
+            return []
+
+    def get_chunks_by_ids(self, ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """按 ID 批量取分块详情。
+
+        Returns:
+            Dict: {doc_id: {"content": ..., "metadata": ...}}，取不到的 ID 不会出现在结果里
+        """
+        if not ids:
+            return {}
+        try:
+            results = self._collection.get(
+                ids=ids,
+                include=["documents", "metadatas"],
+            )
+            chunks: Dict[str, Dict[str, Any]] = {}
+            for i, doc_id in enumerate(results["ids"] or []):
+                chunks[doc_id] = {
+                    "content": results["documents"][i] if results["documents"] else "",
+                    "metadata": results["metadatas"][i] if results["metadatas"] else {},
+                }
+            return chunks
+        except Exception as e:
+            logger.error(f"获取文档块失败: {e}")
+            return {}
 
     def update_embedding(
         self,
@@ -418,7 +563,7 @@ class ChromaService:
 
             doc_id = f"note_{note_id}"
 
-            self.collection.update(
+            self._collection.update(
                 ids=[doc_id],
                 embeddings=[embedding],
                 documents=[content],
@@ -459,7 +604,7 @@ class ChromaService:
 
             doc_id = f"note_{note_id}"
 
-            self.collection.upsert(
+            self._collection.upsert(
                 ids=[doc_id],
                 embeddings=[embedding],
                 documents=[content],
@@ -483,7 +628,7 @@ class ChromaService:
         try:
             # 删除集合并重新创建
             self.client.delete_collection(self.collection_name)
-            self.collection = self.client.get_or_create_collection(
+            self._collection = self.client.get_or_create_collection(
                 name=self.collection_name,
                 metadata={"hnsw:space": "cosine"}
             )
@@ -495,12 +640,13 @@ class ChromaService:
             return False
 
     def mark_index_changed(self) -> None:
-        """标记绕过本服务直接写入 Chroma 的索引变更。"""
-        self._generation += 1
+        """标记索引变更。
 
-    def get_generation(self) -> int:
-        """返回当前进程内索引 generation。"""
-        return self._generation
+        本服务内部的每个写操作都会调它，外部绕过本服务直接写 Chroma 时也要手动调。
+        换句话说这里是所有索引变更的唯一汇聚点，所以全局版本号在这里递增一次就够了，
+        不需要去各个写入点分别埋点。
+        """
+        index_version.bump()
 
 
 # 全局服务实例

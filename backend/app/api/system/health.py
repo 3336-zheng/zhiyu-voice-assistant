@@ -66,7 +66,7 @@ async def check_models():
     try:
         from backend.app.services.retrieval.chroma_service import get_chroma_service
         svc = get_chroma_service()
-        count = svc.collection.count()
+        count = svc.get_count()
         models["chromadb"] = {
             "status": "ready",
             "collection": svc.collection_name,

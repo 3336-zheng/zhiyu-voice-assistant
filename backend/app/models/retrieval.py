@@ -1,9 +1,10 @@
 """
 检索模型
 """
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, JSON
+from sqlalchemy import Column, Integer, String, Text, Float, JSON
 from sqlalchemy.sql import func
 from ..core.database import Base
+from .types import DateTimeMs
 
 class Retrieval(Base):
     __tablename__ = "retrievals"
@@ -15,7 +16,7 @@ class Retrieval(Base):
     similarity_scores = Column(JSON)  # 相似度分数
     top_k = Column(Integer)  # 返回结果数量
     used_model = Column(String(100))  # 使用的模型
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTimeMs, server_default=func.now())
 
     def __repr__(self):
         return f"<Retrieval(id={self.id}, query_text={self.query_text[:20]}...)"

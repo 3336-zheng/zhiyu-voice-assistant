@@ -13,17 +13,27 @@ logger = logging.getLogger(__name__)
 
 
 def _initialize_database() -> None:
-    from .database import Base, engine
+    """按数据库方言决定建表方式。
+
+    SQLite 面向本地开发与测试，直接由 ORM 元数据建表，克隆仓库即可运行。
+
+    MySQL 面向多实例部署，schema 一律交给 Alembic，应用启动不执行任何 DDL：
+    多个实例同时启动会并发执行建表语句而互相撞车，且 MySQL 的 DDL 不在事务内，
+    中途失败无法回滚，会留下一个半完成的库，比直接启动失败更难排查。
+    """
+    from .database import Base, engine, is_sqlite
     from .. import models as _models  # noqa: F401
-    from .schema import ensure_schema
+
+    if not is_sqlite():
+        logger.info("数据库 schema 由 Alembic 管理，启动阶段不建表（部署前执行 alembic upgrade head）")
+        return
 
     database_path = settings.database_url.replace("sqlite:///", "")
     database_dir = os.path.dirname(database_path)
     if database_dir:
         os.makedirs(database_dir, exist_ok=True)
     Base.metadata.create_all(bind=engine)
-    schema_version = ensure_schema(engine)
-    logger.info("数据库 schema 已就绪，版本: %s", schema_version)
+    logger.info("SQLite schema 已就绪（由 ORM 元数据建表）")
 
 
 def _migrate_relative_paths() -> None:

@@ -19,10 +19,22 @@ class BackupValidationError(ValueError):
 
 
 def _database_path() -> Path:
-    """解析当前 SQLite 数据库路径。"""
+    """解析当前 SQLite 数据库路径。
+
+    这里之所以只认 SQLite，是因为下面用的是 sqlite3 模块的 backup API——
+    它对单文件数据库做一致性快照，换成 MySQL 没有对应物。数据库切到 MySQL 之后，
+    库的备份改用 mysqldump（见报错里的命令），本服务只继续负责 Wiki 文件和附件。
+    """
     prefix = "sqlite:///"
     if not settings.database_url.startswith(prefix):
-        raise BackupValidationError("备份目前只支持 SQLite 数据库")
+        raise BackupValidationError(
+            "本命令的数据库快照只支持 SQLite，当前 DATABASE_URL 指向的不是 SQLite。\n"
+            "MySQL 请改用 mysqldump，例如：\n"
+            "  docker compose exec mysql mysqldump -u root -p \\\n"
+            "      --single-transaction --default-character-set=utf8mb4 \\\n"
+            "      zhiyu > backup.sql\n"
+            "--single-transaction 让导出在一个一致性快照里进行，不会锁住业务写入。"
+        )
     path = Path(settings.database_url[len(prefix) :])
     return path if path.is_absolute() else Path.cwd() / path
 

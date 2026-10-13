@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from functools import partial
-from pathlib import Path
 from typing import Protocol
 
 from backend.app.core.config import settings
@@ -48,13 +47,6 @@ class ASRExecutionError(ASRError):
 
 def _provider_definitions() -> dict[str, dict]:
     return {
-        "whisper": {
-            "name": "本地 Whisper",
-            "available": bool(
-                settings.whisper_model_path
-                and Path(settings.whisper_model_path).expanduser().exists()
-            ),
-        },
         "dashscope": {
             "name": f"百炼 DashScope ({settings.dashscope_asr_model})",
             "available": bool(settings.dashscope_asr_api_key),
@@ -77,10 +69,6 @@ def resolve_provider(provider: str | None) -> str:
 
 
 def get_asr_service(provider_id: str) -> ASRService:
-    if provider_id == "whisper":
-        from .whisper_service import get_whisper_service
-
-        return get_whisper_service()
     if provider_id == "dashscope":
         from .dashscope_asr_service import get_dashscope_asr_service
 
@@ -104,12 +92,16 @@ def _transcribe_sync(provider_id: str, audio_path: str, language: str) -> dict:
 
 
 class ASRExecutionService:
-    """将同步 Provider 放入线程，并管理去重、超时和本地单并发。"""
+    """将同步 Provider 放入线程，并管理去重与超时。
+
+    不再限制并发：原先的 `Semaphore(1)` 是为本地 whisper 准备的（模型要独占
+    显存，同时跑会加载多份）。本地模型移除后两个 provider 都是远程调用，
+    并发上限交给供应商侧，本地不需要再拦一道。
+    """
 
     def __init__(self) -> None:
         self._running_audio_ids: set[int] = set()
         self._running_lock = asyncio.Lock()
-        self._whisper_slot = asyncio.Semaphore(1)
 
     async def transcribe(
         self,
@@ -146,12 +138,13 @@ class ASRExecutionService:
                 await self._release(audio_id)
 
     async def _run(self, provider_id: str, audio_path: str, language: str) -> dict:
-        if provider_id == "whisper":
-            async with self._whisper_slot:
-                return await asyncio.to_thread(
-                    _transcribe_sync, provider_id, audio_path, language
-                )
-        return await asyncio.to_thread(_transcribe_sync, provider_id, audio_path, language)
+        """把同步的 Provider 调用挪到线程里。
+
+        不需要按 provider 分支了：本地 whisper 移除后剩下的都是远程 HTTP 调用。
+        """
+        return await asyncio.to_thread(
+            _transcribe_sync, provider_id, audio_path, language
+        )
 
     async def _claim(self, audio_id: int) -> None:
         async with self._running_lock:

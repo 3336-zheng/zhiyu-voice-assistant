@@ -45,7 +45,6 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:6379/0"
 
     # 模型路径配置（需在 .env 中填写实际路径）
-    whisper_model_path: str = ""
     embedding_provider: Literal["local", "openai_compatible"] = "local"
     embedding_model_path: str = ""
     embedding_api_key: str = ""
@@ -112,7 +111,9 @@ class Settings(BaseSettings):
     agent_max_replans: int = Field(default=1, ge=0, le=3)
 
     # ASR 引擎配置
-    asr_provider: Literal["whisper", "dashscope", "mimo"] = "whisper"
+    # ASR 引擎：走远程模型。原先还有一个本地 whisper 选项，
+    # 因为要在一台机器上加载模型、且多实例下各进程各加载一份，已移除。
+    asr_provider: Literal["dashscope", "mimo"] = "dashscope"
     asr_timeout_seconds: float = Field(default=180.0, gt=0, le=3_600)
     audio_normalize_timeout_seconds: float = Field(default=120.0, gt=0, le=3_600)
     audio_probe_timeout_seconds: float = Field(default=15.0, gt=0, le=300)

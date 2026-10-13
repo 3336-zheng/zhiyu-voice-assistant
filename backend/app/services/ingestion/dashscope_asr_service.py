@@ -64,7 +64,7 @@ class DashScopeASRService:
             language: 目标语言
 
         Returns:
-            与 WhisperService 相同格式的结果字典
+            与其它 ASR Provider 一致格式的结果字典
         """
         from dashscope.audio.asr import Recognition
 

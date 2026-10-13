@@ -20,10 +20,11 @@ export default function CaptureWorkspace({ notify, onSaved }) {
   const [transcript, setTranscript] = useState('')
   const [segments, setSegments] = useState([])
   const [summary, setSummary] = useState('')
-  const [provider, setProvider] = useState('whisper')
-  const [providers, setProviders] = useState([
-    { id: 'whisper', name: '本地 Whisper', available: true },
-  ])
+  // 初始留空、不硬编码引擎：可选项由 /audio/asr-providers 决定，
+  // 写死一个具体的 provider 会在它下线后（比如本地 whisper 移除）
+  // 让接口挂掉时界面还显示一个选不动的引擎。
+  const [provider, setProvider] = useState('')
+  const [providers, setProviders] = useState([])
   const [stage, setStage] = useState('idle')
   const [recording, setRecording] = useState(false)
   const recorderRef = useRef(null)

@@ -14,6 +14,7 @@ from backend.app.services.ingestion.asr_service import (
     ASRExecutionError,
     ASRExecutionService,
     ASRInputError,
+    ASRProviderNotFoundError,
     ASRTimeoutError,
 )
 from backend.app.services.ingestion.audio_processing import (
@@ -84,7 +85,17 @@ class ASRExecutionServiceTestCase(unittest.IsolatedAsyncioTestCase):
                 await service.transcribe(8, "audio.wav", "mimo")
             await asyncio.sleep(0.1)
 
-    async def test_whisper_requests_are_serialized(self):
+    async def test_removed_local_provider_is_rejected(self):
+        # 本地 whisper 已移除。配置或调用里再出现它必须立刻报错，
+        # 而不是悄悄回退到某个远程 provider 跑起来——静默降级会让人以为
+        # 还在用本地模型，实际每次都在调外部 API。
+        service = ASRExecutionService()
+        with self.assertRaises(ASRProviderNotFoundError):
+            await service.transcribe(1, "audio.wav", "whisper")
+
+    async def test_remote_providers_are_not_serialized(self):
+        # 移除本地模型后不再有单并发限制：串行化是为了让 whisper 不被加载多份，
+        # 远程调用没有这个问题，拦一道只会白白拖慢批量转写。
         active = 0
         max_active = 0
         state_lock = threading.Lock()
@@ -94,27 +105,22 @@ class ASRExecutionServiceTestCase(unittest.IsolatedAsyncioTestCase):
             with state_lock:
                 active += 1
                 max_active = max(max_active, active)
-            time.sleep(0.03)
+            time.sleep(0.05)
             with state_lock:
                 active -= 1
             return asr_result()
 
-        with tempfile.TemporaryDirectory() as model_dir:
-            previous_path = settings.whisper_model_path
-            settings.whisper_model_path = model_dir
-            try:
-                service = ASRExecutionService()
-                with patch(
-                    "backend.app.services.ingestion.asr_service._transcribe_sync",
-                    side_effect=tracked_transcribe,
-                ):
-                    await asyncio.gather(
-                        service.transcribe(1, "one.wav", "whisper"),
-                        service.transcribe(2, "two.wav", "whisper"),
-                    )
-            finally:
-                settings.whisper_model_path = previous_path
-        self.assertEqual(max_active, 1)
+        service = ASRExecutionService()
+        with patch(
+            "backend.app.services.ingestion.asr_service._transcribe_sync",
+            side_effect=tracked_transcribe,
+        ):
+            await asyncio.gather(
+                service.transcribe(101, "one.wav", "mimo"),
+                service.transcribe(102, "two.wav", "mimo"),
+                service.transcribe(103, "three.wav", "mimo"),
+            )
+        self.assertGreater(max_active, 1, "远程 provider 不该被串行化")
 
     async def test_provider_error_is_not_exposed(self):
         service = ASRExecutionService()

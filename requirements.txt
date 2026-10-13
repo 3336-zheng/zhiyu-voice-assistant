@@ -14,7 +14,8 @@ python-magic; sys_platform != "win32"
 python-magic-bin; sys_platform == "win32"
 
 # 语音与模型运行时
-faster-whisper
+# faster-whisper 已移除：本地语音识别改用网关模型（dashscope / mimo），
+# 顺带省掉 ctranslate2 那几百 MB 依赖
 dashscope>=1.20.0
 transformers
 torch

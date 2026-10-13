@@ -33,17 +33,6 @@ async def check_models():
     models["asr_provider"] = settings.asr_provider
     models["asr_providers"] = providers
 
-    # Whisper（仅当使用本地 Whisper 时加载）
-    if settings.asr_provider == "whisper":
-        try:
-            from backend.app.services.ingestion.whisper_service import get_whisper_service
-            svc = get_whisper_service()
-            models["whisper"] = "loaded" if hasattr(svc, "model") and svc.model is not None else "not_loaded"
-        except Exception as e:
-            models["whisper"] = f"error: {str(e)[:100]}"
-    else:
-        models["whisper"] = "skipped (使用 API 引擎)"
-
     # Embedding
     try:
         from backend.app.services.ai.embedding_service import get_embedding_service

@@ -20,11 +20,18 @@ from backend.app.core.observability import (
 
 class LifecycleTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_lifespan_starts_and_stops_background_tasks(self):
-        worker_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        dispatcher_ready = asyncio.Event()
 
-        async def fake_worker():
-            worker_started.set()
+        async def fake_cleanup():
+            cleanup_started.set()
             await asyncio.Event().wait()
+
+        async def fake_init_dispatcher():
+            dispatcher_ready.set()
+
+        async def fake_close_dispatcher():
+            pass
 
         app = SimpleNamespace(state=SimpleNamespace())
         with (
@@ -34,17 +41,22 @@ class LifecycleTestCase(unittest.IsolatedAsyncioTestCase):
             patch.object(lifecycle, "_sync_document_index"),
             patch.object(lifecycle, "_rebuild_bm25_index") as rebuild_bm25,
             patch.object(lifecycle, "_recover_wiki_index_tasks"),
+            patch.object(lifecycle, "_periodic_cleanup", fake_cleanup),
             patch(
-                "backend.app.services.wiki.wiki_index_worker.run_wiki_index_worker",
-                fake_worker,
+                "backend.app.tasks.queue.init_dispatcher", fake_init_dispatcher
+            ),
+            patch(
+                "backend.app.tasks.queue.close_dispatcher", fake_close_dispatcher
             ),
         ):
             async with lifecycle.lifespan(app):
-                await asyncio.wait_for(worker_started.wait(), timeout=1)
-                self.assertEqual(len(app.state.background_tasks), 2)
+                await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+                # 索引消费已经交给独立的 arq worker 进程，进程内只剩会话清理。
+                self.assertEqual(len(app.state.background_tasks), 1)
                 self.assertTrue(all(not task.done() for task in app.state.background_tasks))
                 rebuild_bm25.assert_called_once_with()
 
+        self.assertTrue(dispatcher_ready.is_set())
         self.assertEqual(app.state.background_tasks, [])
 
     async def test_observability_context_is_reset(self):

@@ -146,7 +146,10 @@ class PageService:
 
         self._rebuild_all_links()
         if sync_index:
+            # 显式要求同步索引时不投递，否则同一份工作会被做两遍。
             self.process_index_task(task.id)
+        else:
+            self.index_tasks.dispatch([task.id])
         return self.get_page(page_id)
 
     def upsert_page_by_source(
@@ -401,7 +404,10 @@ class PageService:
             raise
         self._rebuild_all_links()
         if sync_index:
+            # 显式要求同步索引时不投递，否则同一份工作会被做两遍。
             self.process_index_task(task.id)
+        else:
+            self.index_tasks.dispatch([task.id])
         return self._page_to_dict(page, current["content"], metadata)
 
     def list_revisions(self, page_id: str) -> List[Dict[str, Any]]:
@@ -469,8 +475,20 @@ class PageService:
         return self.index_tasks.recover()
 
     def process_pending_index_tasks(self, limit: int = 5) -> Dict[str, Any]:
-        """处理一批到期任务，供后台 worker 调用。"""
+        """同步处理一批到期任务。
+
+        后台消费已经交给 arq worker，这里保留给需要「立刻把索引跑完」的调用方：
+        单元测试和数据准备脚本。它们要的是确定性，不是并发。
+        """
         return self.index_tasks.process_pending(limit)
+
+    def due_index_task_ids(self, limit: int = 100) -> List[str]:
+        """列出到期可执行的任务 id，供 arq 兜底扫描补投。"""
+        return self.index_tasks.due_task_ids(limit)
+
+    def recover_stale_index_tasks(self, threshold_seconds: int) -> Dict[str, Any]:
+        """回收卡死在 processing 的任务——执行它的 worker 已经不在了。"""
+        return self.index_tasks.recover_stale(threshold_seconds)
 
     def import_legacy_directory(
         self,
@@ -583,7 +601,10 @@ class PageService:
             raise
         self._rebuild_all_links()
         if sync_index:
+            # 显式要求同步索引时不投递，否则同一份工作会被做两遍。
             self.process_index_task(task.id)
+        else:
+            self.index_tasks.dispatch([task.id])
         return self.get_page(page.id)
 
     def _rebuild_all_links(self) -> None:

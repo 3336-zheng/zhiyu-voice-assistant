@@ -113,12 +113,9 @@ async def lifespan(app: FastAPI):
     from ..services.runtime.agent_runtime_service import get_agent_runtime_service
 
     agent_runtime = get_agent_runtime_service()
-    try:
-        interrupted_runs = agent_runtime.recover_interrupted_runs()
-        if interrupted_runs:
-            logger.warning("已将 %s 个中断的 Agent 运行标记为失败", interrupted_runs)
-    except Exception as exc:
-        logger.warning("Agent 运行恢复失败（不影响启动）: %s", exc, exc_info=True)
+    # 这里**不再**回收「运行中」的任务：Agent 运行现在跑在 worker 进程里，
+    # API 重启不该把它们标记成失败（滚动重启会把正在进行的对话全杀掉）。
+    # 回收改由 agent worker 在自己的启动流程里做，见 tasks/worker.py。
     settings.get_upload_dir()
     _migrate_relative_paths()
 
@@ -134,15 +131,22 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("BM25 持久化索引恢复失败（不影响启动）: %s", exc, exc_info=True)
 
+    # 投递器必须先于任务恢复就绪：恢复会把卡在 processing 的任务改回 pending
+    # 并立即投递，投递器没起来的话它们就只能等兜底扫描了。
+    from ..tasks.queue import close_dispatcher, init_dispatcher
+
+    try:
+        await init_dispatcher()
+    except Exception as exc:
+        # Redis 不可用不该拦住应用启动——任务留在表里，等队列恢复后由兜底扫描补投。
+        logger.warning("任务投递器初始化失败（索引任务将由兜底扫描补投）: %s", exc)
+
     try:
         _recover_wiki_index_tasks()
     except Exception as exc:
         logger.warning("Wiki 索引任务恢复失败（不影响启动）: %s", exc, exc_info=True)
 
-    from ..services.wiki.wiki_index_worker import run_wiki_index_worker
-
     tasks = [
-        asyncio.create_task(run_wiki_index_worker(), name="wiki-index-worker"),
         asyncio.create_task(_periodic_cleanup(), name="session-cleanup-worker"),
     ]
     app.state.background_tasks = tasks
@@ -156,4 +160,11 @@ async def lifespan(app: FastAPI):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         app.state.background_tasks = []
+        await close_dispatcher()
+        from ..services.runtime.agent_state import get_agent_state_store
+
+        get_agent_state_store().close()
+        from .observability import close_recent_trace_store
+
+        close_recent_trace_store()
         logger.info("应用已关闭")

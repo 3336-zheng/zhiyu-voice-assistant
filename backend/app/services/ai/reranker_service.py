@@ -1,11 +1,14 @@
-"""可配置的本地与 Cohere/Jina 兼容重排序服务。"""
+"""Cohere/Jina 兼容协议的重排序服务。
+
+本地 Hugging Face 后端已移除，理由与 embedding 那边一致：精排统一走模型网关，
+本地模型在多实例下每个进程各加载一份，不划算。顺带省掉 torch 与 transformers
+约 1GB 的依赖。
+"""
 
 from __future__ import annotations
 
 import logging
 import math
-import os
-from pathlib import Path
 from typing import Any, List, Optional, Protocol
 from urllib.parse import urlsplit
 
@@ -38,56 +41,6 @@ def _validate_api_url(value: str) -> str:
     if parsed.query or parsed.fragment:
         raise RerankerProviderError("RERANKER_API_URL 不能包含查询参数或片段")
     return normalized
-
-
-class LocalRerankerBackend:
-    """使用本地 Hugging Face Sequence Classification 模型精排。"""
-
-    provider_name = "local"
-
-    def __init__(self, model_path: str) -> None:
-        if not (model_path or "").strip():
-            raise RerankerProviderError("本地 Rerank 模型路径不能为空")
-        os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
-        import torch
-        from transformers import AutoModelForSequenceClassification, AutoTokenizer
-
-        self._torch = torch
-        self.model_name = Path(model_path).name or "local-reranker"
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info("加载本地 Rerank 模型: %s", self.model_name)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
-        model_kwargs = {"local_files_only": True}
-        if self.device == "cuda":
-            model_kwargs["torch_dtype"] = torch.float16
-        self.model = AutoModelForSequenceClassification.from_pretrained(
-            model_path,
-            **model_kwargs,
-        )
-        self.model.eval()
-        self.model.to(self.device)
-        logger.info("本地 Rerank 模型加载完成，设备: %s", self.device)
-
-    def rerank(self, query: str, documents: List[str], top_k: int) -> List[dict]:
-        pairs = [[query, document] for document in documents]
-        inputs = self.tokenizer(
-            pairs,
-            padding=True,
-            truncation=True,
-            return_tensors="pt",
-            max_length=512,
-        )
-        inputs = {key: value.to(self.device) for key, value in inputs.items()}
-        with self._torch.no_grad():
-            logits = self.model(**inputs, return_dict=True).logits.view(-1)
-            scores = self._torch.sigmoid(logits).cpu().tolist()
-        results = [
-            {"index": index, "score": float(score)}
-            for index, score in enumerate(scores)
-        ]
-        results.sort(key=lambda item: item["score"], reverse=True)
-        return results[:top_k]
 
 
 class RerankCompatibleBackend:
@@ -194,14 +147,12 @@ class RerankerService:
 
     @staticmethod
     def _build_backend() -> RerankerBackend:
-        if settings.reranker_provider == "rerank_compatible":
-            return RerankCompatibleBackend(
-                api_key=settings.reranker_api_key,
-                api_url=settings.reranker_api_url,
-                model=settings.reranker_model,
-                timeout_seconds=settings.reranker_timeout_seconds,
-            )
-        return LocalRerankerBackend(settings.reranker_model_path)
+        return RerankCompatibleBackend(
+            api_key=settings.reranker_api_key,
+            api_url=settings.reranker_api_url,
+            model=settings.reranker_model,
+            timeout_seconds=settings.reranker_timeout_seconds,
+        )
 
     @property
     def provider_name(self) -> str:

@@ -15,14 +15,8 @@ x-app-volumes: &app-volumes
   - ./.env:/app/.env:ro
   # 数据持久化（数据库、上传文件、向量库、日志）
   - ./data:/app/data
-  # 模型文件挂载（用户在 .env 中配置路径）
-  - ${EMBEDDING_MODEL_PATH}:/app/models/embedding:ro
-  - ${RERANKER_MODEL_PATH}:/app/models/reranker:ro
 
 x-app-environment: &app-environment
-  # 覆盖 .env 中的模型路径为容器内路径
-  - EMBEDDING_MODEL_PATH=/app/models/embedding
-  - RERANKER_MODEL_PATH=/app/models/reranker
   # .env 里的地址是宿主机视角（127.0.0.1:3316 / 6382 / 8001），供本地直接运行使用；
   # 容器内必须改写为 compose 内网服务名，否则 127.0.0.1 会指向容器自身。
   # 这里用插值而不是写死连接串，是为了让密码只存在于 .env 一处。

@@ -44,9 +44,8 @@ class Settings(BaseSettings):
     # Redis：任务队列、事件流、取消信号与分布式锁（Stage 3 起启用）
     redis_url: str = "redis://127.0.0.1:6379/0"
 
-    # 模型路径配置（需在 .env 中填写实际路径）
-    embedding_provider: Literal["local", "openai_compatible"] = "local"
-    embedding_model_path: str = ""
+    # 模型网关配置（Embedding 与重排都走在线端点，本地模型后端已移除）
+    embedding_provider: Literal["openai_compatible"] = "openai_compatible"
     embedding_api_key: str = ""
     embedding_api_url: str = ""
     embedding_model: str = ""
@@ -54,8 +53,7 @@ class Settings(BaseSettings):
     embedding_batch_size: int = Field(default=32, ge=1, le=2048)
     embedding_timeout_seconds: float = Field(default=30.0, gt=0)
     embedding_max_retries: int = Field(default=2, ge=0, le=10)
-    reranker_provider: Literal["local", "rerank_compatible"] = "local"
-    reranker_model_path: str = ""
+    reranker_provider: Literal["rerank_compatible"] = "rerank_compatible"
     reranker_api_key: str = ""
     reranker_api_url: str = ""
     reranker_model: str = ""

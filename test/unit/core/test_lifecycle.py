@@ -1,6 +1,7 @@
 """应用生命周期与请求观测上下文测试。"""
 
 import asyncio
+import threading
 import time
 import unittest
 from types import SimpleNamespace
@@ -58,35 +59,23 @@ class LifecycleTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(dispatcher_ready.is_set())
         self.assertEqual(app.state.background_tasks, [])
 
-    async def test_cleanup_skips_when_lock_not_acquired(self):
-        """没抢到选主锁的实例不执行清理——多实例下只该有一个在跑。
+    async def test_cleanup_runs_once_per_cycle(self):
+        """一轮清理会真的调用清理服务。
 
-        抢不到就跳过是这里的全部意义：如果抢不到还照跑一份，
-        这个锁就等于没加。
+        清理是同步的数据库操作，跑在线程池里——这里同时钉住「确实调了」
+        和「调用发生在工作线程」，避免以后有人改回直接 await 阻塞事件循环。
         """
-
-        async def deny(_name, _ttl):
-            return False
-
-        with (
-            patch("backend.app.core.leader_lock.try_acquire", deny),
-            patch(
-                "backend.app.services.memory.memory_service.get_memory_service"
-            ) as get_service,
-        ):
-            await lifecycle._cleanup_once()
-        get_service.assert_not_called()
-
-    async def test_cleanup_runs_when_lock_acquired(self):
-        """抢到锁的实例正常执行清理，并用线程池跑同步的数据库操作。"""
-
-        async def allow(_name, _ttl):
-            return True
-
         service = MagicMock()
         service.cleanup_expired_sessions.return_value = {"cleaned_sessions": 2}
+        main_thread = threading.current_thread()
+        ran_in = []
+
+        def _cleanup(_db):
+            ran_in.append(threading.current_thread())
+            return {"cleaned_sessions": 2}
+
+        service.cleanup_expired_sessions.side_effect = _cleanup
         with (
-            patch("backend.app.core.leader_lock.try_acquire", allow),
             patch("backend.app.core.database.SessionLocal", MagicMock()),
             patch(
                 "backend.app.services.memory.memory_service.get_memory_service",
@@ -95,6 +84,8 @@ class LifecycleTestCase(unittest.IsolatedAsyncioTestCase):
         ):
             await lifecycle._cleanup_once()
         self.assertEqual(service.cleanup_expired_sessions.call_count, 1)
+        # 跑在工作线程而不是事件循环线程上——否则全表清理会卡住请求处理
+        self.assertNotEqual(ran_in[0], main_thread)
 
     async def test_observability_context_is_reset(self):
         (

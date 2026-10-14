@@ -88,8 +88,8 @@ def _rebuild_bm25_index() -> None:
 async def _periodic_cleanup() -> None:
     """定时清理过期对话会话。
 
-    多实例下每个实例都会跑这个循环，所以用选主锁保证同一时刻只有一个在清理：
-    清理本身是幂等的，但 N 份并发的全表查询只会互相加锁、白占连接。
+    单实例部署下这只有一份进程在跑，不需要选主；清理本身也是幂等的，
+    重复执行最坏是白跑一次。
     """
     while True:
         try:
@@ -102,15 +102,7 @@ async def _periodic_cleanup() -> None:
 
 
 async def _cleanup_once() -> None:
-    """执行一轮清理。抢到执行权才真的做，没抢到就跳过这一轮。"""
-    from .leader_lock import try_acquire
-
-    # TTL 取间隔的 0.9 倍：正好在下一轮开始前过期，每轮都能重新竞争；
-    # 持有者崩溃时最多一个间隔之后有人接手。取满一个间隔的话，持有者
-    # 自己下一轮再来抢也会失败，清理会停摆一整轮。
-    ttl_seconds = int(settings.cleanup_interval_minutes * 60 * 0.9)
-    if not await try_acquire("session-cleanup", ttl_seconds):
-        return
+    """执行一轮清理。"""
 
     def _run() -> dict:
         from .database import SessionLocal
@@ -122,8 +114,8 @@ async def _cleanup_once() -> None:
         finally:
             db.close()
 
-    # 清理是同步的数据库操作，放进线程池，别让它阻塞事件循环——
-    # 多实例下每次清理都要扫全表，卡住的是正在处理用户请求的同一个循环。
+    # 清理是同步的数据库操作（全表扫描 + 删除），放进线程池，别让它阻塞
+    # 事件循环——卡住的是正在处理用户请求的同一个循环。
     result = await asyncio.to_thread(_run)
     if result.get("cleaned_sessions", 0):
         logger.info("清理过期会话: %s", result)
@@ -201,9 +193,4 @@ async def lifespan(app: FastAPI):
         from .observability import close_recent_trace_store
 
         close_recent_trace_store()
-        from .leader_lock import close as close_leader_lock
-
-        # 选主锁的连接池也要收掉，否则每次刷新（uvicorn 的热重载）都会漏一个池。
-        # 不用主动释放锁：留着 TTL 让它自然过期，比在这里多一次网络往返简单。
-        await close_leader_lock()
         logger.info("应用已关闭")

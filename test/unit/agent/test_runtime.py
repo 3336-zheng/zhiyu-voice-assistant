@@ -4,7 +4,7 @@ import asyncio
 import tempfile
 import time
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -610,9 +610,9 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             self.state.get_run(run.run_id)["status"], AgentRunStatus.TIMED_OUT.value
         )
 
-    # ------------------------------------------------------ Stage 7：心跳与回收
+    # ------------------------------------------------------ 启动回收
 
-    def _insert_run(self, run_id, session_id, status, heartbeat_at=None, events=None):
+    def _insert_run(self, run_id, session_id, status, events=None):
         """往数据库插一条运行记录。返回后连接已关闭，模拟「另一个进程写的」。"""
         session = self.session_factory()
         try:
@@ -622,7 +622,6 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                     session_id=session_id,
                     query="问题",
                     status=status,
-                    heartbeat_at=heartbeat_at,
                     events=events if events is not None else [],
                 )
             )
@@ -630,46 +629,25 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         finally:
             session.close()
 
-    def _stale(self, seconds=9999):
-        return datetime.now(timezone.utc) - timedelta(seconds=seconds)
+    async def test_运行中的运行会被回收(self):
+        """执行进程重启后，它手上没跑完的运行必须标记失败。
 
-    async def test_心跳新鲜的运行不会被回收(self):
-        """**这是 Stage 7 的核心。**
-
-        多 worker 时，一个 worker 启动不该回收另一个 worker 正在跑的运行。
-        判据就是心跳：执行者还在续期，说明它还活着。
-        原来的实现按「所有未完成的运行」回收，会把别人正在跑的对话一起杀掉。
+        否则这些运行没有人再推进，客户端会一直挂着等一个永远不会到来的
+        终止事件。
         """
-        self._insert_run(
-            "alive-run", "s-alive", AgentRunStatus.RUNNING.value,
-            heartbeat_at=datetime.now(timezone.utc),
-        )
-        self.assertEqual(self._runtime().recover_interrupted_runs(), 0)
-
-    async def test_心跳过期的运行会被回收(self):
-        self._insert_run(
-            "dead-run", "s-dead", AgentRunStatus.RUNNING.value,
-            heartbeat_at=self._stale(),
-        )
+        self._insert_run("dead-run", "s-dead", AgentRunStatus.RUNNING.value)
         self.assertEqual(self._runtime().recover_interrupted_runs(), 1)
 
-    async def test_取消中的运行同样按心跳判定(self):
-        # CANCELLING 也是「已被 worker 领走正在执行」，执行者死了才该回收
-        self._insert_run(
-            "cancelling-alive", "s-c1", AgentRunStatus.CANCELLING.value,
-            heartbeat_at=datetime.now(timezone.utc),
-        )
-        self._insert_run(
-            "cancelling-dead", "s-c2", AgentRunStatus.CANCELLING.value,
-            heartbeat_at=self._stale(),
-        )
+    async def test_取消中的运行同样会被回收(self):
+        # CANCELLING 也是「已被 worker 领走正在执行」，重启后同样没人推进
+        self._insert_run("cancelling-run", "s-c", AgentRunStatus.CANCELLING.value)
         self.assertEqual(self._runtime().recover_interrupted_runs(), 1)
 
     async def test_pending_运行不被回收(self):
-        """还没开始执行的运行不该按心跳回收。
+        """还没被领走的运行不该回收。
 
-        它可能只是排在长队列里，执行者并没有死——队列任务不会因为 worker
-        重启而丢失，worker 恢复后会正常消费它。按时间回收会误杀这种运行。
+        它可能只是排在长队列里，进程重启并不影响它——队列里的任务不会丢，
+        worker 恢复后会正常消费。顺手杀掉会误伤这种运行。
         """
         self._insert_run("queued-run", "s-queued", AgentRunStatus.PENDING.value)
         self.assertEqual(self._runtime().recover_interrupted_runs(), 0)
@@ -687,9 +665,7 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         """
         self.state.create_run("dead-run", "s-lock", "问题", "running", False, 0.0)
         self.state.sessions["s-lock"] = "dead-run"
-        self._insert_run(
-            "dead-run", "s-lock", AgentRunStatus.RUNNING.value, heartbeat_at=self._stale()
-        )
+        self._insert_run("dead-run", "s-lock", AgentRunStatus.RUNNING.value)
 
         self.assertEqual(self._runtime().recover_interrupted_runs(), 1)
         self.assertEqual(self.state.get_run("dead-run")["status"], "failed")
@@ -701,47 +677,15 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         注册表已过期、或创建时 Redis 不可用时就是这种情况；写进去的话
         查询时连 session_id 都对不上，比不写更糟。
         """
-        self._insert_run(
-            "orphan-run", "s-orphan", AgentRunStatus.RUNNING.value,
-            heartbeat_at=self._stale(),
-        )
+        self._insert_run("orphan-run", "s-orphan", AgentRunStatus.RUNNING.value)
         self.assertEqual(self._runtime().recover_interrupted_runs(), 1)
         self.assertIsNone(self.state.get_run("orphan-run"))
 
-    async def test_执行期间心跳被反复续期(self):
-        """执行者要持续证明自己还活着。
-
-        只在开始时写一次的话，跑得久的运行会被别的 worker 判成失联。
-        """
-        agent = BlockingAgent()
-        runtime = self._runtime(agent_factory=lambda: agent)
-        with patch.object(settings, "agent_heartbeat_seconds", 0.05):
-            run = await runtime.start("问题", "s-heartbeat")
-            worker = self._execute_in_background(runtime, run.run_id)
-            await asyncio.wait_for(agent.started.wait(), timeout=2)
-            first = self._heartbeat_of(run.run_id)
-            await asyncio.sleep(0.35)
-            later = self._heartbeat_of(run.run_id)
-            await runtime.cancel(run.run_id, run.session_id)
-            await asyncio.wait_for(worker, timeout=5)
-
-        self.assertIsNotNone(first, "开始执行时应当写一次心跳")
-        self.assertIsNotNone(later)
-        self.assertGreater(later, first, "心跳没有被续期")
-
-    def _heartbeat_of(self, run_id):
-        session = self.session_factory()
-        try:
-            row = session.get(AgentRun, run_id)
-            return None if row is None else row.heartbeat_at
-        finally:
-            session.close()
-
     async def test_restart_recovery_persists_replayable_error_event(self):
-        """执行者失联的运行会被回收，并留下可回放的终止事件。
+        """被回收的运行会留下可回放的终止事件。
 
-        判据是心跳而不是「服务重启」：运行跑在 worker 里，重启的是 worker
-        而不是 API，而且多 worker 时更可能是某一个 worker 挂了。
+        客户端不该只看到状态变 failed 却收不到任何事件——那样 SSE 会一直
+        挂等。这里钉住事件也补齐了，并且带明确的错误码。
         """
         session = self.session_factory()
         try:
@@ -771,7 +715,7 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             if event is not None
         ]
         self.assertEqual(replayed[-1].type, AgentEventType.RUN_ERROR)
-        self.assertEqual(replayed[-1].data["code"], "worker_lost")
+        self.assertEqual(replayed[-1].data["code"], "worker_restarted")
 
 
 if __name__ == "__main__":

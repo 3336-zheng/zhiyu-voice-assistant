@@ -17,11 +17,11 @@ x-app-volumes: &app-volumes
   - ./data:/app/data
 
 x-app-environment: &app-environment
-  # 容器内必须监听所有网络接口。.env 里的 HOST=127.0.0.1 是给本地直接运行
-  # python main.py 用的（绑回环，不对外暴露），但在容器里绑回环意味着只有
-  # 容器自己连得上——nginx 和其它实例访问时是 Connection refused。
-  # 单实例时这个错误不容易察觉（本机 curl 127.0.0.1:8337 依然通，
-  # 因为端口映射到宿主机后走的是容器内回环），多实例一上来就暴露。
+  # 容器内监听所有网络接口。.env 里的 HOST=127.0.0.1 是给本地直接运行
+  # python main.py 用的（绑回环，不对外暴露）；容器里绑回环则只有容器自己
+  # 连得上——端口映射进来的流量、以及别的容器（nginx、多实例副本）都会
+  # 连不上。绑 0.0.0.0 是容器里的标准做法，是否对外暴露由下面的 ports
+  # 决定，不靠监听地址来控制。
   - HOST=0.0.0.0
   # .env 里的地址是宿主机视角（127.0.0.1:3316 / 6382 / 8001），供本地直接运行使用；
   # 容器内必须改写为 compose 内网服务名，否则 127.0.0.1 会指向容器自身。
@@ -41,6 +41,17 @@ x-app-depends: &app-depends
     condition: service_healthy
   chroma:
     condition: service_healthy
+
+# API 与三个 worker 跑的是同一份代码，共用一个镜像。
+#
+# 原先是四个服务各写一次 `build: .`，Compose 会为每个服务单独构建镜像
+# （<项目名>-<服务名>）。这有两个坏处：同一份代码构建四遍；更要命的是会出现
+# 「部分更新」——改了数据库 schema 后只重建了 API，worker 还跑着旧代码，
+# 启动就因为查询已删除的列而报错，而且报错发生在 worker 里、不在请求路径上，
+# 排查时容易先怀疑数据库而不是镜像。
+x-app-image: &app-image
+  image: zhiyu-app:latest
+  build: .
 
 services:
   mysql:
@@ -129,9 +140,9 @@ services:
   # 对外端口因此和改造前完全一样（还是 ${PORT:-8337}），使用方式不变。
   # 多开：docker compose up -d --scale zhiyu=3
   zhiyu:
-    build: .
-    expose:
-      - "8337"
+    <<: *app-image
+    ports:
+      - "${PORT:-8337}:8337"
     volumes: *app-volumes
     env_file:
       - .env
@@ -139,26 +150,11 @@ services:
     depends_on: *app-depends
     restart: unless-stopped
 
-  # 负载均衡层。整个应用唯一的对外入口。
-  #
-  # 不用容器自带的默认配置：需要 resolver 做动态解析（--scale 出来的副本
-  # 才能被发现）、放大 SSE 的读超时（一次 Agent 运行最长 180 秒）、关掉
-  # 事件流的缓冲（否则前端收不到实时输出）。
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "${PORT:-8337}:80"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - zhiyu
-    restart: unless-stopped
-
   # 索引任务的消费者。独立成进程之后，API 重启不再打断正在跑的索引，
   # worker 崩溃也不会拖垮 API；两边通过 Redis 队列和一个共享的任务表协作。
   # 可以 --scale arq-worker=3 横向扩，任务由队列保证只被一个 worker 取走。
   arq-worker:
-    build: .
+    <<: *app-image
     command: arq backend.app.tasks.worker.WorkerSettings
     volumes: *app-volumes
     env_file:
@@ -171,7 +167,7 @@ services:
   # 一次转写可能跑满 180 秒，混在一起会让短任务排在长任务后面。
   # 可以 --scale，并发上限由 ARQ_ASR_MAX_JOBS 控制，远程 API 不占本地显存。
   arq-worker-asr:
-    build: .
+    <<: *app-image
     command: arq backend.app.tasks.worker.AsrWorkerSettings
     volumes: *app-volumes
     env_file:
@@ -184,7 +180,7 @@ services:
   # 与索引、转写分开排队，免得排在后台批处理后面。
   # 它也是唯一执行 Agent 的进程，API 重启不影响正在进行的对话。
   arq-worker-agent:
-    build: .
+    <<: *app-image
     command: arq backend.app.tasks.worker.AgentWorkerSettings
     volumes: *app-volumes
     env_file:

@@ -19,9 +19,8 @@ x-app-volumes: &app-volumes
 x-app-environment: &app-environment
   # 容器内监听所有网络接口。.env 里的 HOST=127.0.0.1 是给本地直接运行
   # python main.py 用的（绑回环，不对外暴露）；容器里绑回环则只有容器自己
-  # 连得上——端口映射进来的流量、以及别的容器（nginx、多实例副本）都会
-  # 连不上。绑 0.0.0.0 是容器里的标准做法，是否对外暴露由下面的 ports
-  # 决定，不靠监听地址来控制。
+  # 连得上——端口映射进来的流量、以及别的容器都会连不上。绑 0.0.0.0 是
+  # 容器里的标准做法，是否对外暴露由下面的 ports 决定，不靠监听地址控制。
   - HOST=0.0.0.0
   # .env 里的地址是宿主机视角（127.0.0.1:3316 / 6382 / 8001），供本地直接运行使用；
   # 容器内必须改写为 compose 内网服务名，否则 127.0.0.1 会指向容器自身。
@@ -135,10 +134,10 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # API 实例。不写 container_name（Compose 不允许对具名容器做 --scale），
-  # 也**不直接对外暴露端口**——请求统一从 nginx 进来，由它轮询到各个副本。
-  # 对外端口因此和改造前完全一样（还是 ${PORT:-8337}），使用方式不变。
-  # 多开：docker compose up -d --scale zhiyu=3
+  # API 进程。直接映射端口对宿主机，形态与改造前一致：一条
+  # `docker compose up` 起来就是完整的一套服务。
+  # 不写 container_name 是为了保留容器名由 Compose 生成的写法（多跑的副本
+  # 不会撞名）；对外端口还是 ${PORT:-8337}，使用方式没变。
   zhiyu:
     <<: *app-image
     ports:
@@ -152,7 +151,6 @@ services:
 
   # 索引任务的消费者。独立成进程之后，API 重启不再打断正在跑的索引，
   # worker 崩溃也不会拖垮 API；两边通过 Redis 队列和一个共享的任务表协作。
-  # 可以 --scale arq-worker=3 横向扩，任务由队列保证只被一个 worker 取走。
   arq-worker:
     <<: *app-image
     command: arq backend.app.tasks.worker.WorkerSettings
@@ -165,7 +163,7 @@ services:
 
   # ASR 转写专用 worker。与索引分开是因为时长差一个量级：索引是几百毫秒的短活，
   # 一次转写可能跑满 180 秒，混在一起会让短任务排在长任务后面。
-  # 可以 --scale，并发上限由 ARQ_ASR_MAX_JOBS 控制，远程 API 不占本地显存。
+  # 并发上限由 ARQ_ASR_MAX_JOBS 控制，远程 API 不占本地显存。
   arq-worker-asr:
     <<: *app-image
     command: arq backend.app.tasks.worker.AsrWorkerSettings

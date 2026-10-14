@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.agent.events import (
@@ -19,7 +18,7 @@ from backend.app.agent.events import (
 )
 from backend.app.agent.models import AgentResponse
 from backend.app.core.config import settings
-from backend.app.core.database import Base
+from test.support.db import make_test_engine
 from backend.app.models.observability import AgentRun
 from backend.app.services.runtime.agent_runtime_service import (
     AgentRunConflict,
@@ -259,8 +258,7 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         database_path = Path(self.temp_dir.name) / "runtime.db"
-        self.engine = create_engine(f"sqlite:///{database_path}")
-        Base.metadata.create_all(self.engine)
+        self.engine = make_test_engine()
         self.session_factory = sessionmaker(bind=self.engine)
         self.state = FakeAgentStateStore()
         self.dispatched = []

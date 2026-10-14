@@ -19,6 +19,23 @@ jobs:
     name: Backend unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
+    # 测试连的是真实的 MySQL，不是内存库——这样测试和生产跑在同一种方言上。
+    # MYSQL_DATABASE 让容器启动时就把测试库建好，不需要额外的初始化步骤。
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: zhiyu_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -34,6 +51,10 @@ jobs:
           pip install pytest
 
       - name: Run unit tests
+        # CI 上没有 .env（它被 gitignore），test/conftest.py 会补一份兜底配置；
+        # 这里显式覆盖成 service 容器的地址，让测试打到上面那个 MySQL。
+        env:
+          DATABASE_URL: mysql+pymysql://root:root@127.0.0.1:3306/zhiyu_test?charset=utf8mb4
         run: python -m pytest -q test/unit test/eval/tests
 
   frontend:

@@ -4,7 +4,32 @@
 
 智语面向单用户、本地优先的课堂知识管理场景。系统优先保证知识可读、可迁移和可恢复；模型、向量索引和后台任务均不得成为页面写入的单点故障。
 
-当前不解决多租户、高并发写入和跨节点任务调度。需要这些能力时，可将 SQLite、进程内 Worker 和本地文件存储分别迁移到 PostgreSQL、独立任务队列和对象存储。
+当前不解决多租户、高并发写入和跨节点任务调度。需要这些能力时，可将 MySQL 和本地文件存储分别迁移到 PostgreSQL 和对象存储——后台任务已经在独立进程里，不需要再迁。
+
+## 部署形态
+
+**单实例多进程**：1 个 API 进程 + 3 个 arq worker 进程（索引 / 语音转写 / Agent 运行），加上 MySQL、Redis、ChromaDB 三个基础服务，共 7 个容器。
+
+```
+浏览器 ──HTTP/SSE──> zhiyu (FastAPI，1 个)
+                        │
+        ┌───────────────┼───────────────┐
+        ▼               ▼               ▼
+     MySQL 8         Redis 7        ChromaDB
+     业务数据    队列/事件流/锁/信号    向量检索
+        ▲               ▲
+        └───────┬───────┘
+                │
+    ┌───────────┼───────────┐
+    ▼           ▼           ▼
+索引 worker  转写 worker  Agent worker
+ arq:index    arq:asr     arq:agent
+ 并发 10       并发 4       并发 4
+```
+
+判断是不是「多实例」只看一件事：**有没有两个进程能处理同一个请求**。这里 API 只有一份，三个 worker 的活互不重叠，所以是单实例。
+
+多实例的能力（事件流外置、取消信号、会话锁）都在代码里保留着，真跑多实例验证过，但按项目定位没启用。理由见 [ADR-0006](../adr/0006-distributed-runtime.md)。
 
 ## 模块结构
 
@@ -17,23 +42,25 @@ flowchart LR
     PAGE --> LINK["WikiLinkService"]
     PAGE --> TASK["WikiIndexTaskService"]
     FILE --> MD["Markdown 主数据"]
-    REV --> DB["SQLite / SQLAlchemy"]
+    REV --> DB["MySQL 8 / SQLAlchemy"]
     LINK --> DB
     TASK --> DB
-    TASK --> WORKER["Wiki Index Worker"]
+    TASK --> QUEUE["Redis 队列"]
+    QUEUE --> WORKER["arq worker 进程"]
     WORKER --> EMBED["Embedding Provider"]
     EMBED --> SEARCH["BM25 / ChromaDB"]
     API --> RUNTIME["Agent Runtime"]
     RUNTIME --> PLANNER["Capability Planner"]
     RUNTIME --> DB
+    RUNTIME --> STATE["Redis 事件流 / 会话锁 / 取消信号"]
     PLANNER --> POLICY["Plan Policy"]
     POLICY --> EXECUTOR["DAG Executor"]
     POLICY --> RETRIEVAL["LangGraph RAG 子图"]
     RETRIEVAL --> EMBED
     RETRIEVAL --> SEARCH
     RETRIEVAL --> RERANK["Rerank Provider"]
-    EMBED --> EMODEL["本地 BGE / OpenAI 兼容网关"]
-    RERANK --> RMODEL["本地 BGE / Cohere 兼容 API"]
+    EMBED --> EMODEL["模型网关（OpenAI 兼容）"]
+    RERANK --> RMODEL["模型网关（Cohere/Jina 兼容）"]
     PLANNER --> GATEWAY["主备模型网关"]
     RETRIEVAL --> GATEWAY
     GATEWAY --> LLM["OpenAI 兼容模型"]
@@ -47,14 +74,15 @@ flowchart LR
     FEEDBACK --> PAGE
     FEEDBACK --> RUNTIME
     FEEDBACK --> DB
-    API --> AUDIO["Whisper / DashScope ASR"]
+    API --> AUDIO["DashScope / MiMo ASR"]
+    AUDIO --> QUEUE
     AUDIO --> DB
     API --> OBS["请求时间线与运行统计"]
     OBS --> DB
     OBS -.-> TRACE["Langfuse / OpenTelemetry"]
 ```
 
-`PageService` 只负责编排跨资源事务和提供稳定 API；文件、版本、链接和索引任务由独立服务承担。ChromaDB 和 BM25 均为派生数据，可以从 Markdown 与 SQLite 元数据重建。
+`PageService` 只负责编排跨资源事务和提供稳定 API；文件、版本、链接和索引任务由独立服务承担。ChromaDB 和 BM25 均为派生数据，可以从 Markdown 与 MySQL 元数据重建。
 
 核心目录遵循单向依赖和稳定聚合入口：
 
@@ -63,6 +91,7 @@ backend/app/
 ├── api/          HTTP/SSE 协议适配，按 agent、wiki、ingestion、system 分域
 ├── agent/        计划生成、策略校验、DAG 执行与可信 RAG 图
 ├── services/     按 ai、retrieval、wiki、memory、research 等领域组织业务能力
+├── tasks/        队列投递与三个 worker 的任务执行体（索引 / 转写 / Agent 运行）
 ├── models/       持久化模型
 └── core/         配置、数据库、生命周期、错误、日志与遥测
 
@@ -78,7 +107,7 @@ frontend/src/
 | `backend/app/api/agent/__init__.py` | 聚合 Agent 子路由 | 不承载业务流程 |
 | `backend/app/api/agent/*.py` | Run、确认、研究、会话和检索协议 | 调用 Agent 与领域服务 |
 | `backend/app/api/agent/feedback.py` | 回答反馈、草稿准备、确认、重试和取消协议 | 只做参数解析与错误映射 |
-| `backend/app/services/runtime/agent_runtime_service.py` | Run 状态、事件、会话锁和终态持久化 | 不实现具体 Agent 工具 |
+| `backend/app/services/runtime/agent_runtime_service.py` | Run 状态、事件流、会话锁和终态持久化（运行状态外置到 Redis） | 不实现具体 Agent 工具 |
 | `backend/app/services/feedback/answer_feedback_service.py` | 反馈快照、研究、确认写入、同步索引与原题复测状态机 | 复用研究、页面、PendingAction 与 Runtime，不复制执行逻辑 |
 | `backend/app/agent/planner.py` | 根据当前能力目录生成结构化多步骤计划 | 不直接执行工具，不决定权限 |
 | `backend/app/agent/plan_policy.py` | Schema、依赖、风险、签名与执行结果校验 | 不信任模型声明的 Intent |
@@ -87,8 +116,8 @@ frontend/src/
 | `backend/app/agent/tool_registry.py` | 工具能力元数据、参数模型与具体实现 | 通过工厂延迟加载外部依赖 |
 | `backend/app/services/memory/context_assembler.py` | 长期摘要、近期消息、当前任务和输出预算的统一装配 | 只返回模型消息与脱敏统计 |
 | `backend/app/services/memory/memory_service.py` | 会话消息、标题、正文检索、历史恢复和增量摘要游标 | 不删除原始对话 |
-| `backend/app/services/ai/embedding_service.py` | 本地与 OpenAI 兼容 Embedding Provider、批处理与维度校验 | 不决定检索策略，不跨模型自动降级 |
-| `backend/app/services/ai/reranker_service.py` | 本地与 Cohere/Jina 兼容 Rerank Provider、响应归一化 | 不直接读取向量库，不改变候选正文 |
+| `backend/app/services/ai/embedding_service.py` | OpenAI 兼容 Embedding Provider、批处理与维度校验 | 不决定检索策略，不跨模型自动降级 |
+| `backend/app/services/ai/reranker_service.py` | Cohere/Jina 兼容 Rerank Provider、响应归一化 | 不直接读取向量库，不改变候选正文 |
 | `backend/app/services/retrieval/chroma_service.py` | 持久化向量与 Embedding Profile 集合隔离 | 不把不同语义空间写入同一集合 |
 | `backend/app/services/retrieval/hybrid_retrieval_service.py` | 召回、融合、精排与上下文装配 | 构造参数可注入，默认使用生产单例 |
 | `frontend/src/features/ask/hooks/useAgentRun.js` | SSE、续传、停止、会话与确认状态 | 不负责页面布局 |
@@ -104,9 +133,11 @@ API 聚合入口保持原有 URL 稳定，内部模块则按业务域显式导�
 2. 原子写入带 YAML Front Matter 的 Markdown。
 3. 在同一数据库事务中保存元数据、完整版本快照和索引任务。
 4. 重建 Wiki Link 与反向链接。
-5. API 立即返回，后台 Worker 异步更新 BM25 和 ChromaDB。
+5. API 立即返回；事务提交后把任务投递到 arq 队列，由独立的索引 worker 更新 BM25 和 ChromaDB。
 
-数据库提交失败时恢复原 Markdown；模型不可用时保留主数据并将任务置为 `failed`，按指数退避重试。
+数据库提交失败时恢复原 Markdown；模型不可用时保留主数据并将任务置为 `failed`，按表上的 `next_attempt_at` 指数退避重试。
+
+**投递失败不抛异常**，只记一条日志：页面写入不该因为队列抖了一下就失败。漏掉的任务由 worker 每分钟一次的兜底扫描补投——正常路径下任务在提交后立即投递，兜底只管异常路径。
 
 ## 可信问答
 
@@ -125,7 +156,12 @@ Fast Path 只匹配无会话、短、无副作用且不含比较/并行等复杂
 
 父块大小、父块重叠、子块大小和子块重叠均由环境变量配置。当前固定采用父块 `1200/120`、子块 `500/80`；BM25 与 Embedding 每个查询默认各召回 20 条，统一 RRF 后保留最多 12 条进入 Rerank，最终最多选择 5 个父块并受 3000 Token 预算约束。Rerank 结果再按最低分 `0.35` 和相对最高分差 `0.20` 过滤，但保留最高分候选供 Evidence Gate 判断。该配置是中文技术 Markdown 场景下的工程默认值，不通过分块参数网格搜索宣称算法最优；质量由真实文档统一评测集验证。
 
-查询向量、检索结果和 CRAG 判断均使用线程安全的进程内 LRU/TTL 缓存。查询缓存键包含 Provider、模型和文本；检索缓存键包含查询集合、独立查询、Top-K、Token 预算、筛选配置和当前 Chroma collection count/generation；CRAG 缓存键包含原问题、独立查询、Planner 语义、阈值及前 5 个证据的文档 ID、revision、Rerank 分数和正文哈希。检索缓存命中会写入 `cache_hit` 统计，CRAG 缓存命中目前只在评分服务返回值中标记；TTL 到期、容量淘汰或索引/证据版本变化后自然失效。默认 TTL/容量分别为查询 `60 秒/256 项`、检索 `20 秒/128 项`、CRAG `60 秒/128 项`。
+查询向量、检索结果和 CRAG 判断均使用线程安全的进程内 LRU/TTL 缓存。查询缓存键包含 Provider、模型和文本；检索缓存键包含查询集合、独立查询、Top-K、Token 预算、筛选配置和**全局索引版本号**；CRAG 缓存键包含原问题、独立查询、Planner 语义、阈值及前 5 个证据的文档 ID、revision、Rerank 分数和正文哈希。
+
+索引版本号存在 Redis 上，谁改了索引就 +1，各进程检索前比对自己的记录、落后就重建本地的 BM25 索引。这解决的是「进程 A 写了新笔记，进程 B 内存里的索引还是旧的」——它会安静地搜不到新内容，不报错。Redis 挂掉时降级为进程内计数器，检索继续可用（此时各进程的索引可能不一致，是已知取舍）。**BM25 的词表本身仍留在各进程内存里**，Redis 上只放这一个整数。
+
+缓存命中会写入 `cache_hit` 统计，CRAG 缓存命中目前只在评分服务返回值中标记；TTL 到期、容量淘汰或索引/证据版本变化后自然失效。默认 TTL/容量分别为查询 `60 秒/256 项`、检索 `20 秒/128 项`、CRAG `60 秒/128 项`。
+
 
 `RAG_V2_ENABLED` 是总回退开关，关闭后恢复原逐查询完整检索；`RAG_PARENT_CHILD_ENABLED` 可以独立关闭父子分块。CRAG、证据门禁、稳定引用和 MCP 确认流程不受开关影响。
 
@@ -133,21 +169,25 @@ Fast Path 只匹配无会话、短、无副作用且不含比较/并行等复杂
 
 ### 检索模型 Provider 与向量边界
 
-`EmbeddingService` 与 `RerankerService` 是检索链路的稳定门面，调用方继续使用 `encode`、`encode_queries`、`encode_documents` 和 `rerank`；门面根据部署配置选择具体后端：
+`EmbeddingService` 与 `RerankerService` 是检索链路的稳定门面，调用方继续使用 `encode`、`encode_queries`、`encode_documents` 和 `rerank`；门面按部署配置选择后端。
+
+**本地模型后端已移除**，只保留在线实现：
 
 ```text
-EmbeddingService -> LocalEmbeddingBackend
-                 -> OpenAICompatibleEmbeddingBackend
-
-RerankerService  -> LocalRerankerBackend
-                 -> RerankCompatibleBackend
+EmbeddingService -> OpenAICompatibleEmbeddingBackend
+RerankerService  -> RerankCompatibleBackend
 ```
+
+移除的理由与移除本地 whisper 一致：多进程下每个进程各加载一份模型，内存和显存都不划算；而代码里用来限并发的信号量只在单进程内有效，拦不住跨进程。
+
+`provider` 字段**保留但取值收窄为单一选项**——它参与向量集合名的哈希计算，删掉就等于改变哈希输入，会生成一个全新的集合，已有向量看起来像「消失」了。这是「配置项兼作数据标识」的典型陷阱。
 
 在线 Embedding 复用 OpenAI SDK，支持批量输入、可选维度、超时和有限重试；多查询检索优先一次批量生成缺失的查询向量，缓存命中的查询不会重复发送。返回向量必须与输入数量一致，且每条向量维度相同；配置了固定维度时，服务端返回维度不一致会直接失败。空文本不会发送给模型，结果按原输入位置补回零向量。
 
-Embedding Profile 由 Provider、API URL、模型名和维度共同确定，API Key 不参与也不会进入集合名。默认本地 Provider 继续使用原 `CHROMA_COLLECTION_NAME`；在线 Profile 使用带哈希后缀的独立集合。因此切换模型不会破坏旧集合，也不会因维度冲突向同一集合写入失败。新集合初始为空，部署者需要显式执行全量重建，系统不会自动产生批量在线调用费用。
+Embedding Profile 由 Provider、API URL、模型名和维度共同确定，API Key 不参与也不会进入集合名。改造后的集合名形如 `notes-ae3b14f344b5`，与原 `notes` 是两个不同的集合。因此切换模型不会破坏旧集合，也不会因维度冲突向同一集合写入失败。新集合初始为空，部署者需要显式执行全量重建，系统不会自动产生批量在线调用费用。
 
 Embedding 不设置自动模型降级：即使两个模型维度相同，其语义空间也不兼容，查询侧临时切换会让召回失真。`rerank_compatible` 接受 Cohere/Jina 风格协议，可直连 Vercel AI Gateway、Jina 或 SiliconFlow 的完整 Rerank 地址。Rerank 只读取查询和已经召回的候选正文，可以独立切换，不要求重建向量；不同模型分数分布仍可能不同，证据判断统一使用可配置的 `EVIDENCE_MIN_SCORE`。
+
 
 在线模型地址只能使用 HTTP(S)，并拒绝在 URL 中嵌入用户名或密码。API Key 只从服务端环境读取，不进入健康检查、集合标识或错误响应；Provider 错误只暴露错误类别或 HTTP 状态码。在线模式会将查询、文档分块或候选正文发送给配置端点，因此端点本身属于部署信任边界。
 
@@ -166,7 +206,7 @@ Embedding 不设置自动模型降级：即使两个模型维度相同，其语�
 1. URL 仅允许 HTTP(S)，拒绝凭证、本机、私网、链路本地和保留地址。
 2. 来源按规范化 URL 和正文哈希去重，并限制来源数与正文总量。
 3. 外部正文被转义并标记为不可信证据，模型不得执行其中的指令。
-4. 研究任务和来源快照先写入 SQLite；研究结果不会直接创建页面。
+4. 研究任务和来源快照先写入 MySQL；研究结果不会直接创建页面。
 5. 用户确认后，页面通过 `PageService` 写入，并由 `wiki_page_sources` 建立来源关系。
 
 MCP Server 是部署信任边界。应用不会向子进程传递完整环境变量，也不会调用运行时返回的任意工具；Server 自身仍需负责 HTTP 重定向、DNS 重绑定和网络出口控制。
@@ -229,13 +269,23 @@ reported
 
 同一会话只允许一个活动 Run。浏览器断线后可从最后事件序号继续订阅；取消使用协作式信号，总超时负责停止后续编排并将状态收敛为 `timed_out`。工具结果的原始值保留给业务与审计，进入模型上下文和步骤引用前才按 Token 预算截断。
 
-活动事件保存在进程内，避免为每个 Token 写 SQLite。Run 进入完成、失败、取消或超时后，运行状态和非 Token 事件批量持久化，终态事件包含完整回答，因此重连不依赖逐 Token 数据。服务重启时，遗留的 `pending`、`running` 和 `cancelling` Run 会标记为失败并补写可回放的终态事件。
+事件流保存在 Redis Stream 里，带严格递增序号，客户端断线后从最后事件序号继续订阅——**重连到哪个进程都一样**。运行状态、会话锁、取消信号同样在 Redis 上，所以一次对话由哪个进程接手不改变行为。
 
-当前实现定位于单进程本地部署。Python 线程中的外部 SDK 调用无法被强制终止，只能在调用返回后响应取消信号；总超时保证应用状态收敛和后续步骤停止，不等同于操作系统级线程终止。多实例部署需要将活动状态、事件流和会话锁迁移到共享基础设施。
+**执行本身跑在独立的 agent worker 进程里**，不在 API 进程内。这不是可有可无的搬移：留在 API 里的话，API 一重启就会打断正在跑的对话，而一次运行最长 180 秒。
+
+worker 启动时会把数据库里遗留的 `running` 和 `cancelling` Run 标记为失败并补写可回放的终态事件——**`pending` 特意不回收**：它还没被领走，压根没有执行者，排队久只是队列积压，标记成失败是错的。
+
+`AgentRuntimeService` 里那个「运行表」不再是读取方的事实来源，它只是本进程正在执行的句柄。所有读取路径一律走 Redis。
+
+外部 SDK 的调用跑在 Python 线程里，无法被强制终止，只能在调用返回后响应取消信号。总超时保证应用状态收敛和后续步骤停止，不等同于操作系统级线程终止。
 
 ## 生命周期与可观测性
 
-FastAPI `lifespan` 统一执行 schema 迁移、Agent Run 与索引任务恢复、Worker 启动和退出清理。当前 schema 为 `8`：v7 增加会话标题并回填首条用户消息，v8 增加 `answer_feedbacks` 状态表；迁移可从 v5、v6 或 v7 重复执行且不删除既有数据。每个 HTTP 请求生成或继承 `X-Request-ID`，响应返回 `Server-Timing`、Agent 执行时间线、检索统计和模型用量。相同数据脱敏后写入 `agent_runs`，用于复盘单次请求。
+FastAPI `lifespan` 负责记录主事件循环（同步投递要用它）、建立队列连接池、以及退出清理。
+
+**启动阶段不执行任何 DDL**——schema 一律交给 Alembic，部署前执行 `alembic upgrade head`。理由：多个实例同时启动会并发执行建表语句而互相撞车；而且 MySQL 的 DDL 不在事务内，中途失败无法回滚，会留下一个半完成的库，比直接启动失败更难排查。
+
+每个 HTTP 请求生成或继承 `X-Request-ID`，响应返回 `Server-Timing`、Agent 执行时间线、检索统计和模型用量。相同数据脱敏后写入 `agent_runs`，用于复盘单次请求。
 
 LLM 网关按 Planner、Query Rewrite、CRAG、Responder 分阶段选择模型，并记录模型名、Token、耗时、`finish_reason`、截断标记与估算成本。结构化阶段默认使用 Function Calling，兼容性失败时才回退为 JSON Schema 提示词约束；普通回答支持同步或流式生成。仅连接错误、超时、429 和 5xx 可以触发故障转移；流式输出一旦开始就不再切换，避免把两个模型的内容拼接成同一回答。Langfuse 和 OpenTelemetry 默认关闭，正文采集默认关闭，导出异常不会影响请求。
 
@@ -256,3 +306,4 @@ LLM 网关按 Planner、Query Rewrite、CRAG、Responder 分阶段选择模型�
 - [ADR-0003：证据门禁与确认式 Agent](../adr/0003-trusted-agent.md)
 - [ADR-0004：受控 MCP 外部研究](../adr/0004-controlled-mcp-research.md)
 - [ADR-0005：可配置检索模型与向量空间隔离](../adr/0005-configurable-retrieval-models.md)
+- [ADR-0006：分布式运行时改造](../adr/0006-distributed-runtime.md)

@@ -60,9 +60,6 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
             # 检测列类型变更，否则改了字段类型 autogenerate 会静默跳过
             compare_type=True,
-            # SQLite 不支持 ALTER COLUMN / DROP CONSTRAINT，
-            # batch 模式通过"建新表-拷数据-换名"绕开，对 MySQL 无副作用
-            render_as_batch=connection.dialect.name == "sqlite",
         )
         with context.begin_transaction():
             context.run_migrations()

@@ -17,10 +17,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from backend.app.core.database import Base
+from test.support.db import make_test_engine
 from backend.app.models.wiki import WikiIndexTask
 from backend.app.services.wiki.wiki_index_task_service import (
     WikiIndexTaskService,
@@ -45,8 +44,7 @@ class _RecordingIndexer:
 
 
 def _build_db(root: Path):
-    engine = create_engine(f"sqlite:///{root / 'queue.db'}")
-    Base.metadata.create_all(engine)
+    engine = make_test_engine()
     return engine, sessionmaker(bind=engine)
 
 

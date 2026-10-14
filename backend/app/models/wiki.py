@@ -32,7 +32,6 @@ class WikiPage(Base):
         # utf8mb4 下 String(1024) 需要 4096 字节，建表会直接报错 1071。
         # 改用前缀索引，列容量保持 1024 不变，只对前 700 字符建唯一索引。
         # 700 字符远超文件系统 PATH_MAX（1024 字节），不会造成误判重复。
-        # mysql_length 只对 MySQL 生效，SQLite 建表时自动忽略。
         Index("uq_wiki_pages_file_path", "file_path", unique=True, mysql_length=700),
     )
 

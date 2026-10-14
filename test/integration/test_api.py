@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app import RequestContextMiddleware
@@ -28,7 +27,8 @@ from backend.app.api import agent as agent_api
 from backend.app.api.ingestion import audio as audio_api
 from backend.app.api.wiki import pages as pages_api
 from backend.app.core.config import settings
-from backend.app.core.database import Base, get_db
+from backend.app.core.database import get_db
+from test.support.db import make_test_engine
 from backend.app.models import Audio
 from backend.app.models.wiki import WikiIndexTask
 from backend.app.services.retrieval.hybrid_retrieval_service import _audio_provenance
@@ -106,11 +106,9 @@ class APIIntegrationTestCase(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.previous_upload_dir = settings.upload_dir
         settings.upload_dir = str(self.root / "uploads")
-        self.engine = create_engine(
-            f"sqlite:///{self.root / 'integration.db'}",
-            connect_args={"check_same_thread": False},
-        )
-        Base.metadata.create_all(self.engine)
+        # 用测试库（MySQL）。原先 SQLite 要传 check_same_thread=False 才能跨线程，
+        # MySQL 走的是网络连接，本来就没有这个限制。
+        self.engine = make_test_engine()
         self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
         self.indexer = FlakyIndexer()
 

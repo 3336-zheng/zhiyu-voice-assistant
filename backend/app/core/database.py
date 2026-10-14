@@ -1,5 +1,9 @@
 """
 数据库连接管理
+
+只对接 MySQL。SQLite 已在分布式改造中移除：它是嵌入式单文件库，多个进程
+同时写同一个文件会锁竞争甚至损坏，而应用现在会跑出 4 个进程。schema 一律
+由 Alembic 管理，应用启动不执行任何 DDL（见 lifecycle）。
 """
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine, make_url
@@ -7,25 +11,13 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from .config import settings
 
 
-def is_sqlite() -> bool:
-    """当前是否运行在 SQLite 上。建表策略与迁移方式都依赖这个判断。"""
-    return make_url(settings.database_url).get_backend_name() == "sqlite"
-
-
 def _create_engine() -> Engine:
-    """按数据库方言构建引擎。
-
-    SQLite 是进程内直接读写的文件，打开代价是微秒级，没有"建立连接"这回事，
-    连接池参数对它没有意义；SQLAlchemy 2.0 对文件型 SQLite 默认已使用 QueuePool
-    并自行处理跨线程访问，因此这里不传任何额外参数，保持既有行为不变。
+    """构建 MySQL 引擎。
 
     MySQL 是独立进程，每次建连都要经过 TCP 握手与认证，耗时以十毫秒计，
     必须复用连接，否则高并发下连接创建本身就会成为瓶颈。
     """
     url = make_url(settings.database_url)
-    if url.get_backend_name() == "sqlite":
-        return create_engine(settings.database_url, echo=settings.debug)
-
     connect_args: dict = {}
     if url.get_backend_name() == "mysql":
         # 不显式指定时，部分环境会协商成 utf8mb3，导致 emoji 与少数生僻字写入失败

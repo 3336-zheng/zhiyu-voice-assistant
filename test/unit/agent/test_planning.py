@@ -6,7 +6,6 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.agent.agent import PlanExecuteAgent
@@ -22,7 +21,7 @@ from backend.app.agent.models import (
 from backend.app.agent.plan_policy import PlanPolicy, PlanValidationError
 from backend.app.agent.planner import Planner
 from backend.app.agent.tool_registry import AgentToolRegistry
-from backend.app.core.database import Base
+from test.support.db import make_test_engine
 
 
 def make_plan(*steps: PlanStep, intent: IntentType = IntentType.UNKNOWN) -> Plan:
@@ -267,8 +266,7 @@ class AgentLimitedReplanTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         database_path = Path(self.temp_dir.name) / "planning-test.db"
-        engine = create_engine(f"sqlite:///{database_path}")
-        Base.metadata.create_all(engine)
+        engine = make_test_engine()
         self.session = sessionmaker(bind=engine)()
         self.registry = AgentToolRegistry()
         self.policy = PlanPolicy(self.registry, max_steps=6)

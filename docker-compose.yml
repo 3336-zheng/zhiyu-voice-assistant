@@ -69,6 +69,9 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?必须在 .env 中设置 MYSQL_PASSWORD}
     volumes:
       - mysql_data:/var/lib/mysql
+      # 建测试库 zhiyu_test。只在数据卷首次初始化时执行一次；
+      # 已有环境要手动补一次，见该文件头部说明或 scripts/init_test_db.sh。
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
     # 一律绑定 127.0.0.1，绝不能写成 "3316:3306"——那等同 0.0.0.0，会把数据库暴露到局域网。
     # 用 3316 而非 3306，是因为本机已有其他项目的 MySQL 占用 3306。
     # 映射到宿主机是为了让本地直接运行的 python main.py 能连上；

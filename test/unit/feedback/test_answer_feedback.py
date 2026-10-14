@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.agent.agent import PlanExecuteAgent
@@ -16,7 +15,7 @@ from backend.app.agent.executor import Executor
 from backend.app.agent.models import AgentResponse
 from backend.app.agent.responder import Responder
 from backend.app.agent.tool_registry import AgentToolRegistry
-from backend.app.core.database import Base
+from test.support.db import make_test_engine
 from backend.app.models.feedback import AnswerFeedback
 from backend.app.models.observability import AgentRun
 from backend.app.models.wiki import ExternalResearchRun, ExternalResearchSource, WikiPage
@@ -111,8 +110,7 @@ class AnswerFeedbackTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.engine = create_engine(f"sqlite:///{self.root / 'feedback.db'}")
-        Base.metadata.create_all(self.engine)
+        self.engine = make_test_engine()
         self.db = sessionmaker(bind=self.engine, expire_on_commit=False)()
         self.indexer = FakeIndexer()
         self.page_factory = lambda db: PageService(

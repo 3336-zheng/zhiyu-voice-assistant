@@ -6,7 +6,6 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.agent.agent import AgentActionError, PlanExecuteAgent
@@ -19,7 +18,7 @@ from backend.app.agent.models import (
     ToolName,
     ToolResult,
 )
-from backend.app.core.database import Base
+from test.support.db import make_test_engine
 
 
 class FakeExecutor:
@@ -64,8 +63,7 @@ class AgentConfirmationTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         database_path = Path(self.temp_dir.name) / "agent-test.db"
-        engine = create_engine(f"sqlite:///{database_path}")
-        Base.metadata.create_all(engine)
+        engine = make_test_engine()
         self.session = sessionmaker(bind=engine)()
         self.agent = PlanExecuteAgent.__new__(PlanExecuteAgent)
         self.agent.executor = FakeExecutor()

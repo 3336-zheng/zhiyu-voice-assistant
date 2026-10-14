@@ -202,6 +202,10 @@ class Settings(BaseSettings):
     arq_index_queue: str = "arq:index"
     arq_index_max_jobs: int = Field(default=10, ge=1, le=100)
     arq_job_timeout_seconds: int = Field(default=300, gt=0, le=3600)
+    # 关停 worker 时等它把手头任务做完的宽限期。一次运行最长 180 秒，
+    # 取 30 秒是折中：多数任务能收尾，又不会让 Ctrl+C 等太久。
+    # 只用在本地的 run_workers.py；Docker 部署由 compose 的 stop_grace_period 管。
+    arq_shutdown_grace_seconds: int = Field(default=30, gt=0, le=600)
 
     # ASR 队列。与索引分开：转写一次可能跑满 180 秒，混在索引 worker 里
     # 会占住并发槽，让几百毫秒的索引任务排队。

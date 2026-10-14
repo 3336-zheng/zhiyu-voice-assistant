@@ -59,7 +59,7 @@
 
 ## 开始使用
 
-环境要求：Python 3.11+、Node.js 20+、ffmpeg，以及本地模型或兼容的在线模型服务。
+环境要求：Python 3.11+、Node.js 20+、ffmpeg、Docker（跑 MySQL / Redis / Chroma），以及兼容的在线模型服务。
 
 ```bash
 conda create -n zhiyu python=3.11 -y
@@ -73,10 +73,36 @@ npm run build
 cd ..
 
 cp .env.example .env
-python main.py
+```
+
+### 启动
+
+应用分四个进程：一个 API，三个后台 worker（索引、语音转写、Agent 运行）。worker 各消费一个队列，分开是因为时长差一个量级——混在一起的话，上传一段长音频会让后面排着的索引任务一直等。
+
+**必须四个都起来**。只跑 API 的话，页面能打开，但提问不会有任何反应（Agent 运行没人执行）。
+
+```bash
+# ① 三个基础服务
+docker compose up -d mysql redis chroma
+
+# ② API（一个终端）
+python run_api.py
+
+# ③ 三个 worker（另一个终端）
+python run_workers.py
 ```
 
 应用默认地址为 `http://127.0.0.1:8337`。模型、Embedding、Rerank、ASR 和 MCP 配置统一放在 `.env`，不配置模型时，知识库管理等非模型功能仍可使用。
+
+### 用 Docker 跑全部
+
+依赖和应用一起容器化，一条命令：
+
+```bash
+docker compose up -d
+```
+
+数据库 schema 由 Alembic 管理，首次启动或升级前执行 `alembic upgrade head`。
 
 ## 运行管理
 

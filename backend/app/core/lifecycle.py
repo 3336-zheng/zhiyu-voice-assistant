@@ -37,17 +37,33 @@ def _initialize_database() -> None:
 
 
 def _migrate_relative_paths() -> None:
-    """将旧音频记录中的相对路径迁移为绝对路径。"""
+    """将旧音频记录中的相对路径迁移为绝对路径。
+
+    这是一次性的历史数据订正，正常情况下查不到任何行。过滤下推到 SQL，
+    启动时才不必为了「找那几条可能不存在的记录」把整张表拉进内存。
+
+    多实例同时启动会更新同一批行，靠 MySQL 的行锁串行化；目标值相同
+    （各容器的工作目录都是 /app），后写的覆盖成同样的结果，没有一致性风险。
+    """
     from .database import SessionLocal
     from ..models import Audio
 
     db = SessionLocal()
     try:
+        # 绝对路径以 "/" 开头（Linux 容器内不存在盘符路径）。SQL 只做预过滤，
+        # 权威判据仍是 os.path.isabs——两者不一致时以它为准。
+        candidates = (
+            db.query(Audio)
+            .filter(Audio.file_path.isnot(None))
+            .filter(~Audio.file_path.like("/%"))
+            .all()
+        )
         updated_count = 0
-        for audio in db.query(Audio).all():
-            if audio.file_path and not os.path.isabs(audio.file_path):
-                audio.file_path = os.path.abspath(audio.file_path)
-                updated_count += 1
+        for audio in candidates:
+            if os.path.isabs(audio.file_path):
+                continue
+            audio.file_path = os.path.abspath(audio.file_path)
+            updated_count += 1
         if updated_count:
             db.commit()
             logger.info("已迁移 %s 条音频路径记录", updated_count)
@@ -69,37 +85,40 @@ def _rebuild_bm25_index() -> None:
     get_doc_index_service().rebuild_bm25_from_persistent()
 
 
-def _recover_wiki_index_tasks() -> None:
-    from .database import SessionLocal
-    from ..services.wiki.page_service import get_page_service
-
-    db = SessionLocal()
-    try:
-        result = get_page_service(db).recover_index_tasks()
-        logger.info("Wiki 索引任务恢复完成: %s", result)
-    finally:
-        db.close()
-
-
 async def _periodic_cleanup() -> None:
-    """定时清理过期对话会话。"""
+    """定时清理过期对话会话。
+
+    单实例部署下这只有一份进程在跑，不需要选主；清理本身也是幂等的，
+    重复执行最坏是白跑一次。
+    """
     while True:
         try:
             await asyncio.sleep(settings.cleanup_interval_minutes * 60)
-            from .database import SessionLocal
-            from ..services.memory.memory_service import get_memory_service
-
-            db = SessionLocal()
-            try:
-                result = get_memory_service().cleanup_expired_sessions(db)
-                if result.get("cleaned_sessions", 0):
-                    logger.info("清理过期会话: %s", result)
-            finally:
-                db.close()
+            await _cleanup_once()
         except asyncio.CancelledError:
             return
         except Exception as exc:
             logger.error("清理任务异常: %s", exc, exc_info=True)
+
+
+async def _cleanup_once() -> None:
+    """执行一轮清理。"""
+
+    def _run() -> dict:
+        from .database import SessionLocal
+        from ..services.memory.memory_service import get_memory_service
+
+        db = SessionLocal()
+        try:
+            return get_memory_service().cleanup_expired_sessions(db)
+        finally:
+            db.close()
+
+    # 清理是同步的数据库操作（全表扫描 + 删除），放进线程池，别让它阻塞
+    # 事件循环——卡住的是正在处理用户请求的同一个循环。
+    result = await asyncio.to_thread(_run)
+    if result.get("cleaned_sessions", 0):
+        logger.info("清理过期会话: %s", result)
 
 
 @asynccontextmanager
@@ -141,10 +160,17 @@ async def lifespan(app: FastAPI):
         # Redis 不可用不该拦住应用启动——任务留在表里，等队列恢复后由兜底扫描补投。
         logger.warning("任务投递器初始化失败（索引任务将由兜底扫描补投）: %s", exc)
 
-    try:
-        _recover_wiki_index_tasks()
-    except Exception as exc:
-        logger.warning("Wiki 索引任务恢复失败（不影响启动）: %s", exc, exc_info=True)
+    # 这里**不再**做「把 processing 的索引任务改回 pending」的启动恢复。
+    #
+    # 那个逻辑（原 recover_index_tasks）无差别地捞所有 processing 任务，前提是
+    # 「进程重启了，它手上的任务必然都死了」——这只在单进程时代成立。索引执行
+    # 搬到 arq worker 之后（Stage 5），执行者是另一个进程：API 重启时 worker 可能
+    # 正在正常索引某个页面，把它改回 pending 并重投，同一个页面就会被索引两次；
+    # 更糟的是 worker 随后写 completed、这里刚写了 pending，谁后写谁赢，任务状态
+    # 可能永久停在 pending 被反复重投。
+    #
+    # 回收改由 worker 的兜底扫描做（tasks/index_tasks.py 的 sweep_pending_tasks），
+    # 按 locked_at 判断执行者是否真的失联，每 60 秒一次，多实例下也安全。
 
     tasks = [
         asyncio.create_task(_periodic_cleanup(), name="session-cleanup-worker"),

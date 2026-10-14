@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -406,9 +406,6 @@ class AgentRuntimeService:
         run.status = AgentRunStatus.RUNNING
         await asyncio.to_thread(self._persist_status, run.run_id, run.status, None)
         self._set_status(run.run_id, run.status)
-        # 先写一次心跳再进入执行：否则从「开始执行」到「第一次心跳」之间有一段
-        # 空窗，此时别的 worker 启动会看到旧心跳把这条运行判成失联。
-        await asyncio.to_thread(self._touch_heartbeat, run.run_id)
         loop = asyncio.get_running_loop()
 
         def event_callback(event_type: AgentEventType | str, data: Dict[str, Any]) -> None:
@@ -430,12 +427,6 @@ class AgentRuntimeService:
         watcher = asyncio.create_task(
             self._watch_cancel(run),
             name=f"agent-cancel-watch-{run.run_id}",
-        )
-        # 别的 worker 靠心跳判断这条运行的执行者是否还活着。不写的话，
-        # 任何一个启动的 worker 都会把它当成失联运行回收掉。
-        run_heartbeat = asyncio.create_task(
-            self._heartbeat_loop(run),
-            name=f"agent-run-heartbeat-{run.run_id}",
         )
 
         (
@@ -549,7 +540,7 @@ class AgentRuntimeService:
                 {"message": run.error, "code": type(exc).__name__},
             )
         finally:
-            for helper in (heartbeat, watcher, run_heartbeat):
+            for helper in (heartbeat, watcher):
                 helper.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await helper
@@ -631,37 +622,6 @@ class AgentRuntimeService:
             except AgentStateUnavailable as exc:
                 logger.warning("取消信号轮询失败: run_id=%s error=%s", run.run_id, exc)
                 return
-
-    async def _heartbeat_loop(self, run: RuntimeRun) -> None:
-        """执行期间定期写心跳，告诉别的 worker「这条运行的执行者还活着」。
-
-        没有它的话，任何 worker 启动时的恢复扫描都会把这条正在跑的运行
-        当成失联的运行回收掉——这正是多实例下最典型的互相干扰。
-        """
-        while True:
-            await asyncio.sleep(settings.agent_heartbeat_seconds)
-            try:
-                await asyncio.to_thread(self._touch_heartbeat, run.run_id)
-            except Exception as exc:  # noqa: BLE001 — 一次失败不该让心跳停摆
-                # 不 return：心跳停摆就会被别的 worker 判成失联并回收，
-                # 所以这里继续重试，把「数据库抖一下」和「执行者真死了」区分开。
-                logger.warning("写运行心跳失败: run_id=%s error=%s", run.run_id, exc)
-
-    def _touch_heartbeat(self, run_id: str) -> None:
-        """更新一条运行的心跳时间。
-
-        只更新这一个字段而不是整行读改写：心跳每 30 秒就要写一次，
-        没必要把整行（含 timeline / events 这些大 JSON 字段）读进来再写回去。
-        """
-        db = self._session_factory()
-        try:
-            db.query(AgentRun).filter(AgentRun.request_id == run_id).update(
-                {"heartbeat_at": datetime.now(timezone.utc)},
-                synchronize_session=False,
-            )
-            db.commit()
-        finally:
-            db.close()
 
     def _set_status(self, run_id: str, status: AgentRunStatus) -> None:
         """把状态同步到 Redis；状态存储不可用时只记日志。
@@ -887,23 +847,20 @@ class AgentRuntimeService:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     def recover_interrupted_runs(self) -> int:
-        """回收执行者已经不在的运行。
+        """回收上次中断时留下的运行。
 
-        **只回收心跳过期的 `running` / `cancelling`。** 这两类表示「已经有 worker
-        领走并在执行」，执行者死了才需要回收——判据就是心跳。
+        `running` / `cancelling` 表示「已经被 worker 领走并在执行中」。执行它的
+        进程重启了，这些运行就没有人再推进，必须标记失败——否则客户端会一直
+        挂着等一个永远不会到来的终止事件。
 
-        `pending` 的不动：它还没开始执行，排队久不代表执行者死了。队列任务不会
-        因为 worker 重启而丢失，worker 恢复后会被正常消费；按时间回收反而会
-        误杀一条只是排在长队列里的运行。
+        `pending` 不动：它还没被领走，进程重启不影响它，worker 恢复后会正常
+        消费。按时间回收反而会误杀一条只是排在长队列里的运行。
 
         这一步由 worker 在自己的启动流程里调用，不由 API 调用：运行跑在 worker
         进程里，滚动重启 API 不该影响它们。
         """
         db = self._session_factory()
         try:
-            cutoff = datetime.now(timezone.utc) - timedelta(
-                seconds=settings.agent_run_stale_seconds
-            )
             rows = (
                 db.query(AgentRun)
                 .filter(
@@ -912,19 +869,13 @@ class AgentRuntimeService:
                         AgentRunStatus.CANCELLING.value,
                     ])
                 )
-                .filter(
-                    # 心跳为空也算过期：正在执行的运行不该没有心跳，
-                    # 没有说明它没走正常流程（历史数据、或创建后就没跑起来）。
-                    (AgentRun.heartbeat_at.is_(None))
-                    | (AgentRun.heartbeat_at <= cutoff)
-                )
                 .all()
             )
             now = datetime.now(timezone.utc)
             recovered: List[Tuple[str, Optional[str]]] = []
             for row in rows:
                 row.status = AgentRunStatus.FAILED.value
-                row.error = "执行该运行的 worker 已失联"
+                row.error = "执行该运行的 worker 已重启，运行被中断"
                 events = list(row.events or [])
                 sequence = max(
                     (item.get("sequence", 0) for item in events if isinstance(item, dict)),
@@ -938,7 +889,7 @@ class AgentRuntimeService:
                         sequence=sequence + 1,
                         data={
                             "message": row.error,
-                            "code": "worker_lost",
+                            "code": "worker_restarted",
                         },
                     ).model_dump(mode="json")
                 )
@@ -953,9 +904,8 @@ class AgentRuntimeService:
                 self._publish_recovered_state(run_id, session_id, now)
             if recovered:
                 logger.warning(
-                    "回收了 %s 条执行者已失联的运行（心跳超过 %s 秒未更新）",
+                    "回收了 %s 条被中断的运行（执行它们的 worker 已重启）",
                     len(recovered),
-                    settings.agent_run_stale_seconds,
                 )
             return len(recovered)
         finally:
@@ -984,7 +934,7 @@ class AgentRuntimeService:
             self._state.save_terminal(
                 run_id=run_id,
                 status=AgentRunStatus.FAILED.value,
-                error="执行该运行的 worker 已失联",
+                error="执行该运行的 worker 已重启，运行被中断",
                 response=None,
                 finished_at=finished_at.timestamp(),
             )

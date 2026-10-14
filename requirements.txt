@@ -17,8 +17,10 @@ python-magic-bin; sys_platform == "win32"
 # faster-whisper 已移除：本地语音识别改用网关模型（dashscope / mimo），
 # 顺带省掉 ctranslate2 那几百 MB 依赖
 dashscope>=1.20.0
-transformers
-torch
+# torch 与 transformers 已移除：向量化与精排改用网关模型（见 .env 的
+# EMBEDDING_PROVIDER / RERANKER_PROVIDER），本地 Hugging Face 后端不再存在。
+# 顺带省掉约 1GB 依赖——PyPI 上 aarch64 的 torch wheel 还会拖进
+# nvidia-cudnn-cu13、cuda-bindings 等 CUDA 包，而容器里根本没有 GPU。
 librosa
 numpy
 

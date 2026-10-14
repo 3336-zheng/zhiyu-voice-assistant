@@ -44,9 +44,8 @@ class Settings(BaseSettings):
     # Redis：任务队列、事件流、取消信号与分布式锁（Stage 3 起启用）
     redis_url: str = "redis://127.0.0.1:6379/0"
 
-    # 模型路径配置（需在 .env 中填写实际路径）
-    embedding_provider: Literal["local", "openai_compatible"] = "local"
-    embedding_model_path: str = ""
+    # 模型网关配置（Embedding 与重排都走在线端点，本地模型后端已移除）
+    embedding_provider: Literal["openai_compatible"] = "openai_compatible"
     embedding_api_key: str = ""
     embedding_api_url: str = ""
     embedding_model: str = ""
@@ -54,8 +53,7 @@ class Settings(BaseSettings):
     embedding_batch_size: int = Field(default=32, ge=1, le=2048)
     embedding_timeout_seconds: float = Field(default=30.0, gt=0)
     embedding_max_retries: int = Field(default=2, ge=0, le=10)
-    reranker_provider: Literal["local", "rerank_compatible"] = "local"
-    reranker_model_path: str = ""
+    reranker_provider: Literal["rerank_compatible"] = "rerank_compatible"
     reranker_api_key: str = ""
     reranker_api_url: str = ""
     reranker_model: str = ""
@@ -106,12 +104,6 @@ class Settings(BaseSettings):
     agent_run_timeout_seconds: float = 180.0
     agent_event_buffer_size: int = 2000
     agent_run_retention_seconds: int = 3600
-    # 执行期间写心跳的间隔。一次运行最长 180 秒，30 秒一次意味着最多 6 次写入，
-    # 对数据库没有压力。
-    agent_heartbeat_seconds: int = Field(default=30, gt=0, le=300)
-    # 超过这个时间没收到心跳，就认为执行它的 worker 已经死了，可以回收。
-    # 取心跳间隔的 3 倍，容忍两次心跳丢失——网络抖动不该被误判成崩溃。
-    agent_run_stale_seconds: int = Field(default=90, gt=0, le=3600)
     agent_tool_context_token_budget: int = 4000
     agent_plan_max_steps: int = Field(default=6, ge=1, le=20)
     agent_max_replans: int = Field(default=1, ge=0, le=3)

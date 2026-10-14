@@ -1,11 +1,14 @@
-"""可配置的本地与 OpenAI 兼容文本嵌入服务。"""
+"""OpenAI 兼容协议的文本嵌入服务。
+
+本地 Hugging Face 后端已移除：向量检索统一走模型网关（与 .env 的实际配置一致，
+也跟当初移除本地 whisper 是同一个理由——本地模型在多实例下每个进程各加载一份，
+显存和内存都不划算）。顺带省掉 torch 与 transformers 约 1GB 的依赖。
+"""
 
 from __future__ import annotations
 
 import logging
 import math
-import os
-from pathlib import Path
 from typing import Any, List, Optional, Protocol
 from urllib.parse import urlsplit
 
@@ -39,51 +42,6 @@ def _validate_api_url(value: str) -> str:
     if parsed.query or parsed.fragment:
         raise EmbeddingProviderError("EMBEDDING_API_URL 不能包含查询参数或片段")
     return normalized
-
-
-class LocalEmbeddingBackend:
-    """使用本地 Hugging Face 模型生成文本向量。"""
-
-    provider_name = "local"
-
-    def __init__(self, model_path: str) -> None:
-        if not (model_path or "").strip():
-            raise EmbeddingProviderError("本地 Embedding 模型路径不能为空")
-        os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
-        import torch
-        from transformers import AutoModel, AutoTokenizer
-
-        self._torch = torch
-        self.model_name = Path(model_path).name or "local-embedding"
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info("加载本地 Embedding 模型: %s", self.model_name)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
-        model_kwargs = {"local_files_only": True}
-        if self.device == "cuda":
-            model_kwargs["torch_dtype"] = torch.float16
-        self.model = AutoModel.from_pretrained(model_path, **model_kwargs)
-        self.model.to(self.device)
-        self.dimension = int(getattr(self.model.config, "hidden_size", 0) or 0) or None
-        logger.info("本地 Embedding 模型加载完成，设备: %s", self.device)
-
-    def encode_batch(self, texts: List[str]) -> List[List[float]]:
-        vectors: List[List[float]] = []
-        for start in range(0, len(texts), 32):
-            batch = texts[start:start + 32]
-            encoded = self.tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                max_length=512,
-                return_tensors="pt",
-            )
-            encoded = {key: value.to(self.device) for key, value in encoded.items()}
-            with self._torch.no_grad():
-                outputs = self.model(**encoded)
-                embeddings = outputs.last_hidden_state.mean(dim=1)
-            vectors.extend(embeddings.cpu().tolist())
-        return vectors
 
 
 class OpenAICompatibleEmbeddingBackend:
@@ -189,17 +147,15 @@ class EmbeddingService:
 
     @staticmethod
     def _build_backend() -> EmbeddingBackend:
-        if settings.embedding_provider == "openai_compatible":
-            return OpenAICompatibleEmbeddingBackend(
-                api_key=settings.embedding_api_key,
-                api_url=settings.embedding_api_url,
-                model=settings.embedding_model,
-                dimensions=settings.embedding_dimensions,
-                batch_size=settings.embedding_batch_size,
-                timeout_seconds=settings.embedding_timeout_seconds,
-                max_retries=settings.embedding_max_retries,
-            )
-        return LocalEmbeddingBackend(settings.embedding_model_path)
+        return OpenAICompatibleEmbeddingBackend(
+            api_key=settings.embedding_api_key,
+            api_url=settings.embedding_api_url,
+            model=settings.embedding_model,
+            dimensions=settings.embedding_dimensions,
+            batch_size=settings.embedding_batch_size,
+            timeout_seconds=settings.embedding_timeout_seconds,
+            max_retries=settings.embedding_max_retries,
+        )
 
     @property
     def provider_name(self) -> str:

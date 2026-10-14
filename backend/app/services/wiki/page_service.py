@@ -470,10 +470,6 @@ class PageService:
         """将全部页面加入索引队列，实际处理由后台 worker 完成。"""
         return self.index_tasks.queue_reindex()
 
-    def recover_index_tasks(self) -> Dict[str, Any]:
-        """将进程中断时遗留的 processing 任务恢复为 pending。"""
-        return self.index_tasks.recover()
-
     def process_pending_index_tasks(self, limit: int = 5) -> Dict[str, Any]:
         """同步处理一批到期任务。
 

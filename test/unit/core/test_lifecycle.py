@@ -1,10 +1,11 @@
 """应用生命周期与请求观测上下文测试。"""
 
 import asyncio
+import threading
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from backend.app.core import lifecycle
 from backend.app.core.observability import (
@@ -40,7 +41,6 @@ class LifecycleTestCase(unittest.IsolatedAsyncioTestCase):
             patch.object(lifecycle, "_migrate_relative_paths"),
             patch.object(lifecycle, "_sync_document_index"),
             patch.object(lifecycle, "_rebuild_bm25_index") as rebuild_bm25,
-            patch.object(lifecycle, "_recover_wiki_index_tasks"),
             patch.object(lifecycle, "_periodic_cleanup", fake_cleanup),
             patch(
                 "backend.app.tasks.queue.init_dispatcher", fake_init_dispatcher
@@ -58,6 +58,34 @@ class LifecycleTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(dispatcher_ready.is_set())
         self.assertEqual(app.state.background_tasks, [])
+
+    async def test_cleanup_runs_once_per_cycle(self):
+        """一轮清理会真的调用清理服务。
+
+        清理是同步的数据库操作，跑在线程池里——这里同时钉住「确实调了」
+        和「调用发生在工作线程」，避免以后有人改回直接 await 阻塞事件循环。
+        """
+        service = MagicMock()
+        service.cleanup_expired_sessions.return_value = {"cleaned_sessions": 2}
+        main_thread = threading.current_thread()
+        ran_in = []
+
+        def _cleanup(_db):
+            ran_in.append(threading.current_thread())
+            return {"cleaned_sessions": 2}
+
+        service.cleanup_expired_sessions.side_effect = _cleanup
+        with (
+            patch("backend.app.core.database.SessionLocal", MagicMock()),
+            patch(
+                "backend.app.services.memory.memory_service.get_memory_service",
+                lambda: service,
+            ),
+        ):
+            await lifecycle._cleanup_once()
+        self.assertEqual(service.cleanup_expired_sessions.call_count, 1)
+        # 跑在工作线程而不是事件循环线程上——否则全表清理会卡住请求处理
+        self.assertNotEqual(ran_in[0], main_thread)
 
     async def test_observability_context_is_reset(self):
         (

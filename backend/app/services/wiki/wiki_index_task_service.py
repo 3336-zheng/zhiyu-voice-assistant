@@ -167,24 +167,13 @@ class WikiIndexTaskService:
         self.dispatch(affected)
         return {"queued": queued, "total": len(pages), "status": "queued"}
 
-    def recover(self) -> Dict[str, Any]:
-        tasks = self.db.query(WikiIndexTask).filter(WikiIndexTask.status == "processing").all()
-        for task in tasks:
-            task.status = "pending"
-            task.locked_at = None
-            task.next_attempt_at = None
-        self.db.commit()
-        # 改回 pending 只是把任务放回待执行，没人投递的话它们会一直躺着——
-        # 轮询时代靠下一轮扫描捡起来，现在必须显式投一次。
-        self.dispatch([task.id for task in tasks])
-        return {"recovered": len(tasks)}
-
     def recover_stale(self, threshold_seconds: int) -> Dict[str, Any]:
         """回收卡死在 processing 的任务。
 
-        worker 独立成进程之后，它崩溃时没有机会执行 recover()——此时 API 进程
-        还活着，不会有启动恢复来兜底，这些任务会永远停在 processing。所以按
-        locked_at 判断：超过阈值还没有回音，就认为执行它的 worker 已经不在了。
+        索引执行搬到 arq worker 之后，执行者和 API 是两个进程：API 重启不代表
+        任务执行者死了，反之 worker 崩溃时 API 还活着、不会有重启来触发恢复。
+        所以判据不能是「谁重启了」，只能按 locked_at 判断——超过阈值还没有回音，
+        就认为执行它的 worker 已经不在了。
 
         阈值必须大于任务超时时间，否则正在正常执行的长任务会被误判成卡死并重跑。
         """

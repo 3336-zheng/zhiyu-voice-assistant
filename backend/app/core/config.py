@@ -20,8 +20,10 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8337
 
-    # 数据库配置
-    database_url: str = "sqlite:///data/database/notes.db"
+    # 数据库配置。只支持 MySQL——SQLite 在分布式改造里被彻底移除：
+    # 它是嵌入式单文件库，多个进程同时写会锁竞争甚至写坏，而这套代码
+    # 现在会跑出 4 个应用进程。没有默认值，必须在 .env 里显式给出。
+    database_url: str
 
     # MySQL 容器凭据：仅供 docker compose 插值使用，应用一律通过 DATABASE_URL 连接，
     # 不读取以下四个字段。此处仍需声明，是因为 model_config 未放开 extra，
@@ -31,8 +33,7 @@ class Settings(BaseSettings):
     mysql_user: str = "zhiyu"
     mysql_password: str = ""
 
-    # 连接池配置：仅 MySQL 等网络数据库生效，SQLite 路径不使用这些参数。
-    # 单实例连接上限为 db_pool_size + db_max_overflow，
+    # 连接池配置。单实例连接上限为 db_pool_size + db_max_overflow，
     # 该上限必须大于等于进程内所有线程池的线程总数，否则线程会在取连接时排队超时。
     db_pool_size: int = Field(default=10, ge=1, le=100)
     db_max_overflow: int = Field(default=20, ge=0, le=200)
@@ -64,7 +65,6 @@ class Settings(BaseSettings):
     wiki_pages_dir: str = "data/wiki/pages"
     wiki_attachments_dir: str = "data/wiki/attachments"
     wiki_exports_dir: str = "data/wiki/exports"
-    backup_dir: str = "data/backups"
     max_file_size: int = 50 * 1024 * 1024  # 50MB
     allowed_extensions: str = ".wav,.mp3,.flac,.ogg,.webm"  # 从 .env 读取为字符串
 

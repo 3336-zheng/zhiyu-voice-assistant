@@ -10,14 +10,13 @@ from pathlib import Path
 from unittest.mock import patch
 from unittest.mock import sentinel
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.agent.agent import PlanExecuteAgent
 from backend.app.agent.executor import Executor
 from backend.app.agent.models import AgentResponse, IntentType, Plan, ToolName
 from backend.app.core.config import settings
-from backend.app.core.database import Base
+from test.support.db import make_test_engine
 from backend.app.models.wiki import (
     AgentPendingAction,
     ExternalResearchRun,
@@ -108,8 +107,7 @@ class ExternalResearchTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.engine = create_engine(f"sqlite:///{self.root / 'research.db'}")
-        Base.metadata.create_all(self.engine)
+        self.engine = make_test_engine()
         self.db = sessionmaker(bind=self.engine, expire_on_commit=False)()
         self.previous_settings = {
             "mcp_research_enabled": settings.mcp_research_enabled,

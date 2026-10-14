@@ -4,18 +4,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from backend.app.core.database import Base
+from test.support.db import make_test_engine
 from backend.app.services.memory.memory_service import MemoryService
 
 
 class MemorySearchTestCase(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        engine = create_engine(f"sqlite:///{Path(self.temp_dir.name) / 'memory.db'}")
-        Base.metadata.create_all(engine)
+        engine = make_test_engine()
         self.session = sessionmaker(bind=engine)()
         self.service = MemoryService()
 

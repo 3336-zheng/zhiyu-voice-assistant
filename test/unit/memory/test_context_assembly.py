@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.agent.models import (
@@ -19,7 +18,7 @@ from backend.app.agent.planner import Planner
 from backend.app.agent.responder import Responder
 from backend.app.agent.tool_registry import AgentToolRegistry
 from backend.app.core.config import settings
-from backend.app.core.database import Base
+from test.support.db import make_test_engine
 from backend.app.services.memory.context_assembler import (
     ContextAssembler,
 )
@@ -175,8 +174,7 @@ class ModelContextIntegrationTestCase(unittest.TestCase):
 class MemoryTokenTriggerTestCase(unittest.TestCase):
     def test_token_trigger_and_cursor_only_advance_summarized_messages(self):
         with tempfile.TemporaryDirectory() as root:
-            engine = create_engine(f"sqlite:///{Path(root) / 'memory.db'}")
-            Base.metadata.create_all(engine)
+            engine = make_test_engine()
             session = sessionmaker(bind=engine)()
             service = MemoryService()
             service.summary_threshold = 100

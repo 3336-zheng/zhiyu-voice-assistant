@@ -142,16 +142,16 @@ class ContextAwareRewriteTestCase(unittest.TestCase):
         service = QueryRewriteService()
         llm = RecordingJSONLLM(
             {
-                "standalone_query": "SQLite 在智语中的职责是什么？",
-                "queries": ["SQLite 主数据", "SQLite 运行记录"],
+                "standalone_query": "MySQL 在智语中的职责是什么？",
+                "queries": ["MySQL 主数据", "MySQL 运行记录"],
             }
         )
         service._llm_service = llm
 
-        first = service.rewrite_query("SQLite 在智语中负责什么？")
-        second = service.rewrite_query("SQLite 在智语中负责什么？")
+        first = service.rewrite_query("MySQL 在智语中负责什么？")
+        second = service.rewrite_query("MySQL 在智语中负责什么？")
         refreshed = service.rewrite_query(
-            "SQLite 在智语中负责什么？",
+            "MySQL 在智语中负责什么？",
             force_refresh=True,
         )
 

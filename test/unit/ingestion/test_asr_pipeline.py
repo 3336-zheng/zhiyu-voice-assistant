@@ -8,11 +8,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.core.config import settings
-from backend.app.core.database import Base
+from test.support.db import make_test_engine
 from backend.app.models import Audio
 from backend.app.services.ingestion.asr_service import (
     ASRInputError,
@@ -49,8 +48,7 @@ class AsrTaskTestCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
-        engine = create_engine(f"sqlite:///{self.root / 'asr.db'}")
-        Base.metadata.create_all(engine)
+        engine = make_test_engine()
         self.Session = sessionmaker(bind=engine)
         self.audio_file = self.root / "sample.wav"
         self.audio_file.write_bytes(b"RIFF....")

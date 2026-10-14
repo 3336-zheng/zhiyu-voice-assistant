@@ -4,10 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from backend.app.core.database import Base
+from test.support.db import make_test_engine
 from backend.app.services.wiki.page_service import (
     AmbiguousPageError,
     PageConflictError,
@@ -47,8 +46,7 @@ class PageServiceTestCase(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         database_path = Path(self.temp_dir.name) / "wiki-test.db"
-        engine = create_engine(f"sqlite:///{database_path}")
-        Base.metadata.create_all(engine)
+        engine = make_test_engine()
         self.session = sessionmaker(bind=engine)()
         self.indexer = FakePageIndexService()
         self.service = PageService(

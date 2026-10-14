@@ -105,6 +105,21 @@ docker compose up -d
 
 数据库 schema 由 Alembic 管理，首次启动或升级前执行 `alembic upgrade head`。
 
+## 开发与测试
+
+测试连的是**真实 MySQL** 上的独立库 `zhiyu_test`，不是内存库——这样测试和生产跑在同一种方言上。代价是**跑测试前必须先起 MySQL**：
+
+```bash
+docker compose up -d mysql
+
+# 新环境首次需要建测试库（已有的数据卷不会自动执行初始化脚本）
+bash scripts/init_test_db.sh
+
+python -m pytest test/
+```
+
+每个测试用例都会重建整张 schema，所以**测试之间没有残留**，但也**必须串行跑**——共用同一个库时并行会互相清表。
+
 ## 运行管理
 
 前端“运行追踪”可以查看查询可信度、阶段耗时、模型用量、Token 预算、RAG 证据和错误码。服务重启后，已结束的 Agent 运行仍可从 MySQL 中恢复。
@@ -113,7 +128,7 @@ docker compose up -d
 
 ## 数据与隐私
 
-- Markdown 正文和 MySQL 里的业务数据是可备份的；BM25、ChromaDB 是可以重建的派生索引。
+- Markdown 正文和 MySQL 里的业务数据是**要备份的部分**；BM25、ChromaDB 是可以随时重建的派生索引，不用备。数据库用 `mysqldump` 导出，正文目录直接打包。
 - API Key 只放在本地 `.env`，不会提交到仓库。
 - 启用在线 Embedding、Rerank、LLM 或 MCP 时，相关查询和候选内容会发送到配置的服务端点。
 - 当前定位是单用户、本机或可信内网部署，不含多租户权限。部署形态是**单实例多进程**（一个 API + 三个 worker）；多实例所需的代码能力保留着，但没有启用。
@@ -121,13 +136,20 @@ docker compose up -d
 ## 产品文档
 
 - [系统架构](docs/architecture/overview.md)
+- [分布式改造总结](docs/architecture/phase5-retrospective.md)
 - [日志与运行追踪](docs/runbooks/observability.md)
 - [RAG 评测设计](docs/eval/01-evaluation-design.md)
 - [RAG 评测流程](docs/eval/02-evaluation-workflow.md)
 - [评测代码说明](test/eval/README.md)
-- [Markdown 主数据决策](docs/adr/0001-markdown-source-of-truth.md)
-- [可信 Agent 决策](docs/adr/0003-trusted-agent.md)
-- [受控 MCP 研究决策](docs/adr/0004-controlled-mcp-research.md)
+
+关键决策记录：
+
+- [ADR-0001：Markdown 作为知识主数据](docs/adr/0001-markdown-source-of-truth.md)
+- [ADR-0002：持久化异步索引任务](docs/adr/0002-persistent-index-tasks.md)
+- [ADR-0003：证据门禁与确认式 Agent](docs/adr/0003-trusted-agent.md)
+- [ADR-0004：受控 MCP 外部研究](docs/adr/0004-controlled-mcp-research.md)
+- [ADR-0005：可配置检索模型与向量空间隔离](docs/adr/0005-configurable-retrieval-models.md)
+- [ADR-0006：分布式运行时改造](docs/adr/0006-distributed-runtime.md)
 
 ## License
 

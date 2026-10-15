@@ -805,13 +805,29 @@ textarea {
 }
 
 .outline-item {
+  display: block;
+  width: 100%;
   padding-top: 4px;
   padding-bottom: 4px;
   overflow: hidden;
+  /* 元素从 div 换成 button 后必须显式清掉浏览器默认样式，
+     否则会出现边框和灰底，看起来像一个输入框。 */
+  text-align: left;
   color: #68736e;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  font-family: inherit;
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+/* 悬停时给一点反馈就够了，不做成按钮的样子。 */
+.outline-item:hover {
+  color: var(--ink);
+  background: #e7ece9;
 }
 
 .context-link {

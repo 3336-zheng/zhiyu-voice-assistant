@@ -12,7 +12,11 @@ from .page_errors import PageNotFoundError, PageValidationError
 from .wiki_file_store import WikiFileStore
 
 logger = logging.getLogger(__name__)
-WIKI_LINK_PATTERN = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
+
+# 用负向回顾排除 `![[...]]`：那是 Obsidian 的嵌入语法（图片、附件），
+# 不是页面链接。不排除的话，一张图会被解析成一条指向不存在页面的悬空链接，
+# 在「页面链接」面板里显示成红色的删除线文字。
+WIKI_LINK_PATTERN = re.compile(r"(?<!!)\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 
 
 class WikiLinkService:

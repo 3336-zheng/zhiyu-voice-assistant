@@ -37,9 +37,22 @@ function formatDate(value) {
 }
 
 function headingsFrom(content) {
+  let ordinal = 0
   return (content || '').split('\n').flatMap((line, index) => {
     const match = /^(#{1,4})\s+(.+)$/.exec(line)
-    return match ? [{ level: match[1].length, title: match[2], key: `${index}-${match[2]}` }] : []
+    if (!match) return []
+    // 锚点用「第几个标题」而不是行号或标题文字：
+    // - 行号不行——MarkdownView 渲染的是经 normalizeMath 处理过的内容，
+    //   公式会被展开成多行，两边的行号对不上；
+    // - 标题文字不行——可能重复、含空格和中文标点。
+    // 标题数量与顺序在两侧一致（规范化不动标题），序号是唯一稳定的依据。
+    ordinal += 1
+    return [{
+      level: match[1].length,
+      title: match[2],
+      key: `${index}-${match[2]}`,
+      anchor: `heading-${ordinal}`,
+    }]
   })
 }
 
@@ -439,7 +452,13 @@ export default function WikiWorkspace({ notify, openPage }) {
         <section>
           <h3><MoreHorizontal size={15} /> 页面目录</h3>
           {outline.length === 0 ? <span className="muted">暂无标题</span> : outline.map((item) => (
-            <div key={item.key} className="outline-item" style={{ paddingLeft: `${(item.level - 1) * 10}px` }}>{item.title}</div>
+            <button
+              key={item.key}
+              type="button"
+              className="outline-item"
+              style={{ paddingLeft: `${(item.level - 1) * 10}px` }}
+              onClick={() => document.getElementById(item.anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            >{item.title}</button>
           ))}
         </section>
         <section>

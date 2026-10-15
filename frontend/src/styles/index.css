@@ -692,6 +692,17 @@ button.tag {
 .wiki-link { color: #176b58; }
 .wiki-link { display: inline; padding: 0; font-family: inherit; font-size: inherit; background: transparent; border: 0; border-bottom: 1px dotted #176b58; cursor: pointer; }
 
+/* Obsidian 嵌入语法 ![[x.png]] 的占位。智语没有图片存储，
+   这类嵌入指向的文件不在，用文字说明代替，别显示成死链。 */
+.embed-missing {
+  padding: 1px 6px;
+  color: #8d9692;
+  background: #f0f2f1;
+  border: 1px dashed #c8cfcb;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
 .title-input {
   width: 100%;
   padding: 0 0 12px;

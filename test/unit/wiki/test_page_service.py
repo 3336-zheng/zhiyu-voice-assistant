@@ -131,6 +131,29 @@ class PageServiceTestCase(unittest.TestCase):
         with self.assertRaises(AmbiguousPageError):
             self.service.find_page("检索增强生成")
 
+    def test_图片嵌入不算页面链接(self):
+        """`![[x.png]]` 是 Obsidian 的嵌入语法，不是指向页面的 Wiki Link。
+
+        不排除的话，一张图会变成一条指向「Pasted image xxx.png」的悬空链接，
+        在「页面链接」面板里显示成红色的删除线文字——既不是图，也不像链接。
+        """
+        page = self.service.create_page(
+            title="带图的笔记",
+            content=(
+                "正文。\n\n"
+                "![[Pasted image 20260421163755.png]]\n\n"
+                "另见 [[RAG 基础]]。\n\n"
+                "![[另一张.png|别名]]\n"
+            ),
+        )
+        self.service.create_page(title="RAG 基础", content="正文")
+
+        titles = [
+            item["target_title"]
+            for item in self.service.get_links(page["id"])["outgoing"]
+        ]
+        self.assertEqual(titles, ["RAG 基础"], "嵌入语法不该出现在页面链接里")
+
     def test_source_deduplication_and_bad_frontmatter(self):
         first = self.service.upsert_page_by_source(
             title="上传资料",

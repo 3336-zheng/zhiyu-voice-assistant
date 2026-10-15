@@ -8,6 +8,7 @@ from .system.health import router as health_router
 from .system.observability import router as observability_router
 from .wiki.documents import router as docs_router
 from .wiki.notes import router as notes_router
+from .wiki.graph import router as graph_router
 from .wiki.pages import router as pages_router
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "agent_router",
     "docs_router",
     "summary_router",
+    "graph_router",
     "pages_router",
     "observability_router",
 ]

@@ -692,6 +692,17 @@ button.tag {
 .wiki-link { color: #176b58; }
 .wiki-link { display: inline; padding: 0; font-family: inherit; font-size: inherit; background: transparent; border: 0; border-bottom: 1px dotted #176b58; cursor: pointer; }
 
+/* Obsidian 嵌入语法 ![[x.png]] 的占位。智语没有图片存储，
+   这类嵌入指向的文件不在，用文字说明代替，别显示成死链。 */
+.embed-missing {
+  padding: 1px 6px;
+  color: #8d9692;
+  background: #f0f2f1;
+  border: 1px dashed #c8cfcb;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
 .title-input {
   width: 100%;
   padding: 0 0 12px;
@@ -794,13 +805,29 @@ textarea {
 }
 
 .outline-item {
+  display: block;
+  width: 100%;
   padding-top: 4px;
   padding-bottom: 4px;
   overflow: hidden;
+  /* 元素从 div 换成 button 后必须显式清掉浏览器默认样式，
+     否则会出现边框和灰底，看起来像一个输入框。 */
+  text-align: left;
   color: #68736e;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  font-family: inherit;
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+/* 悬停时给一点反馈就够了，不做成按钮的样子。 */
+.outline-item:hover {
+  color: var(--ink);
+  background: #e7ece9;
 }
 
 .context-link {
@@ -1008,9 +1035,17 @@ textarea {
 
 .ask-layout {
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
+  /* 历史对话在右侧：主对话区吃掉剩余宽度，侧栏固定 248px。
+     minmax(0, 1fr) 的下限写 0 是为了让长内容能收缩——写 auto 的话
+     里面的长标题会把格子撑破。 */
+  grid-template-columns: minmax(0, 1fr) 248px;
   height: 100%;
   min-height: 0;
+}
+
+/* 收起态：只留一条 44px 的竖栏。 */
+.ask-layout.history-collapsed {
+  grid-template-columns: minmax(0, 1fr) 44px;
 }
 
 .conversation-browser {
@@ -1021,7 +1056,33 @@ textarea {
   overflow-x: hidden;
   overflow-y: auto;
   background: var(--surface-soft);
-  border-right: 1px solid var(--line);
+  /* 在右侧，分隔线改到左边。 */
+  border-left: 1px solid var(--line);
+}
+
+/* 收起态的竖栏：整条可点，图标和会话数纵向排。 */
+.history-rail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  padding: 14px 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  flex-direction: column;
+}
+
+.history-rail:hover {
+  color: var(--ink);
+  background: #e7ece9;
+}
+
+.history-rail-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .conversation-browser-heading {
@@ -2778,7 +2839,11 @@ textarea {
   }
 
   .ask-layout {
-    grid-template-columns: 232px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) 232px;
+  }
+
+  .ask-layout.history-collapsed {
+    grid-template-columns: minmax(0, 1fr) 44px;
   }
 }
 
@@ -2931,10 +2996,12 @@ textarea {
     height: auto;
   }
 
+  /* 窄屏改成上下堆叠：历史对话落到对话区下面。
+     边框从左侧改到上侧，跟视觉位置一致。 */
   .conversation-browser {
     height: 250px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
+    border-left: 0;
+    border-top: 1px solid var(--line);
   }
 
   .workspace-titlebar h1 {
@@ -3559,4 +3626,105 @@ select:focus {
   .modal {
     border-radius: 12px 12px 0 0;
   }
+}
+
+/* ---------------------------------------------------------------- 知识图谱 */
+
+.graph-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.graph-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.graph-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 10px 18px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.graph-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.graph-toolbar input[type='range'] {
+  width: 150px;
+}
+
+/* 数值用等宽数字，拖动时宽度不跳。 */
+.graph-toolbar strong {
+  min-width: 34px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.graph-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-dot,
+.legend-ring,
+.legend-line {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-left: 8px;
+}
+
+.legend-dot {
+  background: #2f7f69;
+  border-radius: 50%;
+}
+
+/* 空心圆表示「还没索引」，和画布上的画法保持一致。 */
+.legend-ring {
+  border: 1.5px solid #2f7f69;
+  border-radius: 50%;
+}
+
+.legend-line {
+  width: 16px;
+  height: 0;
+  border-top: 1px dashed #788480;
+}
+
+.graph-counts {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.graph-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.graph-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  /* 加载提示不该挡住画布点击。 */
+  pointer-events: none;
 }

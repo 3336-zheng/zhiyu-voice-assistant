@@ -16,6 +16,7 @@ from .api import (
     agent_router,
     audio_router,
     docs_router,
+    graph_router,
     health_router,
     notes_router,
     observability_router,
@@ -166,6 +167,7 @@ app.include_router(health_router, prefix="/health", tags=["健康检查"])
 app.include_router(docs_router, prefix="/api/documents", tags=["兼容 API：文档"])
 app.include_router(summary_router, prefix="/summary", tags=["纪要总结"])
 app.include_router(pages_router, prefix="/api/pages", tags=["Wiki 页面"])
+app.include_router(graph_router, prefix="/api/graph", tags=["知识图谱"])
 app.include_router(observability_router, prefix="/api/observability", tags=["本地运行追踪"])
 
 # 挂载前端静态文件（必须放在最后）。构建后优先使用 React，未构建时回退旧页面。

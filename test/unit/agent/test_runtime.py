@@ -491,6 +491,58 @@ class AgentRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             await runtime.start("问题", "session-dispatch-rejected")
         self.assertIsNone(self.state.get_session_run("session-dispatch-rejected"))
 
+    async def test_没有worker时取消也能收尾(self):
+        """没起 worker 时点停止，不能一直转圈。
+
+        终止事件只有执行者会写：要么 _execute 捕获 AgentRunCancelled，要么
+        worker 领走时走 _finish_skipped_cancellation。两条都要求「有个 worker
+        会来捡」——本地只跑 API、worker 崩了、或者队列积压期间，两条都不会发生，
+        客户端就永远等不到终止事件。
+
+        所以取消方必须自己兜底：运行还没有执行者时，就地收尾。
+        """
+        agent = StreamingAgent()
+        runtime = self._runtime(agent_factory=lambda: agent)
+        run = await runtime.start("问题", "session-orphan-cancel")
+
+        # 关键：不调用 execute_run —— 这就是「没有 worker」。
+        snapshot = await runtime.cancel(run.run_id, run.session_id)
+
+        self.assertEqual(snapshot["status"], AgentRunStatus.CANCELLED.value)
+        terminal = [
+            payload["type"] for payload in self.state.events_of(run.run_id)
+        ]
+        self.assertIn(
+            AgentEventType.RUN_CANCELLED.value,
+            terminal,
+            "没有执行者时，取消方必须自己补上终止事件，否则客户端会一直等",
+        )
+
+        await asyncio.sleep(0.05)
+        self.assertIsNone(
+            self.state.get_session_run("session-orphan-cancel"),
+            "就地收尾后会话锁必须释放，否则这个会话会一直被判为忙",
+        )
+
+    async def test_取消两次结果一致且不会重复收尾(self):
+        """重试取消（前端会重发）不该产生第二份终态事件。"""
+        runtime = self._runtime(agent_factory=lambda: StreamingAgent())
+        run = await runtime.start("问题", "session-double-cancel")
+
+        first = await runtime.cancel(run.run_id, run.session_id)
+        second = await runtime.cancel(run.run_id, run.session_id)
+        self.assertEqual(first["status"], AgentRunStatus.CANCELLED.value)
+        self.assertEqual(second["status"], AgentRunStatus.CANCELLED.value)
+
+        cancelled_events = [
+            payload
+            for payload in self.state.events_of(run.run_id)
+            if payload["type"] == AgentEventType.RUN_CANCELLED.value
+        ]
+        self.assertEqual(
+            len(cancelled_events), 1, "重复取消不该写入第二份终止事件"
+        )
+
     async def test_worker_跳过已经取消的运行(self):
         # 投递到执行之间用户取消了，worker 拿到任务时不该再跑一遍
         agent = StreamingAgent()

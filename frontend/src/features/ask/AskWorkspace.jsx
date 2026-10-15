@@ -4,6 +4,8 @@ import {
   History,
   LoaderCircle,
   MessageSquareText,
+  PanelRightClose,
+  PanelRightOpen,
   RotateCcw,
   Search,
   Server,
@@ -25,6 +27,11 @@ export default function AskWorkspace({ notify, onOpenSource }) {
   const [mcpLoading, setMcpLoading] = useState(false)
   const [sessionQuery, setSessionQuery] = useState('')
   const [sessions, setSessions] = useState([])
+  // 历史对话面板的展开状态。默认收起——问答页的主角是对话本身，
+  // 侧栏只在用户要翻历史时才需要占位置。记住选择，免得每次进来都要点一次。
+  const [historyOpen, setHistoryOpen] = useState(() => (
+    localStorage.getItem('zhiyu_ask_history_open') !== '0'
+  ))
   const [sessionsLoading, setSessionsLoading] = useState(true)
   const [sessionOpening, setSessionOpening] = useState(false)
   const [sessionDeleting, setSessionDeleting] = useState(false)
@@ -35,6 +42,11 @@ export default function AskWorkspace({ notify, onOpenSource }) {
   const [feedbackPageId, setFeedbackPageId] = useState('')
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false)
   const sessionRequestSequence = useRef(0)
+  // 输入法组词状态。中文/日文输入法在候选框打开时按回车是「确认选字」，
+  // 不是「发送」——但两者在 keydown 里都是 key === 'Enter'，不区分就会
+  // 把半截内容发出去。用 ref 不用 state：setState 是异步的，组词结束和
+  // 回车可能落在同一批更新里读到旧值。
+  const composingRef = useRef(false)
   const {
     activeRunId,
     cancelAnswerFeedback,
@@ -150,6 +162,14 @@ export default function AskWorkspace({ notify, onOpenSource }) {
     if (nextOpen && !mcpStatus) loadMcpStatus(false)
   }
 
+  function toggleHistory() {
+    setHistoryOpen((previous) => {
+      const nextOpen = !previous
+      localStorage.setItem('zhiyu_ask_history_open', nextOpen ? '1' : '0')
+      return nextOpen
+    })
+  }
+
   function openFeedback(message) {
     setFeedbackMessage(message)
     setFeedbackCategory('knowledge_missing')
@@ -191,62 +211,7 @@ export default function AskWorkspace({ notify, onOpenSource }) {
 
   return (
     <div className="ask-workspace">
-      <div className="ask-layout">
-        <aside className="conversation-browser">
-          <div className="conversation-browser-heading">
-            <div><span className="eyebrow">历史对话</span><strong>{sessions.length} 个会话</strong></div>
-            <History size={17} />
-          </div>
-          <label className="browser-search conversation-search">
-            <Search size={15} />
-            <input
-              value={sessionQuery}
-              onChange={(event) => setSessionQuery(event.target.value)}
-              placeholder="搜索对话标题和正文"
-              aria-label="搜索历史对话"
-            />
-            {sessionQuery && (
-              <button type="button" title="清空搜索" aria-label="清空对话搜索" onClick={() => setSessionQuery('')}>
-                <X size={14} />
-              </button>
-            )}
-          </label>
-          <div className="session-list">
-            {sessionsLoading && <div className="inline-loading"><LoaderCircle size={16} className="spin" /> 加载中</div>}
-            {!sessionsLoading && sessions.length === 0 && <div className="empty-inline">没有匹配的对话</div>}
-            {sessions.map((session) => (
-              <div
-                key={session.session_id}
-                className={`${session.session_id === sessionId ? 'session-row active' : 'session-row'}${session.match_snippet ? ' with-snippet' : ''}${loading || sessionOpening || sessionDeleting ? ' disabled' : ''}`}
-              >
-                <button
-                  className="session-open-button"
-                  type="button"
-                  disabled={loading || sessionOpening || sessionDeleting}
-                  onClick={() => openSession(session)}
-                >
-                  <MessageSquareText size={15} />
-                  <span>
-                    <strong>{session.title || '新对话'}</strong>
-                    <small>{session.message_count || 0} 条消息 · {formatDate(session.updated_at)}</small>
-                    {session.match_snippet && <em>{session.match_snippet}</em>}
-                  </span>
-                </button>
-                <button
-                  className="session-delete-button"
-                  type="button"
-                  disabled={loading || sessionOpening || sessionDeleting}
-                  title={`删除对话：${session.title || '新对话'}`}
-                  aria-label={`删除对话：${session.title || '新对话'}`}
-                  onClick={() => setDeleteSessionTarget(session)}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
-        </aside>
-
+      <div className={`ask-layout${historyOpen ? '' : ' history-collapsed'}`}>
         <main className="ask-main">
           <header className="workspace-titlebar">
             <div><span className="eyebrow">可信问答</span><h1>基于你的 Wiki 寻找答案</h1></div>
@@ -310,10 +275,26 @@ export default function AskWorkspace({ notify, onOpenSource }) {
             {mcpOpen && <McpStatusPanel loading={mcpLoading} status={mcpStatus} onRefresh={() => loadMcpStatus(true)} />}
             <textarea value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
+                // 输入法组词中的回车是「确认选字」，不能当发送。
+                // 两道保险：ref 跨浏览器可靠，isComposing 覆盖 ref 来不及
+                // 更新的情况（Safari 组合结束的那次回车 isComposing 已是 false）。
+                if (composingRef.current || event.nativeEvent.isComposing) return
                 event.preventDefault()
                 sendQuery()
               }
-            }} placeholder="询问知识、比较页面，或交代一个知识整理任务…" rows="3" />
+            }} onCompositionStart={() => { composingRef.current = true }} onCompositionEnd={() => {
+              // 延迟重置，而不是当场置 false。
+              //
+              // 各浏览器的事件顺序不一致：Chrome 是 keydown(isComposing=true)
+              // → compositionend，当场重置没问题；Safari 上 compositionend
+              // 可能早于那次确认用的 keydown，此时 isComposing 已经是 false，
+              // 当场重置会让紧跟的回车漏判成发送。
+              //
+              // 推迟到下一轮宏任务，那次 keydown 就还能看到 true。
+              // 代价是组词刚结束时立刻按的合法回车会被吞一次——方向是安全的：
+              // 用户再按一次即可，总好过把半截内容发出去。
+              window.setTimeout(() => { composingRef.current = false }, 0)
+            }} placeholder="询问知识、比较页面，或交代一个知识整理任务…（Shift+Enter 换行）" rows="3" />
             {loading ? (
               <button className="send-button stop-button" type="button" disabled={!activeRunId} onClick={stopRun} title="停止生成" aria-label="停止生成"><Square size={17} /></button>
             ) : (
@@ -321,6 +302,88 @@ export default function AskWorkspace({ notify, onOpenSource }) {
             )}
           </form>
         </main>
+
+        <aside className={`conversation-browser${historyOpen ? '' : ' collapsed'}`}>
+          {/* 收起态只留这一条竖栏：图标 + 会话数。整条都可点，
+              不在里面塞第二层按钮——窄到 44px 时任何嵌套点击区都会互相挤。 */}
+          {!historyOpen ? (
+            <button
+              className="history-rail"
+              type="button"
+              onClick={toggleHistory}
+              title="展开历史对话"
+              aria-label="展开历史对话"
+              aria-expanded={false}
+            >
+              <PanelRightOpen size={17} />
+              <span className="history-rail-count">{sessions.length}</span>
+            </button>
+          ) : (
+            <>
+              <div className="conversation-browser-heading">
+                <div><span className="eyebrow">历史对话</span><strong>{sessions.length} 个会话</strong></div>
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={toggleHistory}
+                  title="收起历史对话"
+                  aria-label="收起历史对话"
+                  aria-expanded
+                >
+                  <PanelRightClose size={17} />
+                </button>
+              </div>
+              <label className="browser-search conversation-search">
+                <Search size={15} />
+                <input
+                  value={sessionQuery}
+                  onChange={(event) => setSessionQuery(event.target.value)}
+                  placeholder="搜索对话标题和正文"
+                  aria-label="搜索历史对话"
+                />
+                {sessionQuery && (
+                  <button type="button" title="清空搜索" aria-label="清空对话搜索" onClick={() => setSessionQuery('')}>
+                    <X size={14} />
+                  </button>
+                )}
+              </label>
+              <div className="session-list">
+                {sessionsLoading && <div className="inline-loading"><LoaderCircle size={16} className="spin" /> 加载中</div>}
+                {!sessionsLoading && sessions.length === 0 && <div className="empty-inline">没有匹配的对话</div>}
+                {sessions.map((session) => (
+                  <div
+                    key={session.session_id}
+                    className={`${session.session_id === sessionId ? 'session-row active' : 'session-row'}${session.match_snippet ? ' with-snippet' : ''}${loading || sessionOpening || sessionDeleting ? ' disabled' : ''}`}
+                  >
+                    <button
+                      className="session-open-button"
+                      type="button"
+                      disabled={loading || sessionOpening || sessionDeleting}
+                      onClick={() => openSession(session)}
+                    >
+                      <MessageSquareText size={15} />
+                      <span>
+                        <strong>{session.title || '新对话'}</strong>
+                        <small>{session.message_count || 0} 条消息 · {formatDate(session.updated_at)}</small>
+                        {session.match_snippet && <em>{session.match_snippet}</em>}
+                      </span>
+                    </button>
+                    <button
+                      className="session-delete-button"
+                      type="button"
+                      disabled={loading || sessionOpening || sessionDeleting}
+                      title={`删除对话：${session.title || '新对话'}`}
+                      aria-label={`删除对话：${session.title || '新对话'}`}
+                      onClick={() => setDeleteSessionTarget(session)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </aside>
       </div>
 
       {feedbackMessage && (

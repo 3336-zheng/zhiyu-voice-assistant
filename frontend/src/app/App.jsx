@@ -6,17 +6,20 @@ import {
   Menu,
   MessageSquareText,
   Mic2,
+  Network,
   X,
 } from 'lucide-react'
 import AskWorkspace from '../features/ask/AskWorkspace'
 import CaptureWorkspace from '../features/capture/CaptureWorkspace'
 import DiagnosticsWorkspace from '../features/observability/DiagnosticsWorkspace'
+import GraphWorkspace from '../features/graph/GraphWorkspace'
 import WikiWorkspace from '../features/wiki/WikiWorkspace'
 
 const views = {
   wiki: { label: '知识库', icon: BookOpen },
   ask: { label: '可信问答', icon: MessageSquareText },
   capture: { label: '课堂沉淀', icon: Mic2 },
+  graph: { label: '知识图谱', icon: Network },
   diagnostics: { label: '运行追踪', icon: Activity },
 }
 
@@ -78,6 +81,7 @@ export default function App() {
           {activeView === 'wiki' && <WikiWorkspace notify={notify} openPage={wikiTarget} />}
           {activeView === 'ask' && <AskWorkspace notify={notify} onOpenSource={openWikiPage} />}
           {activeView === 'capture' && <CaptureWorkspace notify={notify} onSaved={() => openView('wiki')} />}
+          {activeView === 'graph' && <GraphWorkspace notify={notify} openPage={openWikiPage} />}
           {activeView === 'diagnostics' && <DiagnosticsWorkspace notify={notify} />}
         </div>
       </div>

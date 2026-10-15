@@ -37,9 +37,22 @@ function formatDate(value) {
 }
 
 function headingsFrom(content) {
+  let ordinal = 0
   return (content || '').split('\n').flatMap((line, index) => {
     const match = /^(#{1,4})\s+(.+)$/.exec(line)
-    return match ? [{ level: match[1].length, title: match[2], key: `${index}-${match[2]}` }] : []
+    if (!match) return []
+    // 锚点用「第几个标题」而不是行号或标题文字：
+    // - 行号不行——MarkdownView 渲染的是经 normalizeMath 处理过的内容，
+    //   公式会被展开成多行，两边的行号对不上；
+    // - 标题文字不行——可能重复、含空格和中文标点。
+    // 标题数量与顺序在两侧一致（规范化不动标题），序号是唯一稳定的依据。
+    ordinal += 1
+    return [{
+      level: match[1].length,
+      title: match[2],
+      key: `${index}-${match[2]}`,
+      anchor: `heading-${ordinal}`,
+    }]
   })
 }
 
@@ -57,8 +70,14 @@ export default function WikiWorkspace({ notify, openPage }) {
   const [notebookFilter, setNotebookFilter] = useState('')
   const [tagFilter, setTagFilter] = useState('')
   const [modal, setModal] = useState(null)
+  // 索引迟迟没完成时给个说明。索引由独立 worker 异步做，
+  // 它没在跑的时候保存会一直停在「待索引」，不说一声用户只能干等。
+  const [indexStalled, setIndexStalled] = useState(false)
   const uploadRef = useRef(null)
   const pageRequestSequence = useRef(0)
+  // 索引轮询的世代号。切换页面、再次保存、组件卸载都要让它失效，
+  // 否则旧轮询回来会把 current 覆盖成另一个页面的数据。
+  const indexPollSequence = useRef(0)
 
   const loadPages = useCallback(async () => {
     const requestSequence = pageRequestSequence.current + 1
@@ -87,6 +106,10 @@ export default function WikiWorkspace({ notify, openPage }) {
   }, [notebookFilter, notify, openPageId, searchQuery, tagFilter])
 
   const loadPage = useCallback(async (pageId) => {
+    // 换页面就让在途的索引轮询作废——它回来时会 setCurrent，
+    // 把刚切过去的那页覆盖成上一页的数据。
+    indexPollSequence.current += 1
+    setIndexStalled(false)
     if (!pageId) {
       setCurrent(null)
       return
@@ -111,10 +134,51 @@ export default function WikiWorkspace({ notify, openPage }) {
     }
   }, [notify])
 
+  // 轮询页面索引状态，直到不再是 pending。
+  //
+  // 保存接口返回时索引还没跑完（索引由独立 worker 异步做，几百毫秒起），
+  // 那时 index_status 是 pending，再也没有人回查——用户看到「待索引」
+  // 一直不变，只能手动刷新。这里把它盯到终态为止。
+  //
+  // 用世代号而不是「页面 id 是否还匹配」来判废：再次保存同一页面时 id 不变，
+  // 只比 id 会让两次轮询同时活着，后回来的那个可能带着更旧的状态。
+  const pollIndexStatus = useCallback(async (pageId) => {
+    indexPollSequence.current += 1
+    const sequence = indexPollSequence.current
+    setIndexStalled(false)
+    // 索引是几百毫秒级的短活，30 秒还没到终态基本就是 worker 没在跑。
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1000))
+      if (sequence !== indexPollSequence.current) return
+      try {
+        const page = await api(`/api/pages/${pageId}`)
+        if (sequence !== indexPollSequence.current) return
+        // 只在状态真的变了才 setCurrent。每轮无条件更新会让整个
+        // MarkdownView 每秒重渲染一次，长文档下这笔开销白花。
+        setCurrent((previous) => (
+          previous?.index_status === page.index_status && previous?.index_error === page.index_error
+            ? previous
+            : page
+        ))
+        // ready 和 failed 都是终态，都该停——失败的要让用户看到「索引失败」，
+        // 而不是一直转「待索引」。
+        if (page.index_status !== 'pending') return
+      } catch {
+        // 单次查询失败不终止轮询：可能是瞬时网络抖动，下一轮再试。
+        // 连续失败到次数用尽会走下面的超时分支。
+      }
+    }
+    if (sequence === indexPollSequence.current) setIndexStalled(true)
+  }, [])
+
   useEffect(() => {
     const timer = window.setTimeout(loadPages, 180)
     return () => window.clearTimeout(timer)
   }, [loadPages])
+
+  // 卸载时让在途的索引轮询作废。它回来还会 setCurrent / setIndexStalled，
+  // 对已经卸载的组件调用等于内存泄漏，也会让 React 报警告。
+  useEffect(() => () => { indexPollSequence.current += 1 }, [])
 
   useEffect(() => {
     loadPage(selectedId)
@@ -155,6 +219,9 @@ export default function WikiWorkspace({ notify, openPage }) {
       await loadPages()
       await loadPage(updated.id)
       notify('页面已保存', 'success')
+      // 放在 loadPage 之后：它会把 current 重置成刚保存的 pending 状态，
+      // 先起轮询的话第一轮读到的还是旧数据。
+      void pollIndexStatus(updated.id)
     } catch (error) {
       notify(error.message, 'error')
       if (error.message.includes('版本冲突')) await loadPage(current.id)
@@ -368,6 +435,11 @@ export default function WikiWorkspace({ notify, openPage }) {
                   {(current.tags || []).map((tag) => <span key={tag} className="tag">#{tag}</span>)}
                   <span><Clock3 size={13} /> {formatDate(current.updated_at)}</span>
                   <span className={`index-pill ${current.index_status}`}>{current.index_status === 'ready' ? '已索引' : current.index_status === 'pending' ? '待索引' : current.index_status === 'failed' ? '索引失败' : current.index_status}</span>
+                  {indexStalled && current.index_status === 'pending' && (
+                    <span className="muted" title="索引由后台服务异步完成；它没在运行时，保存会一直停在这一步。">
+                      索引耗时偏长，请确认后台服务已启动
+                    </span>
+                  )}
                 </div>
                 <MarkdownView content={current.content} onWikiLink={openWikiLink} />
               </article>
@@ -380,7 +452,13 @@ export default function WikiWorkspace({ notify, openPage }) {
         <section>
           <h3><MoreHorizontal size={15} /> 页面目录</h3>
           {outline.length === 0 ? <span className="muted">暂无标题</span> : outline.map((item) => (
-            <div key={item.key} className="outline-item" style={{ paddingLeft: `${(item.level - 1) * 10}px` }}>{item.title}</div>
+            <button
+              key={item.key}
+              type="button"
+              className="outline-item"
+              style={{ paddingLeft: `${(item.level - 1) * 10}px` }}
+              onClick={() => document.getElementById(item.anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            >{item.title}</button>
           ))}
         </section>
         <section>

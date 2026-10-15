@@ -677,6 +677,13 @@ class AgentRuntimeService:
         if state["status"] in TERMINAL_STATUS_VALUES:
             return self._state_snapshot(state)
 
+        # 进入时就读到的状态，下面要用它判断「有没有执行者」——
+        # 后面几步会把 state["status"] 改写成 cancelling，那时就看不出来了。
+        unclaimed = state["status"] in (
+            AgentRunStatus.PENDING.value,
+            AgentRunStatus.CANCELLING.value,
+        )
+
         # 本实例发起的运行直接置位，省掉最多一个轮询周期的延迟
         local = self._runs.get(run_id)
         if local is not None and not local.terminal:
@@ -701,6 +708,26 @@ class AgentRuntimeService:
         )
         self._set_status(run_id, AgentRunStatus.CANCELLING)
         state["status"] = AgentRunStatus.CANCELLING.value
+
+        # 还没被 worker 领走时，就地收尾，不能只写 cancelling 就返回。
+        #
+        # 终止事件只有执行者会写，而执行者一共两条路径：_execute 捕获
+        # AgentRunCancelled，或者 worker 领走时走 _finish_skipped_cancellation。
+        # 两条都要求「有个 worker 会来捡」。没起 worker 时（本地只跑 API、
+        # worker 崩了、队列积压期间）两条都不会发生，客户端就永远等不到
+        # 终止事件——表现为点了停止一直转圈，而接口明明返回了 200。
+        #
+        # 判据用进入本方法时读到的原始状态：pending 表示还没有执行者
+        # （worker 领走后的第一步就是置 running），cancelling 表示上一次
+        # 取消还没来得及收尾，这次补上。
+        if unclaimed:
+            logger.info("运行尚无执行者，就地取消: run_id=%s", run_id)
+            await self._finish_skipped_cancellation(state)
+            # 重新读一次而不是就地改 state：收尾写进去的 error、finished_at
+            # 才是客户端该看到的，手动拼一个不完整的快照容易和实际存储脱节。
+            final = await self._load_state(run_id)
+            return self._state_snapshot(final or state)
+
         return self._state_snapshot(state)
 
     async def get(self, run_id: str, session_id: str) -> Dict[str, Any]:

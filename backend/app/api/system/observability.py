@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from backend.app.core.config import settings
@@ -19,6 +19,9 @@ from backend.app.core.observability import (
 )
 from backend.app.models.observability import AgentRun
 from backend.app.models.conversation import Conversation
+from backend.app.services.observability.conversation_filter import (
+    apply_conversation_visibility_filter,
+)
 
 router = APIRouter()
 
@@ -200,6 +203,8 @@ def _run_summary(run: AgentRun, conversation_title: str | None = None) -> Dict[s
     return {
         "request_id": run.request_id,
         "trace_type": "agent",
+        # 分组键。前端「运行追踪」按对话归拢查询，缺了它没法分组。
+        "session_id": run.session_id,
         "conversation_title": conversation_title or run.query or "新对话",
         "query": run.query,
         "intent": run.intent,
@@ -362,11 +367,92 @@ def _require_local_access(request: Request) -> None:
             raise HTTPException(status_code=403, detail="运行追踪拒绝非本机页面访问")
 
 
+@router.get("/conversations")
+async def recent_conversations(
+    request: Request,
+    db: Session = Depends(get_db),
+    query: str | None = Query(default=None, max_length=200),
+    include_empty: bool = Query(
+        default=False,
+        description="是否包含测试脚本产生的会话（默认只留真实对话）",
+    ),
+    limit: int = Query(default=40, ge=1, le=100),
+) -> Dict[str, List[Dict[str, Any]]]:
+    """按对话归拢的查询列表，供「运行追踪」左侧栏分组。
+
+    只搜对话标题，不搜问题正文——正文搜索是另一件事（跨对话找某次提问），
+    混在一起会让「搜标题」的结果里冒出一堆标题完全不匹配的对话。
+
+    默认滤掉测试脚本产生的会话。判据是两个条件的并集——`session_` 前缀
+    （前端生成的真实会话 ID 格式）**或**「有真实消息」（将来别的入口用别的
+    ID 格式时的兜底）。单独任何一个都会漏，理由写在
+    `services/observability/conversation_filter.py` 里。
+
+    标题优先取 conversations.title；取不到时回落到该会话**最早一条运行的
+    query**。不能只靠 conversations 表——那张表是可选的，而且曾经被误写过一批
+    只有标题、没有消息的空行（见 list_sessions 里的注释）。agent_runs 才是这个
+    列表的真实数据源，标题也该从它推得出来。
+
+    注意这个列表由 agent_runs 驱动，所以只列得出**有运行记录**的会话。一个只有
+    消息、从来没跑过 Agent 的 session 不会出现——左栏本来就是这个语义。
+    """
+    _require_local_access(request)
+    from sqlalchemy import func as sa_func
+    from sqlalchemy.orm import aliased
+
+    # 同一张表要开两个别名：外层那个用于分组聚合，子查询这个用于取「最早一条」。
+    earliest = aliased(AgentRun)
+    first_query = (
+        select(earliest.query)
+        .where(earliest.session_id == AgentRun.session_id)
+        .order_by(earliest.created_at.asc())
+        .limit(1)
+        .correlate(AgentRun)
+        .scalar_subquery()
+    )
+
+    runs_query = db.query(
+        AgentRun.session_id,
+        sa_func.count(AgentRun.request_id).label("run_count"),
+        sa_func.max(AgentRun.updated_at).label("last_at"),
+        Conversation.title,
+        first_query.label("fallback_title"),
+    ).outerjoin(
+        Conversation,
+        Conversation.session_id == AgentRun.session_id,
+    ).group_by(AgentRun.session_id, Conversation.title)
+
+    # Query.filter() 返回新对象，必须接住。
+    runs_query = apply_conversation_visibility_filter(runs_query, include_empty=include_empty)
+
+    normalized = (query or "").strip()
+    if normalized:
+        pattern = f"%{normalized}%"
+        # 标题可能来自回落的 query，所以两边都要搜。
+        runs_query = runs_query.filter(
+            or_(Conversation.title.ilike(pattern), first_query.ilike(pattern))
+        )
+
+    rows = runs_query.order_by(sa_func.max(AgentRun.updated_at).desc()).limit(limit).all()
+    conversations = []
+    for session_id, run_count, last_at, title, fallback_title in rows:
+        conversations.append({
+            "session_id": session_id,
+            # 两个来源都没有才落到「新对话」——正常情况下不会发生，
+            # 因为能进这个列表就说明至少有一条 run，而 run 一定有 query。
+            "title": title or fallback_title or "新对话",
+            "run_count": run_count,
+            "last_at": last_at.timestamp() if last_at else None,
+        })
+    return {"conversations": conversations}
+
+
 @router.get("/requests")
 async def recent_requests(
     request: Request,
     db: Session = Depends(get_db),
     conversation: str | None = Query(default=None, max_length=200),
+    session_id: str | None = Query(default=None, max_length=64),
     limit: int = Query(default=30, ge=1, le=100),
 ) -> Dict[str, List[Dict[str, Any]]]:
     _require_local_access(request)
@@ -374,6 +460,10 @@ async def recent_requests(
         Conversation,
         Conversation.session_id == AgentRun.session_id,
     )
+    # 按对话取该对话下的全部查询。走 session_id 索引，比按标题模糊匹配准——
+    # 两个对话可能同名。
+    if session_id:
+        runs_query = runs_query.filter(AgentRun.session_id == session_id)
     normalized = (conversation or "").strip()
     if normalized:
         pattern = f"%{normalized}%"

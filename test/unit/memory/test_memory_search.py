@@ -55,6 +55,31 @@ class MemorySearchTestCase(unittest.TestCase):
         results = self.service.list_sessions(self.session, query="100%")
         self.assertEqual([item["session_id"] for item in results], ["literal"])
 
+    def test_没有消息的会话不出现在列表里(self):
+        """空会话不该出现在可信问答的历史里。
+
+        `get_or_create_session` 先 commit 会话行、再插消息，中间失败就会留下
+        一行没有任何消息的空壳——点进去什么也没有。这里直接构造这种情况。
+        """
+        self.service.add_message("has-message", "user", "有内容的问题", db=self.session)
+        # 只要会话行，不走 add_message（那才会写消息）。
+        self.service.get_or_create_session("empty-shell", self.session)
+        self.session.commit()
+
+        ids = [item["session_id"] for item in self.service.list_sessions(self.session)]
+        self.assertIn("has-message", ids)
+        self.assertNotIn("empty-shell", ids)
+
+    def test_空会话不影响带关键词的搜索(self):
+        """搜索也不能把空壳捞出来——它是另一条过滤分支。"""
+        self.service.add_message("real", "user", "父子分块怎么切", db=self.session)
+        shell = self.service.get_or_create_session("empty-shell", self.session)
+        shell.title = "父子分块（空壳）"
+        self.session.commit()
+
+        ids = [item["session_id"] for item in self.service.list_sessions(self.session, query="父子分块")]
+        self.assertEqual(ids, ["real"])
+
 
 if __name__ == "__main__":
     unittest.main()

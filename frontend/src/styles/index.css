@@ -1852,6 +1852,23 @@ textarea {
   color: var(--green);
 }
 
+/* 勾选框不吃通用 `input:focus` 那圈焦点环。那条规则是给文本框设计的，
+   13px 的方块套上 2px 环会脱开成一个孤立的小方框——鼠标点一下也出现，
+   看起来像个渲染错误。
+   鼠标点击不再有方框，键盘 Tab 过来仍保留可见焦点。 */
+.mcp-query-toggle input[type="checkbox"]:focus {
+  box-shadow: none;
+  outline: none;
+}
+
+.mcp-query-toggle input[type="checkbox"]:focus-visible {
+  /* 颜色跟全局 input/button 的 focus-visible 一致，不用 --green——
+     那个变量虽然叫 green，实际色相是 273，是紫色。 */
+  outline: 2px solid #2b7f69;
+  outline-offset: 1px;
+  box-shadow: none;
+}
+
 .composer-status-button {
   flex: 0 0 auto;
   min-height: 22px;
@@ -2161,6 +2178,12 @@ textarea {
   overflow: visible;
 }
 
+/* 搜索框下面的列表要跟搜索框拉开距离。原来的 7px 上边距让第一个对话标题
+   紧贴在搜索框下沿，看着像同一个区块。 */
+.trace-search-stacked + .trace-list {
+  padding-top: 18px;
+}
+
 .trace-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -2269,6 +2292,147 @@ textarea {
   gap: 12px;
   color: #85918b;
   font-size: 12px;
+}
+
+/* 搜索框现在在左侧栏里，不再横跨详情区顶部。
+   原样式是横跨详情区顶部的 58px 白色通栏，塞进 292px 的侧栏后：
+   一是那块白底会盖住侧栏本身的 --surface-soft 底色；
+   二是内边距太小，输入框紧贴着下面的对话标题，挤成一团。
+
+   上边距取 18px：与「对话」标题栏那条下边线拉开距离，不贴着走。
+   左右收到 8px：侧栏只有 292px 宽，两边收窄后输入框能长出一截。 */
+.trace-search-stacked {
+  min-height: 0;
+  padding: 18px 8px 4px;
+  gap: 6px;
+  background: transparent;
+  border-bottom: 0;
+}
+
+.trace-search-stacked input {
+  height: 34px;
+  padding: 0 10px;
+  font-size: 11px;
+  /* 输入框自己保留白底，和侧栏的浅灰区分开，看得出是能打字的地方。 */
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+/* 按钮收成正方形图标，把省下的宽度让给输入框。侧栏只有 292px。 */
+.trace-search-stacked .primary-button {
+  flex: 0 0 34px;
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+}
+
+/* 「显示测试会话」开关。放在列表底部，给个上边框与列表分开。 */
+.trace-show-all {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  margin-top: auto;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.trace-show-all input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--green);
+}
+
+/* 勾选框不吃通用 input 的焦点环，理由同 .mcp-query-toggle。 */
+.trace-show-all input[type="checkbox"]:focus {
+  box-shadow: none;
+  outline: none;
+}
+
+.trace-show-all input[type="checkbox"]:focus-visible {
+  outline: 2px solid #2b7f69;
+  outline-offset: 1px;
+}
+
+/* 一个对话下的历次查询。每条默认折叠成一行，展开才拉该次的追踪详情。 */
+.trace-message-list {
+  width: min(1040px, calc(100% - 40px));
+  margin: 20px auto 42px;
+}
+
+.trace-message {
+  margin-bottom: 8px;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.trace-message > summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 13px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.trace-message > summary::-webkit-details-marker {
+  display: none;
+}
+
+.trace-message > summary:hover {
+  background: var(--surface-soft);
+}
+
+.trace-message[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.trace-message.failed > summary,
+.trace-message.timed_out > summary {
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
+.trace-message-heading {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.trace-message-heading strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-message-heading small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-message-caret {
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.trace-message-caret.open {
+  transform: rotate(180deg);
+}
+
+/* 展开后的详情：原来独占整个右栏，现在按更窄的容器重新收一下边距。 */
+.trace-message-body .trace-content {
+  width: auto;
+  margin: 16px 13px 20px;
 }
 
 .trace-content {
@@ -3375,9 +3539,11 @@ body {
   color: var(--ink);
 }
 
+/* 这里原本还带 .trace-search，是搜索框横跨详情区顶部时留下的。
+   它现在在左侧栏里，这条规则的白底加模糊会盖住侧栏底色，已移除。
+   这组规则在文件后段，优先级上会覆盖前面的同名规则——加回来要小心。 */
 .page-header,
-.workspace-titlebar,
-.trace-search {
+.workspace-titlebar {
   color: var(--ink);
   background: rgb(255 255 255 / 0.9);
   border-color: var(--line);

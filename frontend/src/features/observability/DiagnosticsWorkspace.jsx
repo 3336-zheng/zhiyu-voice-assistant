@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   AlertTriangle,
+  ChevronDown,
   Clock3,
   LoaderCircle,
   RefreshCw,
@@ -363,30 +364,73 @@ function ContextSourceBudget({ rag, tool, responseSummary, memory }) {
 }
 
 export default function DiagnosticsWorkspace({ notify }) {
-  const [requests, setRequests] = useState([])
-  const [conversationQuery, setConversationQuery] = useState('')
+  const [conversations, setConversations] = useState([])
+  const [activeSessionId, setActiveSessionId] = useState(null)
+  const [messages, setMessages] = useState([])
+  // 展开的查询记录。一次只展开一条：追踪详情很长，同时摊开几条会滑不到底。
+  const [expandedTrace, setExpandedTrace] = useState(null)
+  // trace 仍存整份详情，但只在展开某条时才去拉。
   const [trace, setTrace] = useState(null)
   const [expandedStage, setExpandedStage] = useState(null)
+  const [conversationQuery, setConversationQuery] = useState('')
+  // 是否显示测试脚本跑的会话。默认关——真实使用和 bench-*/perf-* 混在一起没法看。
+  const [showAllConversations, setShowAllConversations] = useState(false)
   const [loading, setLoading] = useState(false)
   const [listLoading, setListLoading] = useState(true)
+  const [messagesLoading, setMessagesLoading] = useState(false)
+  const conversationRequestSequence = useRef(0)
+  const messageRequestSequence = useRef(0)
 
-  const loadRecent = useCallback(async (search = '') => {
+  const loadRecent = useCallback(async (search = '', includeEmpty = false) => {
+    const sequence = conversationRequestSequence.current + 1
+    conversationRequestSequence.current = sequence
     setListLoading(true)
     try {
       const params = new URLSearchParams({ limit: '40' })
-      if (search.trim()) params.set('conversation', search.trim())
-      const data = await api(`/api/observability/requests?${params}`)
-      setRequests(data.requests || [])
+      if (search.trim()) params.set('query', search.trim())
+      // 默认只列真实对话；测试脚本跑的会话要显式打开开关才出现。
+      if (includeEmpty) params.set('include_empty', '1')
+      const data = await api(`/api/observability/conversations?${params}`)
+      // 慢请求回来晚了不能覆盖新一次搜索的结果。
+      if (sequence !== conversationRequestSequence.current) return
+      setConversations(data.conversations || [])
     } catch (error) {
+      if (sequence !== conversationRequestSequence.current) return
       notify(error.message, 'error')
     } finally {
-      setListLoading(false)
+      if (sequence === conversationRequestSequence.current) setListLoading(false)
+    }
+  }, [notify])
+
+  const loadMessages = useCallback(async (sessionId) => {
+    const sequence = messageRequestSequence.current + 1
+    messageRequestSequence.current = sequence
+    setMessagesLoading(true)
+    try {
+      const params = new URLSearchParams({ session_id: sessionId, limit: '100' })
+      const data = await api(`/api/observability/requests?${params}`)
+      if (sequence !== messageRequestSequence.current) return
+      setMessages(data.requests || [])
+    } catch (error) {
+      if (sequence !== messageRequestSequence.current) return
+      notify(error.message, 'error')
+    } finally {
+      if (sequence === messageRequestSequence.current) setMessagesLoading(false)
     }
   }, [notify])
 
   useEffect(() => {
-    loadRecent()
-  }, [loadRecent])
+    loadRecent('', showAllConversations)
+  }, [loadRecent, showAllConversations])
+
+  // 换对话时把展开的查询一起清掉，否则会留在新对话下面显示旧 trace。
+  function openConversation(session) {
+    setActiveSessionId(session.session_id)
+    setExpandedTrace(null)
+    setTrace(null)
+    setMessages([])
+    loadMessages(session.session_id)
+  }
 
   async function loadTrace(selectedId, resetExpanded = true) {
     const normalized = selectedId.trim()
@@ -403,9 +447,23 @@ export default function DiagnosticsWorkspace({ notify }) {
     }
   }
 
+  // 展开即加载，收起则只丢详情不丢列表——再展开会重新拉一次，
+  // 反正追踪是只读的，省一份缓存比保证「点了立刻有」更简单。
+  function toggleMessage(item) {
+    const key = item.request_id
+    if (expandedTrace === key) {
+      setExpandedTrace(null)
+      setTrace(null)
+      return
+    }
+    setExpandedTrace(key)
+    loadTrace(key)
+  }
+
   async function refreshWorkspace() {
-    await loadRecent(conversationQuery)
-    if (trace?.request_id) await loadTrace(trace.request_id, false)
+    await loadRecent(conversationQuery, showAllConversations)
+    if (activeSessionId) await loadMessages(activeSessionId)
+    if (expandedTrace) await loadTrace(expandedTrace, false)
   }
 
   const timeline = useMemo(() => trace?.timeline || [], [trace])
@@ -434,38 +492,126 @@ export default function DiagnosticsWorkspace({ notify }) {
 
       <div className="diagnostics-layout">
         <aside className="trace-browser">
-          <div className="trace-browser-heading"><Activity size={17} /><strong>近期查询</strong><span>{requests.length}</span></div>
+          <div className="trace-browser-heading"><Activity size={17} /><strong>对话</strong><span>{conversations.length}</span></div>
+          <form className="trace-search trace-search-stacked" onSubmit={(event) => { event.preventDefault(); loadRecent(conversationQuery, showAllConversations) }}>
+            <Search size={15} />
+            <input value={conversationQuery} onChange={(event) => setConversationQuery(event.target.value)} placeholder="搜索对话名称" aria-label="搜索对话名称" />
+            <button className="primary-button" type="submit" disabled={listLoading}>
+              {listLoading ? <LoaderCircle size={16} className="spin" /> : <Search size={16} />}
+            </button>
+          </form>
           <div className="trace-list">
-            {requests.map((item) => (
+            {conversations.map((item) => (
               <button
-                key={item.request_id}
-                className={trace?.request_id === item.request_id ? 'trace-row active' : 'trace-row'}
+                key={item.session_id}
+                className={activeSessionId === item.session_id ? 'trace-row active' : 'trace-row'}
                 type="button"
-                onClick={() => loadTrace(item.request_id)}
+                onClick={() => openConversation(item)}
               >
-                <span className={`trace-state ${item.status}`}>{statusLabel(item.status)}</span>
-                <strong>{item.conversation_title || '新对话'}</strong>
-                <small>{item.query || '未记录问题'} · {evidenceLabel(item.evidence_status)} · {formatDuration(item.total_ms)} · {formatTime(item.completed_at)}</small>
-                {item.error_code && <code>{item.error_code}</code>}
+                <strong>{item.title || '新对话'}</strong>
+                <small>{item.run_count} 次查询 · {formatTime(item.last_at)}</small>
               </button>
             ))}
-            {!listLoading && requests.length === 0 && <div className="trace-list-empty">暂无运行记录</div>}
+            {!listLoading && conversations.length === 0 && <div className="trace-list-empty">暂无运行记录</div>}
           </div>
+          {/* 脚本跑的会话默认不显示（bench- 和 perf- 那批，跟真实使用混在一起很乱）。
+              开关放在列表底部而不是顶部：默认视图是干净的，要找的时候再翻。 */}
+          <label className="trace-show-all">
+            <input
+              type="checkbox"
+              checked={showAllConversations}
+              disabled={listLoading}
+              onChange={(event) => {
+                const next = event.target.checked
+                setShowAllConversations(next)
+                loadRecent(conversationQuery, next)
+              }}
+            />
+            显示测试会话
+          </label>
         </aside>
 
         <main className="trace-detail">
-          <form className="trace-search" onSubmit={(event) => { event.preventDefault(); loadRecent(conversationQuery) }}>
-            <Search size={17} />
-            <input value={conversationQuery} onChange={(event) => setConversationQuery(event.target.value)} placeholder="搜索对话名称" aria-label="搜索对话名称" />
-            <button className="primary-button" type="submit" disabled={listLoading}>
-              {listLoading ? <LoaderCircle size={16} className="spin" /> : <Search size={16} />} 查询
-            </button>
-          </form>
-
-          {!trace ? (
-            <div className="trace-empty"><ServerCog size={30} /><strong>选择一条查询记录</strong></div>
+          {!activeSessionId ? (
+            <div className="trace-empty"><ServerCog size={30} /><strong>选择一个对话查看运行记录</strong></div>
           ) : (
-            <div className="trace-content">
+            <div className="trace-message-list">
+              {messagesLoading && <div className="inline-loading"><LoaderCircle size={16} className="spin" /> 加载中</div>}
+              {!messagesLoading && messages.length === 0 && <div className="trace-list-empty">该对话没有运行记录</div>}
+              {messages.map((item) => {
+                const open = expandedTrace === item.request_id
+                return (
+                  <details
+                    className={`trace-message ${item.status || 'completed'}`}
+                    key={item.request_id}
+                    open={open}
+                  >
+                    <summary onClick={(event) => { event.preventDefault(); toggleMessage(item) }}>
+                      <span className={`trace-state ${item.status}`}>{statusLabel(item.status)}</span>
+                      <div className="trace-message-heading">
+                        <strong>{item.query || '未记录问题'}</strong>
+                        <small>{evidenceLabel(item.evidence_status)} · {formatDuration(item.total_ms)} · {formatTime(item.completed_at)}</small>
+                      </div>
+                      <ChevronDown size={16} className={open ? 'trace-message-caret open' : 'trace-message-caret'} />
+                    </summary>
+                    {/* 只有正在展开的那条会去拉详情；其余条目的 trace 是别人的，不能渲染。 */}
+                    {open && (
+                      <div className="trace-message-body">
+                        {loading && !trace && <div className="inline-loading"><LoaderCircle size={16} className="spin" /> 加载追踪详情</div>}
+                        {trace && <TraceDetail
+                          trace={trace}
+                          timeline={timeline}
+                          modelUsage={modelUsage}
+                          retrievalStats={retrievalStats}
+                          cragStats={cragStats}
+                          tokenBudget={tokenBudget}
+                          outputBudget={outputBudget}
+                          inputBudget={inputBudget}
+                          ragBudget={ragBudget}
+                          toolBudget={toolBudget}
+                          modelContexts={modelContexts}
+                          responseSummaryBudget={responseSummaryBudget}
+                          memoryBudget={memoryBudget}
+                          modelCalls={modelCalls}
+                          usageCalls={usageCalls}
+                          expandedStage={expandedStage}
+                          setExpandedStage={setExpandedStage}
+                        />}
+                      </div>
+                    )}
+                  </details>
+                )
+              })}
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  )
+}
+/* 一次查询的完整追踪详情。从主组件里抽出来，是因为它现在挂在每条消息的
+   展开区里，而不是独占右栏——留在主组件里会让 return 变成四层嵌套。 */
+function TraceDetail({
+  trace,
+  timeline,
+  modelUsage,
+  retrievalStats,
+  cragStats,
+  tokenBudget,
+  outputBudget,
+  inputBudget,
+  ragBudget,
+  toolBudget,
+  modelContexts,
+  responseSummaryBudget,
+  memoryBudget,
+  modelCalls,
+  usageCalls,
+  expandedStage,
+  setExpandedStage,
+}) {
+  return (
+    <div className="trace-content">
               <section className="trace-summary-band">
                 <div><span>状态</span><strong className={`trace-status-text ${trace.status}`}>{statusLabel(trace.status)}</strong></div>
                 <div><span>可信度</span><strong>{scoreLabel(trace.answer_quality?.evidence_score ?? trace.evidence_score)} <em>{evidenceLabel(trace.answer_quality?.evidence_status ?? trace.evidence_status)}</em></strong></div>
@@ -473,14 +619,8 @@ export default function DiagnosticsWorkspace({ notify }) {
                 <div><span>总耗时</span><strong>{formatDuration(trace.total_ms)}</strong></div>
               </section>
 
-              <section className="trace-identity">
-                <span>对话名称</span><strong>{trace.conversation_title || '新对话'}</strong><small>{formatTime(trace.completed_at)}</small>
-              </section>
-              <section className="trace-identity">
-                <span>本次问题</span><strong>{trace.query || '未记录问题'}</strong><small>{trace.intent || 'Agent 查询'}</small>
-              </section>
               <section className="trace-identity trace-request-id">
-                <span>Request ID</span><code>{trace.request_id}</code><small>用于定位本次运行</small>
+                <span>Request ID</span><code>{trace.request_id}</code><small>{trace.intent || 'Agent 查询'}</small>
               </section>
 
               {trace.error && (
@@ -560,10 +700,6 @@ export default function DiagnosticsWorkspace({ notify }) {
                 <div><span>Token</span><strong>{modelUsage.total_tokens || 0}</strong></div>
                 <div><span>输入 / 输出</span><strong>{modelUsage.prompt_tokens || 0} / {modelUsage.completion_tokens || 0}</strong></div>
               </section>
-            </div>
-          )}
-        </main>
-      </div>
     </div>
   )
 }

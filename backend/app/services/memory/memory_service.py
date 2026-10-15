@@ -438,6 +438,18 @@ class MemoryService:
         try:
             normalized_query = (query or "").strip()
             conversations_query = db.query(Conversation)
+            # 只列真正有消息的会话。
+            #
+            # `get_or_create_session` 是先 commit 会话行、再插消息，中间任何一步
+            # 失败都会留下一行没有任何消息的空会话；这些空壳在可信问答里点开
+            # 什么也没有，不该出现在历史列表里。
+            #
+            # 用 conversation_messages 的实际存在性判断，不看 message_count：
+            # 那个是计数器，历史数据里可能和真实行数对不上。
+            conversations_with_messages = select(ConversationMessage.session_id).distinct()
+            conversations_query = conversations_query.filter(
+                Conversation.session_id.in_(conversations_with_messages)
+            )
             if normalized_query:
                 pattern = f"%{_escape_like(normalized_query)}%"
                 matching_sessions = select(ConversationMessage.session_id).where(

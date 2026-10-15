@@ -35,6 +35,11 @@ export default function AskWorkspace({ notify, onOpenSource }) {
   const [feedbackPageId, setFeedbackPageId] = useState('')
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false)
   const sessionRequestSequence = useRef(0)
+  // 输入法组词状态。中文/日文输入法在候选框打开时按回车是「确认选字」，
+  // 不是「发送」——但两者在 keydown 里都是 key === 'Enter'，不区分就会
+  // 把半截内容发出去。用 ref 不用 state：setState 是异步的，组词结束和
+  // 回车可能落在同一批更新里读到旧值。
+  const composingRef = useRef(false)
   const {
     activeRunId,
     cancelAnswerFeedback,
@@ -310,10 +315,26 @@ export default function AskWorkspace({ notify, onOpenSource }) {
             {mcpOpen && <McpStatusPanel loading={mcpLoading} status={mcpStatus} onRefresh={() => loadMcpStatus(true)} />}
             <textarea value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
+                // 输入法组词中的回车是「确认选字」，不能当发送。
+                // 两道保险：ref 跨浏览器可靠，isComposing 覆盖 ref 来不及
+                // 更新的情况（Safari 组合结束的那次回车 isComposing 已是 false）。
+                if (composingRef.current || event.nativeEvent.isComposing) return
                 event.preventDefault()
                 sendQuery()
               }
-            }} placeholder="询问知识、比较页面，或交代一个知识整理任务…" rows="3" />
+            }} onCompositionStart={() => { composingRef.current = true }} onCompositionEnd={() => {
+              // 延迟重置，而不是当场置 false。
+              //
+              // 各浏览器的事件顺序不一致：Chrome 是 keydown(isComposing=true)
+              // → compositionend，当场重置没问题；Safari 上 compositionend
+              // 可能早于那次确认用的 keydown，此时 isComposing 已经是 false，
+              // 当场重置会让紧跟的回车漏判成发送。
+              //
+              // 推迟到下一轮宏任务，那次 keydown 就还能看到 true。
+              // 代价是组词刚结束时立刻按的合法回车会被吞一次——方向是安全的：
+              // 用户再按一次即可，总好过把半截内容发出去。
+              window.setTimeout(() => { composingRef.current = false }, 0)
+            }} placeholder="询问知识、比较页面，或交代一个知识整理任务…（Shift+Enter 换行）" rows="3" />
             {loading ? (
               <button className="send-button stop-button" type="button" disabled={!activeRunId} onClick={stopRun} title="停止生成" aria-label="停止生成"><Square size={17} /></button>
             ) : (

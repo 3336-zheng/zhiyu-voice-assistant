@@ -89,6 +89,15 @@ class Settings(BaseSettings):
     retrieval_rerank_score_margin: float = Field(default=0.20, ge=0.0, le=1.0)
     retrieval_max_workers: int = Field(default=8, ge=2, le=32)
 
+    # 知识图谱里语义边的相似度门槛。页面平均向量的余弦值超过它才连边。
+    #
+    # 这个值高度依赖语料，太高图会散（大量孤立点）、太低连成一团毛球。
+    # 实测当前语料（23 页，同一本 RAG 教材的章节）：
+    #   0.75 → 63 条边，最大度 16（偏密）    0.77 → 44 条，最大度 13
+    #   0.80 → 27 条边，孤立 8 个（开始散）  0.85 → 8 条，孤立 13 个
+    # 0.77 取在「有结构但不成团」的位置。接口支持传参覆盖，换语料后要重测。
+    graph_similarity_threshold: float = Field(default=0.77, ge=0.0, le=1.0)
+
     # RAG v2 配置。关闭后继续使用原有的逐查询完整检索链路。
     rag_v2_enabled: bool = True
     rag_parent_child_enabled: bool = True

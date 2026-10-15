@@ -3627,3 +3627,104 @@ select:focus {
     border-radius: 12px 12px 0 0;
   }
 }
+
+/* ---------------------------------------------------------------- 知识图谱 */
+
+.graph-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.graph-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.graph-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 10px 18px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.graph-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.graph-toolbar input[type='range'] {
+  width: 150px;
+}
+
+/* 数值用等宽数字，拖动时宽度不跳。 */
+.graph-toolbar strong {
+  min-width: 34px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.graph-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-dot,
+.legend-ring,
+.legend-line {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-left: 8px;
+}
+
+.legend-dot {
+  background: #2f7f69;
+  border-radius: 50%;
+}
+
+/* 空心圆表示「还没索引」，和画布上的画法保持一致。 */
+.legend-ring {
+  border: 1.5px solid #2f7f69;
+  border-radius: 50%;
+}
+
+.legend-line {
+  width: 16px;
+  height: 0;
+  border-top: 1px dashed #788480;
+}
+
+.graph-counts {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.graph-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.graph-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  /* 加载提示不该挡住画布点击。 */
+  pointer-events: none;
+}

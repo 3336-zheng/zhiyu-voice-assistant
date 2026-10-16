@@ -201,9 +201,9 @@ export default function AskWorkspace({ notify, onOpenSource }) {
     }
   }
 
-  function openKnowledgeSource(pageId) {
+  function openKnowledgeSource(pageId, section) {
     if (pageId && onOpenSource) {
-      onOpenSource(pageId)
+      onOpenSource(pageId, section || null)
       return
     }
     notify('该来源没有对应的 Wiki 页面', 'error')
@@ -211,12 +211,27 @@ export default function AskWorkspace({ notify, onOpenSource }) {
 
   return (
     <div className="ask-workspace">
-      <div className={`ask-layout${historyOpen ? '' : ' history-collapsed'}`}>
+      {/* 历史对话是可折叠的侧栏：展开时占一列、把正文挤窄，收起时整列消失，
+          只剩标题栏「新会话」右边的那个小钮。 */}
+      <div className={`ask-layout${historyOpen ? ' with-history' : ''}`}>
         <main className="ask-main">
           <header className="workspace-titlebar">
             <div><span className="eyebrow">可信问答</span><h1>基于你的 Wiki 寻找答案</h1></div>
             <div className="ask-title-actions">
               <button className="secondary-button" type="button" onClick={resetSession} disabled={loading}><RotateCcw size={15} /> 新会话 <span className="session-code">#{sessionLabel}</span></button>
+              {!historyOpen && (
+                <button
+                  className="history-toggle"
+                  type="button"
+                  onClick={toggleHistory}
+                  title="展开历史对话"
+                  aria-label="展开历史对话"
+                  aria-expanded={false}
+                >
+                  <PanelRightOpen size={15} />
+                  <span className="history-toggle-count">{sessions.length}</span>
+                </button>
+              )}
             </div>
           </header>
 
@@ -303,23 +318,10 @@ export default function AskWorkspace({ notify, onOpenSource }) {
           </form>
         </main>
 
-        <aside className={`conversation-browser${historyOpen ? '' : ' collapsed'}`}>
-          {/* 收起态只留这一条竖栏：图标 + 会话数。整条都可点，
-              不在里面塞第二层按钮——窄到 44px 时任何嵌套点击区都会互相挤。 */}
-          {!historyOpen ? (
-            <button
-              className="history-rail"
-              type="button"
-              onClick={toggleHistory}
-              title="展开历史对话"
-              aria-label="展开历史对话"
-              aria-expanded={false}
-            >
-              <PanelRightOpen size={17} />
-              <span className="history-rail-count">{sessions.length}</span>
-            </button>
-          ) : (
-            <>
+        {/* 展开时占右侧一列，把正文挤窄；收起时列宽收到 0。
+            始终渲染而不是条件渲染——条件渲染是「有 / 无」的切换，
+            做不出宽度渐进的动画。收起时用 inert 挡掉键盘焦点。 */}
+        <aside className="conversation-browser" inert={!historyOpen}>
               <div className="conversation-browser-heading">
                 <div><span className="eyebrow">历史对话</span><strong>{sessions.length} 个会话</strong></div>
                 <button
@@ -381,8 +383,6 @@ export default function AskWorkspace({ notify, onOpenSource }) {
                   </div>
                 ))}
               </div>
-            </>
-          )}
         </aside>
       </div>
 

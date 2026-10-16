@@ -106,6 +106,23 @@ export default function AgentMessage({
             )}
           </div>
         )}
+        {message.role === 'assistant' && message.evidenceStatus !== 'insufficient'
+          && message.status === 'complete'
+          && message.externalResearchAvailable && !message.externalResearch && (
+          <div className="external-verify">
+            <span>本地 Wiki 已有依据，也可以联网核对一遍</span>
+            <button
+              className="research-button"
+              type="button"
+              disabled={message.researchStatus === 'loading'}
+              onClick={() => onResearch(message.id, message.originalQuery)}
+            >
+              {message.researchStatus === 'loading'
+                ? <><LoaderCircle size={15} className="spin" /> 正在查找</>
+                : <><Globe2 size={15} /> 联网核对</>}
+            </button>
+          </div>
+        )}
         {message.externalResearch && (
           <section className="external-research" aria-label="外部研究结果">
             <div className="external-research-heading">
@@ -162,7 +179,9 @@ export default function AgentMessage({
                     onClick={(event) => {
                       if (pageId && onOpenSource) {
                         event.preventDefault()
-                        onOpenSource(pageId)
+                        // 把章节路径一起带上，让知识库能滚到被引用的那一段。
+                        // section_path 形如「页面标题 > 一级 > 二级」。
+                        onOpenSource(pageId, source.section_path || source.section_title || null)
                       }
                     }}
                   >

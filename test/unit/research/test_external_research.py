@@ -224,10 +224,21 @@ class ExternalResearchTestCase(unittest.IsolatedAsyncioTestCase):
             "请使用 MCP 查询 Firecrawl 官方文档",
             "调用 firecrawl 搜索最新资料",
             "联网查一下 FastAPI 的最新版本",
+            # 日常说法：外部词与搜索动词同现，中间隔着字也算。
+            "帮我上网查一下",
+            "上网搜一下最新的",
+            "搜一下网上的资料",
+            "帮我查一下网上的最新版本",
+            "去网上找找",
         ]
         negative_queries = [
             "不要使用 MCP，直接查本地 Wiki",
+            "不要用 mcp 查",
+            "不要上网查",
             "总结本地 RAG 笔记",
+            # 只有搜索动词、没有外部词，是普通的本地提问。
+            "查一下这个库的最新版本",
+            "帮我查一下知识库里的 RAG 分块",
         ]
         for query in positive_queries:
             self.assertTrue(is_explicit_mcp_request(query), query)
@@ -243,7 +254,8 @@ class ExternalResearchTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.status, "failed")
         self.assertIn("超时", run.error)
 
-    async def test_sufficient_local_evidence_does_not_offer_external_research(self):
+    async def test_external_research_needs_the_switch_regardless_of_evidence(self):
+        """开关是唯一的门禁：不勾，证据再不足也不给入口；勾了，证据充足也给。"""
         class FakeGraph:
             @staticmethod
             def invoke(state):
@@ -269,15 +281,24 @@ class ExternalResearchTestCase(unittest.IsolatedAsyncioTestCase):
         )
         agent = PlanExecuteAgent.__new__(PlanExecuteAgent)
         with patch("backend.app.agent.graph.get_agent_graph", return_value=FakeGraph()):
-            response = agent._run_retrieval_graph(
+            without_switch = agent._run_retrieval_graph(
                 "本地问题",
                 "session-local",
                 [],
                 plan,
                 time.time(),
             )
-        self.assertEqual(response.evidence_status, "sufficient")
-        self.assertFalse(response.external_research_available)
+            with_switch = agent._run_retrieval_graph(
+                "本地问题",
+                "session-local",
+                [],
+                plan,
+                time.time(),
+                allow_external_research=True,
+            )
+        self.assertFalse(without_switch.external_research_available)
+        # 证据充足也照样给：本地有答案时用户仍可能想拿外部资料交叉验证。
+        self.assertTrue(with_switch.external_research_available)
 
 
 if __name__ == "__main__":

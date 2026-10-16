@@ -260,20 +260,38 @@ class PageService:
         offset: int = 0,
         limit: int = 100,
     ) -> Dict[str, Any]:
-        """分页列出页面，并支持元数据及 Markdown 正文过滤。"""
+        """分页列出页面，并支持元数据及 Markdown 正文过滤。
+
+        返回里另外带 notebooks / tags 两份清单，代表「库里一共有哪些笔记本
+        和标签」，**不受本次 notebook / tag 筛选影响**。
+
+        它们是给筛选器渲染按钮用的。如果让前端从筛选结果里自己提取，选中
+        一个笔记本后其余笔记本按钮就会消失，用户被困在当前筛选里出不去。
+        """
         rows_query = self.db.query(WikiPage)
         if not include_deleted:
             rows_query = rows_query.filter(WikiPage.status != "deleted")
-        if notebook:
-            rows_query = rows_query.filter(WikiPage.notebook == notebook)
-        if source_type:
-            rows_query = rows_query.filter(WikiPage.source_type == source_type)
+        # notebook / source_type 原先在 SQL 层过滤。挪进下面的循环是为了让
+        # 分面清单能看到全量——这个查询本来就没有 limit，最坏情况已经是
+        # 整表加载，挪过来不增加成本。
         rows = rows_query.order_by(WikiPage.updated_at.desc()).all()
+
+        notebooks = sorted({row.notebook for row in rows if row.notebook})
+        # 用显式循环而不是推导式：推导式的变量会盖住同名的 tag 参数，
+        # 虽然作用域独立不影响结果，但读起来分不清哪个是哪个。
+        tag_names: set = set()
+        for row in rows:
+            tag_names.update(row.tags or [])
+        tags = sorted(tag_names)
 
         normalized_query = (query or "").strip()
         lowered_query = normalized_query.casefold() if normalized_query else None
         filtered = []
         for row in rows:
+            if notebook and row.notebook != notebook:
+                continue
+            if source_type and row.source_type != source_type:
+                continue
             if tag and tag not in (row.tags or []):
                 continue
             match_snippet = None
@@ -299,7 +317,14 @@ class PageService:
             item = self._page_summary(row)
             item["match_snippet"] = match_snippet
             items.append(item)
-        return {"total": len(filtered), "offset": offset, "limit": limit, "items": items}
+        return {
+            "total": len(filtered),
+            "offset": offset,
+            "limit": limit,
+            "items": items,
+            "notebooks": notebooks,
+            "tags": tags,
+        }
 
     def update_page(
         self,

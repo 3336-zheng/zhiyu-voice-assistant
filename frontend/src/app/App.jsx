@@ -17,17 +17,45 @@ import GraphWorkspace from '../features/graph/GraphWorkspace'
 import TransformWorkspace from '../features/transform/TransformWorkspace'
 import WikiWorkspace from '../features/wiki/WikiWorkspace'
 
-const views = {
-  wiki: { label: '知识库', icon: BookOpen },
-  ask: { label: '可信问答', icon: MessageSquareText },
-  capture: { label: '课堂沉淀', icon: Mic2 },
-  transform: { label: '文档转换', icon: FolderInput },
-  graph: { label: '知识图谱', icon: Network },
-  diagnostics: { label: '运行追踪', icon: Activity },
+// 导航分两组：上半是围绕知识的日常循环（存 → 看 → 问），下半是导入、探索、
+// 诊断这些外围工具。
+//
+// 六项挤成一组时，日常用的那几个会被淹没——用户得逐个读完才知道哪个是自己
+// 要的。两组之间留一段弹性空白，位置本身就是分组信号。
+const navGroups = [
+  {
+    id: 'flow',
+    label: '知识工作流',
+    views: {
+      wiki: { label: '知识库', icon: BookOpen },
+      ask: { label: '可信问答', icon: MessageSquareText },
+      capture: { label: '语音笔记', icon: Mic2 },
+    },
+  },
+  {
+    id: 'tools',
+    label: '工具',
+    views: {
+      transform: { label: '文档转换', icon: FolderInput },
+      graph: { label: '知识图谱', icon: Network },
+      diagnostics: { label: '运行追踪', icon: Activity },
+    },
+  },
+]
+
+// 扁平索引，给顶栏标题和初始视图校验用。分组是渲染层的事，
+// 按 key 查模块的地方不该关心它属于哪一组。
+const views = Object.assign({}, ...navGroups.map((group) => group.views))
+
+function getInitialView() {
+  // 刷新后停在上次那个模块。存下来的值可能因为改版而失效（模块改名或被删），
+  // 不校验的话 views[activeView].label 会读 undefined.label，整个页面白屏。
+  const saved = localStorage.getItem('zhiyu_active_view')
+  return saved && saved in views ? saved : 'wiki'
 }
 
 export default function App() {
-  const [activeView, setActiveView] = useState('wiki')
+  const [activeView, setActiveView] = useState(getInitialView)
   const [wikiTarget, setWikiTarget] = useState(null)
   const [toast, setToast] = useState(null)
   const [mobileNav, setMobileNav] = useState(false)
@@ -39,6 +67,7 @@ export default function App() {
 
   function openView(view) {
     setActiveView(view)
+    localStorage.setItem('zhiyu_active_view', view)
     setMobileNav(false)
   }
 
@@ -47,8 +76,8 @@ export default function App() {
     // section 是引用里的章节路径（「页面标题 > 一级 > 二级」），带上它才能
     // 落到被引用的那一段而不是文档开头。没有就照旧只开页面。
     setWikiTarget({ pageId, section, openedAt: Date.now() })
-    setActiveView('wiki')
-    setMobileNav(false)
+    // 引用跳转过去也算一次模块切换——下次刷新应该还在知识库。
+    openView('wiki')
   }
 
   return (
@@ -58,12 +87,19 @@ export default function App() {
           <div className="brand-mark"><BrainCircuit size={22} /></div>
           <div><strong>智语</strong><span>PERSONAL AI WIKI</span></div>
         </div>
-        <nav className="primary-nav" aria-label="主导航">
-          {Object.entries(views).map(([key, item]) => {
-            const Icon = item.icon
-            return <button key={key} type="button" className={activeView === key ? 'active' : ''} onClick={() => openView(key)}><Icon size={18} /><span>{item.label}</span></button>
-          })}
-        </nav>
+        {navGroups.map((group, index) => (
+          <div key={group.id} className={`nav-group${index > 0 ? ' secondary' : ''}`}>
+            {/* 可见的分组标题。之前的分组信号只是两组之间的空白——空白一多，
+                看起来像没排好的漏风而不是「这里分了两类」。写上名字就不靠猜了。 */}
+            <span className="nav-group-label">{group.label}</span>
+            <nav className="primary-nav" aria-label={group.label}>
+              {Object.entries(group.views).map(([key, item]) => {
+                const Icon = item.icon
+                return <button key={key} type="button" className={activeView === key ? 'active' : ''} onClick={() => openView(key)}><Icon size={18} /><span>{item.label}</span></button>
+              })}
+            </nav>
+          </div>
+        ))}
         <div className="sidebar-status"><i /> 本地知识服务</div>
       </aside>
 
@@ -79,7 +115,7 @@ export default function App() {
             {mobileNav ? <X size={20} /> : <Menu size={20} />}
           </button>
           <div className="topbar-context">{views[activeView].label}</div>
-          <div className="topbar-badge">Agent Runtime <span>online</span></div>
+          <div className="topbar-badge">构建个人知识体系</div>
         </header>
 
         <div className="view-container">

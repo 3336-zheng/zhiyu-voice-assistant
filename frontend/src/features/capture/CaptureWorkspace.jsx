@@ -101,7 +101,7 @@ export default function CaptureWorkspace({ notify, onSaved }) {
         stream.getTracks().forEach((track) => track.stop())
         setRecording(false)
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
-        const file = new File([blob], `课堂录音_${Date.now()}.webm`, { type: 'audio/webm' })
+        const file = new File([blob], `录音_${Date.now()}.webm`, { type: 'audio/webm' })
         await uploadAudio(file)
       }
       recorderRef.current = recorder
@@ -137,7 +137,7 @@ export default function CaptureWorkspace({ notify, onSaved }) {
       })
       setSummary(result.summary)
       setStage('preview')
-      notify('课堂笔记已生成，请确认后保存', 'success')
+      notify('语音笔记已生成，请确认后保存', 'success')
     } catch (error) {
       setStage('transcribed')
       notify(error.message, 'error')
@@ -147,7 +147,7 @@ export default function CaptureWorkspace({ notify, onSaved }) {
   async function saveSummary() {
     if (!summary.trim()) return
     setStage('saving')
-    const pageTitle = title.trim() || `课堂笔记_${new Date().toLocaleDateString('zh-CN').replaceAll('/', '-')}`
+    const pageTitle = title.trim() || `语音笔记_${new Date().toLocaleDateString('zh-CN').replaceAll('/', '-')}`
     try {
       const result = await api('/summary/save', {
         method: 'POST',
@@ -159,7 +159,7 @@ export default function CaptureWorkspace({ notify, onSaved }) {
         }),
       })
       setStage('saved')
-      notify('课堂笔记已保存并建立索引', 'success')
+      notify('语音笔记已保存并建立索引', 'success')
       onSaved?.(result.page_id)
     } catch (error) {
       setStage('preview')
@@ -172,7 +172,7 @@ export default function CaptureWorkspace({ notify, onSaved }) {
   return (
     <div className="capture-workspace">
       <header className="workspace-titlebar">
-        <div><span className="eyebrow">课堂知识沉淀</span><h1>从声音到可检索的 Wiki 页面</h1></div>
+        <div><span className="eyebrow">语音笔记</span><h1>从声音到可检索的 Wiki 页面</h1></div>
         <div className="stage-indicator">
           {['音频', '转写', '整理', '确认'].map((item, index) => (
             <span key={item} className={index <= (STEP_OF_STAGE[stage] ?? -1) ? 'done' : ''}>{index + 1} {item}</span>
@@ -183,7 +183,7 @@ export default function CaptureWorkspace({ notify, onSaved }) {
       <div className="capture-grid">
         <section className="capture-source">
           <div className="section-heading"><FileAudio size={17} /><h2>语音来源</h2></div>
-          <label className="field-label">课程标题<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：机器学习第 3 讲" /></label>
+          <label className="field-label">笔记标题<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：机器学习第 3 讲" /></label>
           <div className={recording ? 'recorder active' : 'recorder'}>
             <div className="waveform" aria-hidden="true">{Array.from({ length: 32 }, (_, index) => <i key={index} style={{ height: `${12 + ((index * 17) % 36)}px` }} />)}</div>
             <button
@@ -195,7 +195,7 @@ export default function CaptureWorkspace({ notify, onSaved }) {
             >
               {recording ? <Square size={20} /> : <Mic size={21} />}
             </button>
-            <strong>{recording ? '正在录音' : audioId ? '音频已就绪' : '开始课堂录音'}</strong>
+            <strong>{recording ? '正在录音' : audioId ? '音频已就绪' : '开始录音'}</strong>
           </div>
           <div className="capture-actions-row">
             <button className="secondary-button" type="button" onClick={() => fileRef.current?.click()}><FileUp size={16} /> 上传音频</button>
@@ -216,8 +216,8 @@ export default function CaptureWorkspace({ notify, onSaved }) {
           <textarea value={transcript} onChange={(event) => {
             setTranscript(event.target.value)
             setSegments([])
-          }} placeholder="转写内容会显示在这里，也可以直接粘贴课堂文字…" />
-          <button className="primary-button align-end" type="button" disabled={!transcript.trim() || busy} onClick={generateSummary}>{stage === 'summarizing' ? <LoaderCircle size={16} className="spin" /> : <WandSparkles size={16} />} 整理为课堂笔记</button>
+          }} placeholder="转写内容会显示在这里，也可以直接粘贴文字…" />
+          <button className="primary-button align-end" type="button" disabled={!transcript.trim() || busy} onClick={generateSummary}>{stage === 'summarizing' ? <LoaderCircle size={16} className="spin" /> : <WandSparkles size={16} />} 整理为语音笔记</button>
         </section>
       </div>
 
@@ -225,7 +225,7 @@ export default function CaptureWorkspace({ notify, onSaved }) {
         <div className="section-heading"><Check size={17} /><h2>保存前预览</h2>{summary && <span>可编辑</span>}</div>
         {!summary ? <div className="preview-empty">完成转写与整理后，结构化笔记会出现在这里。</div> : (
           <div className="preview-split">
-            <textarea value={summary} onChange={(event) => setSummary(event.target.value)} aria-label="课堂笔记 Markdown" />
+            <textarea value={summary} onChange={(event) => setSummary(event.target.value)} aria-label="语音笔记 Markdown" />
             <div className="preview-render"><MarkdownView content={summary} /></div>
           </div>
         )}

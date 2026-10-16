@@ -32,7 +32,11 @@ jieba>=0.42.1
 PyYAML>=6.0
 
 # 文档解析
-pdfplumber>=0.11.0
+# pypdfium2 而不是 pdfplumber：实测同一份收据，pdfplumber 的输出含 NUL 控制
+# 字符、日期月份数字被吃掉、页眉跑到正文末尾、双栏内容交织；pypdfium2 都没有，
+# 它自带阅读顺序还原和多栏切分。python-docx 走的是另一条路（Word 的 XML 结构
+# 本身就带标题层级，不需要猜）。
+pypdfium2>=4.0.0
 python-docx>=1.1.0
 
 # Agent 与 LLM

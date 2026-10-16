@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, streamSse } from '../../../shared/api/client'
 import { stageLabel } from '../utils/agentPresentation'
 
@@ -220,6 +220,23 @@ export default function useAgentRun(notify, { allowExternalResearch = false } = 
     setQuery('')
     return data
   }
+
+  // 挂载时把 localStorage 里那个会话的历史加载回来。
+  //
+  // sessionId 是从 localStorage 读的，但 messages 初值是空的——不主动加载就会
+  // 出现三头不一致：侧栏按 sessionId 高亮着旧对话、主区却是空白的新页面、这时
+  // 提问又算进那个旧对话里。补齐历史，界面就和 sessionId 对齐了。
+  //
+  // 依赖数组留空 + ref 守护，两个原因：loadSession 每次渲染都是新引用，放进
+  // 依赖会无限循环；而 React 严格模式下 effect 会执行两次，ref 挡掉第二次。
+  const restoreAttempted = useRef(false)
+  useEffect(() => {
+    if (restoreAttempted.current) return
+    restoreAttempted.current = true
+    // 本地存的 id 可能早已在服务端不存在（会话被删、库被清过），404 当空会话
+    // 处理就好——用户没做错什么，不该弹一个错误提示吓他。
+    loadSession(sessionIdRef.current).catch(() => {})
+  }, [])
 
   async function stopRun() {
     if (!activeRunId) return

@@ -3434,6 +3434,9 @@ body {
   color: var(--ink);
   background: var(--rail);
   border-right: 1px solid var(--line);
+  /* 窗口矮到装不下整列时（手机横屏、分屏），让侧栏自己滚，而不是把
+     底部的「本地知识服务」和最后几个入口裁掉——裁掉之后连滚都滚不到。 */
+  overflow-y: auto;
 }
 
 .brand {
@@ -3469,6 +3472,23 @@ body {
   margin-top: 0;
 }
 
+/* 「工具」组连状态条一起顶到底，空白留给两组之间。
+   空白放在中间而不是底部：底部空着会像缺了块东西，中间空着读起来像
+   「日常 / 工具」的分界。 */
+.nav-group.secondary {
+  margin-top: auto;
+  padding-top: 22px;
+}
+
+.nav-group-label {
+  display: block;
+  padding: 0 12px;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
 .primary-nav button {
   min-height: 36px;
   padding: 0 12px;
@@ -3490,7 +3510,9 @@ body {
 }
 
 .sidebar-status {
-  margin: 0 -4px;
+  /* 紧跟在导航下面，不贴底——贴底会在它和「工具」组之间又留一段空白。
+     分隔线归它自己，间距靠 margin-top。 */
+  margin: 18px -4px 14px;
   padding: 16px 10px;
   color: var(--muted);
   border-top: 1px solid var(--line);

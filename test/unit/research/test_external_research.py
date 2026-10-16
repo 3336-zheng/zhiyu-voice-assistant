@@ -314,17 +314,27 @@ class ExternalResearchTestCase(unittest.IsolatedAsyncioTestCase):
             resolve_external_research("什么是 agent 范式", allow_external_research=True),
             (True, False),
         )
-        # 没勾开关 + 说了触发词：句子里自带权限，照查不误。
-        self.assertEqual(
-            resolve_external_research("帮我上网查一下 agent 范式"),
-            (True, True),
-        )
-        # 勾了开关 + 说了触发词：两样都有，仍是自动查。
+        # 勾了开关 + 说了触发词：自动查。
         self.assertEqual(
             resolve_external_research("用 mcp 查一下 langgraph", allow_external_research=True),
             (True, True),
         )
-        # 没勾也没说：连按钮都不给。
+
+    async def test_trigger_words_do_not_grant_permission_by_themselves(self):
+        """没勾开关就什么都不给，哪怕话里明说「帮我上网查一下」。
+
+        外发数据只能由用户当场点头。让一句话里的措辞替他授权，用户看到联网
+        结果时第一反应是「我没允许啊」——这正是上一版被投诉的点。
+        """
+        self.assertEqual(
+            resolve_external_research("帮我上网查一下 agent 范式"),
+            (False, False),
+        )
+        self.assertEqual(
+            resolve_external_research("用 mcp 查一下 langgraph"),
+            (False, False),
+        )
+        # 没勾也没说，自然也是什么都没有。
         self.assertEqual(
             resolve_external_research("什么是 agent 范式"),
             (False, False),

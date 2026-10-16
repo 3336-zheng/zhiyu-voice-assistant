@@ -50,20 +50,21 @@ def resolve_external_research(
 ) -> tuple[bool, bool]:
     """算出外部研究的 (能否使用, 是否自动查询)。
 
-    两件事分开，别混成一个：
-    - **能否使用**决定按钮出不出现。开关或触发词任一即可。
-    - **是否自动查询**决定要不要在问答之后自动跑一次外部研究。**只看触发词**
-      ——开关是权限不是指令。勾一次就每次都查，连本地已有答案的问题也查，
-      白费时间和调用额度。
+    **开关是唯一的门禁**：没勾就什么都不给，连按钮都不出。外发数据这件事
+    只能由用户当场点头，不能让一句话里的措辞替他授权——用户没勾却看到联网
+    结果，第一反应是「我没允许啊」。
 
-    话里说了触发词等于自带权限，所以没勾开关也能查；不然还得先去勾一个开关，
-    多一步没有道理。
+    勾上之后，触发词决定这一轮是自动查还是只给按钮：
+    - 话里说了「帮我上网查一下 X」→ 自动查
+    - 只是普通提问 → 不查，给「联网核对」按钮，想查自己点
+
+    两个字段分开还有一层用意：available 是「允许吗」，requested 是「现在要吗」。
+    混成一个字段就会退化成「勾过一次，之后每个问题都查」。
     """
-    explicit = is_explicit_mcp_request(user_query)
-    return (
-        mcp_research_usability(allow_external_research or explicit),
-        mcp_research_usability(explicit),
-    )
+    available = mcp_research_usability(allow_external_research)
+    if not available:
+        return False, False
+    return True, is_explicit_mcp_request(user_query)
 
 
 class AgentActionError(Exception):
@@ -139,8 +140,8 @@ class PlanExecuteAgent:
         start_time = time.time()
         session_id = self._get_session_id(session_id)
         # 权限与自动触发是两件事，算法收在 resolve_external_research 里，
-        # 这里只取结果。
-        allow_external_research, auto_external_research = resolve_external_research(
+        # 这里只取结果。下游拿到的是「能不能用」，不含「现在要不要查」。
+        can_use_external, auto_external_research = resolve_external_research(
             user_query,
             allow_external_research=allow_external_research,
         )
@@ -236,7 +237,7 @@ class PlanExecuteAgent:
                     event_callback,
                     cancel_check,
                     fast_path=fast_path,
-                    allow_external_research=allow_external_research,
+                    allow_external_research=can_use_external,
                 )
             else:
                 response = await self._run_tool_plan(
@@ -248,7 +249,7 @@ class PlanExecuteAgent:
                     start_time,
                     event_callback,
                     cancel_check,
-                    allow_external_research=allow_external_research,
+                    allow_external_research=can_use_external,
                 )
 
             self._raise_if_cancelled(cancel_check)

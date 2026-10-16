@@ -98,6 +98,20 @@ class Settings(BaseSettings):
     # 0.77 取在「有结构但不成团」的位置。接口支持传参覆盖，换语料后要重测。
     graph_similarity_threshold: float = Field(default=0.77, ge=0.0, le=1.0)
 
+    # 文档结构重排（把没有层级的正文整理成结构化 Markdown）
+    #
+    # 输出长度约等于输入长度，不能用全局的 llm_max_tokens（1024）——那个值是
+    # 给问答回复定的，重排一篇几千字的文档会被截断成半篇。
+    # gpt-4.1-mini 单次输出上限 32k tokens，这里取 16k：约合 1 万字中文，
+    # 留出余量又不至于让一次请求挂太久。
+    doc_restructure_max_tokens: int = Field(default=16_000, ge=1_024, le=32_000)
+    # 输入字符上限。超过就拒绝而不是静默截断——截掉一半再重排，用户拿到的是
+    # 半篇文档，而预览里未必看得出来。
+    doc_restructure_max_chars: int = Field(default=20_000, ge=1_000, le=200_000)
+    # 空值表示沿用 llm_model（当前为 deepseek/deepseek-v4-flash）。
+    # 重排是「照着重写」的活，不需要推理能力，用便宜模型即可。
+    doc_restructure_model: str = ""
+
     # RAG v2 配置。关闭后继续使用原有的逐查询完整检索链路。
     rag_v2_enabled: bool = True
     rag_parent_child_enabled: bool = True

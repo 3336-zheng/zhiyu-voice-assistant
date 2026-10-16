@@ -22,6 +22,7 @@ from .api import (
     observability_router,
     pages_router,
     summary_router,
+    transform_router,
 )
 from .core.config import settings
 from .core.errors import ErrorCode
@@ -166,6 +167,7 @@ app.include_router(agent_router, prefix="/agent", tags=["智能助手"])
 app.include_router(health_router, prefix="/health", tags=["健康检查"])
 app.include_router(docs_router, prefix="/api/documents", tags=["兼容 API：文档"])
 app.include_router(summary_router, prefix="/summary", tags=["纪要总结"])
+app.include_router(transform_router, prefix="/api/transform", tags=["文档转换"])
 app.include_router(pages_router, prefix="/api/pages", tags=["Wiki 页面"])
 app.include_router(graph_router, prefix="/api/graph", tags=["知识图谱"])
 app.include_router(observability_router, prefix="/api/observability", tags=["本地运行追踪"])

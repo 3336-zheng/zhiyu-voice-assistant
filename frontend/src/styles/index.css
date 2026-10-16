@@ -3116,9 +3116,16 @@ textarea {
   .trace-summary-band > div:nth-child(-n + 2) {
     border-bottom: 1px solid var(--line);
   }
-}
 
-@media (max-width: 620px) {
+  /* 窄屏布局的堆叠断点是 840px，不是 620px——和导航折叠同一个断点。
+     这些页面的侧栏都是固定宽的一列（问答 264px、知识库 264px、追踪 290px），
+     主区是 minmax(0,1fr)，没有下限；窗口减去侧栏后剩不到两三百像素，正文就
+     窄得没法读了。638px 时主区只剩 374px，而它正好落在 620 和 840 之间的
+     空隙里，两边规则都不生效。
+
+     下面这组是「让页面能整体滚动」的基础，堆叠布局必须靠它们：把父容器的
+     限高和 overflow:hidden 解开，否则内层 height:auto 的内容会被裁掉，
+     连滚动条都没有。 */
   body {
     overflow: auto;
   }
@@ -3135,14 +3142,11 @@ textarea {
     top: 0;
   }
 
-  .topbar-badge {
-    display: none;
-  }
-
   .view-container {
     overflow: visible;
   }
 
+  /* 知识库：浏览器列落到正文上方。 */
   .wiki-layout {
     display: block;
     height: auto;
@@ -3158,13 +3162,65 @@ textarea {
     display: none;
   }
 
-  .page-list-header {
-    margin-top: 0;
-  }
-
   .page-workspace {
     min-height: 620px;
     overflow: visible;
+  }
+
+  /* 运行追踪：会话列表落到详情上方。 */
+  .diagnostics-workspace {
+    height: auto;
+    overflow: visible;
+  }
+
+  .diagnostics-layout {
+    display: block;
+    height: auto;
+  }
+
+  .trace-browser {
+    height: 290px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .trace-detail {
+    overflow: visible;
+  }
+
+  /* 可信问答：历史对话落到对话区下方。收起态直接不占位——堆叠布局里
+     留一个 0 高的块没有意义。 */
+  .ask-workspace,
+  .ask-main {
+    height: auto;
+    overflow: visible;
+  }
+
+  .ask-layout,
+  .ask-layout.with-history {
+    display: block;
+    height: auto;
+  }
+
+  .ask-layout:not(.with-history) .conversation-browser {
+    display: none;
+  }
+
+  .ask-layout.with-history .conversation-browser {
+    height: 250px;
+    min-width: 0;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+}
+
+@media (max-width: 620px) {
+  .topbar-badge {
+    display: none;
+  }
+
+  .page-list-header {
+    margin-top: 0;
   }
 
   .page-header {
@@ -3191,32 +3247,6 @@ textarea {
     flex-direction: column;
     min-height: 116px;
     padding: 17px 16px;
-  }
-
-  .ask-workspace,
-  .ask-main {
-    height: auto;
-    overflow: visible;
-  }
-
-  .ask-layout,
-  .ask-layout.with-history {
-    display: block;
-    height: auto;
-  }
-
-  /* 窄屏下侧栏落到正文下方，改成上下堆叠；边框从左侧改到上侧，
-     跟视觉位置一致。收起态直接不占位——堆叠布局里留一个 0 高的块
-     没有意义，也做不出横向展开的动画。 */
-  .ask-layout:not(.with-history) .conversation-browser {
-    display: none;
-  }
-
-  .ask-layout.with-history .conversation-browser {
-    height: 250px;
-    min-width: 0;
-    border-top: 1px solid var(--line);
-    border-left: 0;
   }
 
   .workspace-titlebar h1 {
@@ -3346,26 +3376,6 @@ textarea {
     width: 100%;
     max-height: 88vh;
     border-radius: 8px 8px 0 0;
-  }
-
-  .diagnostics-workspace {
-    height: auto;
-    overflow: visible;
-  }
-
-  .diagnostics-layout {
-    display: block;
-    height: auto;
-  }
-
-  .trace-browser {
-    height: 290px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .trace-detail {
-    overflow: visible;
   }
 
   .trace-search {

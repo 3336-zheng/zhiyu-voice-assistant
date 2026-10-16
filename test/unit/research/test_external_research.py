@@ -12,7 +12,7 @@ from unittest.mock import sentinel
 
 from sqlalchemy.orm import sessionmaker
 
-from backend.app.agent.agent import PlanExecuteAgent
+from backend.app.agent.agent import PlanExecuteAgent, resolve_external_research
 from backend.app.agent.executor import Executor
 from backend.app.agent.models import AgentResponse, IntentType, Plan, ToolName
 from backend.app.core.config import settings
@@ -299,6 +299,54 @@ class ExternalResearchTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(without_switch.external_research_available)
         # 证据充足也照样给：本地有答案时用户仍可能想拿外部资料交叉验证。
         self.assertTrue(with_switch.external_research_available)
+
+    async def test_switch_alone_does_not_trigger_an_external_query(self):
+        """开关只授权、不下令：勾了开关问普通问题，不该自动去查外网。
+
+        直接测真函数 resolve_external_research，不复刻它的算法——复刻一份
+        等于测那份副本，改真代码它照样通过，是假证据。
+
+        这里同时锁住 available 和 requested 的分工：按钮要给（available），
+        自动查询不给（requested）。回归时最容易把这两个混成一个。
+        """
+        # 勾了开关 + 普通问题：按钮给，不自动查。
+        self.assertEqual(
+            resolve_external_research("什么是 agent 范式", allow_external_research=True),
+            (True, False),
+        )
+        # 勾了开关 + 说了触发词：自动查。
+        self.assertEqual(
+            resolve_external_research("用 mcp 查一下 langgraph", allow_external_research=True),
+            (True, True),
+        )
+
+    async def test_trigger_words_do_not_grant_permission_by_themselves(self):
+        """没勾开关就什么都不给，哪怕话里明说「帮我上网查一下」。
+
+        外发数据只能由用户当场点头。让一句话里的措辞替他授权，用户看到联网
+        结果时第一反应是「我没允许啊」——这正是上一版被投诉的点。
+        """
+        self.assertEqual(
+            resolve_external_research("帮我上网查一下 agent 范式"),
+            (False, False),
+        )
+        self.assertEqual(
+            resolve_external_research("用 mcp 查一下 langgraph"),
+            (False, False),
+        )
+        # 没勾也没说，自然也是什么都没有。
+        self.assertEqual(
+            resolve_external_research("什么是 agent 范式"),
+            (False, False),
+        )
+
+    async def test_nothing_is_available_when_mcp_is_unconfigured(self):
+        """MCP 没配好时，开关和触发词都不该让入口冒出来。"""
+        settings.mcp_research_enabled = False
+        self.assertEqual(
+            resolve_external_research("用 mcp 查一下", allow_external_research=True),
+            (False, False),
+        )
 
 
 if __name__ == "__main__":

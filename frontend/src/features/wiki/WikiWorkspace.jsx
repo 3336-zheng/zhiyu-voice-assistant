@@ -10,6 +10,10 @@ import {
   Link2,
   LoaderCircle,
   Network,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Plus,
   RefreshCw,
   Save,
@@ -130,6 +134,17 @@ export default function WikiWorkspace({ notify, openPage }) {
   const [notebookFilter, setNotebookFilter] = useState('')
   const [tagFilter, setTagFilter] = useState('')
   const [modal, setModal] = useState(null)
+  // 左右两栏的收起状态。默认都展开，但右栏在窄屏首次访问时默认收起——
+  // 那里本来就放不下（原来是用媒体查询直接 display: none 硬藏掉的）。
+  // 之后一律按用户的选择走，不再管窗口宽度。
+  const [browserOpen, setBrowserOpen] = useState(
+    () => localStorage.getItem('zhiyu_wiki_browser_open') !== '0',
+  )
+  const [contextOpen, setContextOpen] = useState(() => {
+    const saved = localStorage.getItem('zhiyu_wiki_context_open')
+    if (saved !== null) return saved !== '0'
+    return window.innerWidth > 1280
+  })
   // 索引迟迟没完成时给个说明。索引由独立 worker 异步做，
   // 它没在跑的时候保存会一直停在「待索引」，不说一声用户只能干等。
   const [indexStalled, setIndexStalled] = useState(false)
@@ -394,22 +409,49 @@ export default function WikiWorkspace({ notify, openPage }) {
     else notify(`链接目标尚不存在：${title}`, 'error')
   }
 
+  function toggleBrowser() {
+    setBrowserOpen((previous) => {
+      const next = !previous
+      localStorage.setItem('zhiyu_wiki_browser_open', next ? '1' : '0')
+      return next
+    })
+  }
+
+  function toggleContext() {
+    setContextOpen((previous) => {
+      const next = !previous
+      localStorage.setItem('zhiyu_wiki_context_open', next ? '1' : '0')
+      return next
+    })
+  }
+
   return (
-    <div className="wiki-layout">
+    <div className={`wiki-layout${browserOpen ? '' : ' browser-collapsed'}${contextOpen ? '' : ' context-collapsed'}`}>
       <aside className="wiki-browser">
         <div className="browser-toolbar">
           <div>
             <span className="eyebrow">个人 Wiki</span>
             <strong>{pages.length} 个页面</strong>
           </div>
-          <button
-            className="icon-button primary-icon"
-            type="button"
-            title="新建页面"
-            onClick={() => { setDraft(emptyDraft); setModal('create') }}
-          >
-            <Plus size={18} />
-          </button>
+          <div className="browser-toolbar-actions">
+            <button
+              className="icon-button"
+              type="button"
+              title="收起文档列表"
+              aria-label="收起文档列表"
+              onClick={toggleBrowser}
+            >
+              <PanelLeftClose size={16} />
+            </button>
+            <button
+              className="icon-button primary-icon"
+              type="button"
+              title="新建页面"
+              onClick={() => { setDraft(emptyDraft); setModal('create') }}
+            >
+              <Plus size={18} />
+            </button>
+          </div>
         </div>
 
         <label className="browser-search">
@@ -482,14 +524,49 @@ export default function WikiWorkspace({ notify, openPage }) {
           <div className="workspace-empty">
             <Network size={34} />
             <h2>建立第一条知识连接</h2>
-            <button className="primary-button" type="button" onClick={() => { setDraft(emptyDraft); setModal('create') }}><FilePlus2 size={17} /> 新建页面</button>
+            <div className="empty-actions">
+              {/* 左栏收起了又没有选中页面时，正文区是唯一的落脚点——
+                  不给出口的话用户就卡在空页面上了。 */}
+              {!browserOpen && (
+                <button className="secondary-button" type="button" onClick={toggleBrowser}>
+                  <PanelLeftOpen size={16} /> 显示文档列表
+                </button>
+              )}
+              <button className="primary-button" type="button" onClick={() => { setDraft(emptyDraft); setModal('create') }}><FilePlus2 size={17} /> 新建页面</button>
+            </div>
           </div>
         )}
         {current && (
           <>
             <header className="page-header">
-              <div className="breadcrumbs"><span>{current.notebook || '未分类'}</span></div>
+              <div className="page-header-left">
+                {/* 展开钮只在栏收起时出现——展开时收起钮在栏自己头上，
+                    两个同时显示会让人分不清哪个是「当前状态」。 */}
+                {!browserOpen && (
+                  <button
+                    className="icon-button"
+                    type="button"
+                    title="显示文档列表"
+                    aria-label="显示文档列表"
+                    onClick={toggleBrowser}
+                  >
+                    <PanelLeftOpen size={17} />
+                  </button>
+                )}
+                <div className="breadcrumbs"><span>{current.notebook || '未分类'}</span></div>
+              </div>
               <div className="page-actions">
+                {!contextOpen && (
+                  <button
+                    className="icon-button"
+                    type="button"
+                    title="显示页面目录"
+                    aria-label="显示页面目录"
+                    onClick={toggleContext}
+                  >
+                    <PanelRightOpen size={17} />
+                  </button>
+                )}
                 {editing ? (
                   <>
                     <button className="secondary-button" type="button" onClick={() => { setEditing(false); loadPage(current.id) }}>取消</button>
@@ -535,6 +612,17 @@ export default function WikiWorkspace({ notify, openPage }) {
       </main>
 
       <aside className="context-panel">
+        <div className="context-panel-toolbar">
+          <button
+            className="icon-button"
+            type="button"
+            title="收起侧栏"
+            aria-label="收起侧栏"
+            onClick={toggleContext}
+          >
+            <PanelRightClose size={16} />
+          </button>
+        </div>
         <section>
           <h3>页面目录</h3>
           {outline.length === 0 ? <span className="muted">暂无标题</span> : outline.map((item) => (

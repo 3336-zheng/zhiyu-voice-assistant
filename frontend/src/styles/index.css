@@ -262,11 +262,52 @@ a:focus-visible {
 
 .wiki-layout {
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr) 210px;
+  /* 栏宽走变量，收起态只改变量值。这样断点里只需重定义宽度，
+     不用为「左收 / 右收 / 都收」三种组合各写一遍 grid-template-columns。 */
+  --browser-width: 232px;
+  --context-width: 210px;
+  grid-template-columns: var(--browser-width) minmax(0, 1fr) var(--context-width);
   width: 100%;
   height: 100%;
   min-height: 0;
   background: var(--surface);
+  transition: grid-template-columns 0.24s ease;
+}
+
+/* 收起态：轨道收成 0px 而不是把列去掉。去掉列是「有 / 无」的切换，
+   grid-template-columns 没有起点可插值，动画会凭空跳变。 */
+.wiki-layout.browser-collapsed {
+  --browser-width: 0px;
+}
+
+.wiki-layout.context-collapsed {
+  --context-width: 0px;
+}
+
+/* 轨道收成 0 不等于视觉上也收干净：栏自己的 padding 和边框仍在，
+   右栏的 padding: 14px + border-left: 1px 会留下一条 29px 的窄条。
+   跟列宽一起过渡，否则内容会在收尾瞬间跳一下。 */
+.wiki-browser,
+.context-panel {
+  transition: padding 0.24s ease, border-width 0.24s ease;
+}
+
+.wiki-layout.browser-collapsed .wiki-browser {
+  border-right-width: 0;
+}
+
+.wiki-layout.context-collapsed .context-panel {
+  padding-right: 0;
+  padding-left: 0;
+  border-left-width: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wiki-layout,
+  .wiki-browser,
+  .context-panel {
+    transition: none;
+  }
 }
 
 .wiki-browser,
@@ -297,6 +338,20 @@ a:focus-visible {
   display: block;
   margin-top: 4px;
   font-size: 14px;
+}
+
+.browser-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 空态里的两个按钮（可能只有「新建页面」一个）。 */
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
 }
 
 .eyebrow {
@@ -558,6 +613,15 @@ button.tag {
   font-size: 11px;
 }
 
+/* 面包屑和它左边的栏开关。开关只在对应栏收起时出现，不给固定宽度，
+   免得收起态和展开态的面包屑起点对不上。 */
+.page-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
 .page-actions,
 .modal-actions,
 .action-buttons,
@@ -792,8 +856,17 @@ textarea {
 
 .context-panel {
   padding: 14px;
+  /* overflow-x 也要 hidden：只写 overflow-y 的话，另一轴会被计算成 auto，
+     收起时横向溢出的内容会变成一条滚动条而不是被裁掉。 */
+  overflow-x: hidden;
   overflow-y: auto;
   border-left: 1px solid var(--line);
+}
+
+.context-panel-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 2px;
 }
 
 .context-panel section {
@@ -3039,12 +3112,12 @@ textarea {
 }
 
 @media (max-width: 1280px) {
+  /* 只调栏宽，不再 display: none 硬藏右栏——收了之后由开关控制，
+     CSS 强制隐藏会和用户的点击打架。窄屏首次进来右栏默认收起，
+     这个默认值在 WikiWorkspace 里按 window.innerWidth 定。 */
   .wiki-layout {
-    grid-template-columns: 238px minmax(0, 1fr);
-  }
-
-  .context-panel {
-    display: none;
+    --browser-width: 238px;
+    --context-width: 196px;
   }
 }
 
@@ -3073,7 +3146,7 @@ textarea {
   }
 
   .wiki-layout {
-    grid-template-columns: 230px minmax(0, 1fr);
+    --browser-width: 230px;
   }
 
   .capture-grid {
@@ -3143,6 +3216,13 @@ textarea {
   .wiki-layout {
     display: block;
     height: auto;
+  }
+
+  /* 堆叠布局里收起的栏直接不占位——留一个 0 高度的块没有意义，
+     也做不出横向展开的动画（这里是纵向排列）。 */
+  .wiki-layout.browser-collapsed .wiki-browser,
+  .wiki-layout.context-collapsed .context-panel {
+    display: none;
   }
 
   .wiki-browser {

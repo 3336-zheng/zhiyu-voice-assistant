@@ -1033,54 +1033,69 @@ textarea {
   background: #f3f5f4;
 }
 
+/* 历史对话是可折叠的侧栏列：展开时占右侧一列把正文挤窄，收起时列宽收到 0。
+   minmax(0, 1fr) 的下限写 0 是为了让长内容能收缩——写 auto 的话里面的
+   长标题会把格子撑破。
+
+   收起态写 0px 而不是把列去掉（单列 grid）：去掉列是「有 / 无」的切换，
+   grid-template-columns 没有起点可插值，动画会凭空跳变。留一个 0 宽的列
+   才能从 0 平滑长到 264px。 */
 .ask-layout {
   display: grid;
-  /* 历史对话在右侧：主对话区吃掉剩余宽度，侧栏固定 248px。
-     minmax(0, 1fr) 的下限写 0 是为了让长内容能收缩——写 auto 的话
-     里面的长标题会把格子撑破。 */
-  grid-template-columns: minmax(0, 1fr) 248px;
+  grid-template-columns: minmax(0, 1fr) 0px;
   height: 100%;
   min-height: 0;
+  transition: grid-template-columns 0.24s ease;
 }
 
-/* 收起态：只留一条 44px 的竖栏。 */
-.ask-layout.history-collapsed {
-  grid-template-columns: minmax(0, 1fr) 44px;
+.ask-layout.with-history {
+  grid-template-columns: minmax(0, 1fr) 264px;
+}
+
+/* 用户偏好减少动效时不做过渡。 */
+@media (prefers-reduced-motion: reduce) {
+  .ask-layout {
+    transition: none;
+  }
 }
 
 .conversation-browser {
   display: flex;
-  min-width: 0;
+  /* 固定最小宽度：过渡期间列宽在变，内容跟着重排会抖。钉住 264px
+     让内容保持原样，多出来的部分由上面的 overflow-x 裁掉。 */
+  min-width: 264px;
   min-height: 0;
   flex-direction: column;
   overflow-x: hidden;
   overflow-y: auto;
-  background: var(--surface-soft);
-  /* 在右侧，分隔线改到左边。 */
+  /* 纯白而不是侧栏常用的浅灰：它夹在标题栏和正文之间，浅灰会和正文区
+     糊成一片，看不出这里是一列独立的面板。 */
+  background: #ffffff;
   border-left: 1px solid var(--line);
 }
 
-/* 收起态的竖栏：整条可点，图标和会话数纵向排。 */
-.history-rail {
-  display: flex;
+/* 标题栏里「新会话」右边的展开钮。做成跟旁边按钮一样的高度和描边，
+   让它看起来是同一排控件，而不是一个单独浮出来的东西。 */
+.history-toggle {
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  height: 100%;
-  padding: 14px 0;
+  gap: 5px;
+  min-height: 34px;
+  padding: 0 10px;
   color: var(--muted);
-  background: transparent;
-  border: 0;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
   cursor: pointer;
-  flex-direction: column;
 }
 
-.history-rail:hover {
+.history-toggle:hover {
   color: var(--ink);
-  background: #e7ece9;
+  border-color: #8db5a5;
 }
 
-.history-rail-count {
+.history-toggle-count {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
@@ -1089,7 +1104,9 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 72px;
+  /* 和 .workspace-titlebar 的 min-height 保持一致（96px）——两块顶在一起，
+     高度不同的话它们底部的分隔线会错开一条缝，看着像没对齐。 */
+  min-height: 96px;
   padding: 13px 14px;
   color: var(--muted);
   border-bottom: 1px solid var(--line);
@@ -3001,14 +3018,6 @@ textarea {
   .context-panel {
     display: none;
   }
-
-  .ask-layout {
-    grid-template-columns: minmax(0, 1fr) 232px;
-  }
-
-  .ask-layout.history-collapsed {
-    grid-template-columns: minmax(0, 1fr) 44px;
-  }
 }
 
 @media (max-width: 840px) {
@@ -3155,17 +3164,24 @@ textarea {
     overflow: visible;
   }
 
-  .ask-layout {
+  .ask-layout,
+  .ask-layout.with-history {
     display: block;
     height: auto;
   }
 
-  /* 窄屏改成上下堆叠：历史对话落到对话区下面。
-     边框从左侧改到上侧，跟视觉位置一致。 */
-  .conversation-browser {
+  /* 窄屏下侧栏落到正文下方，改成上下堆叠；边框从左侧改到上侧，
+     跟视觉位置一致。收起态直接不占位——堆叠布局里留一个 0 高的块
+     没有意义，也做不出横向展开的动画。 */
+  .ask-layout:not(.with-history) .conversation-browser {
+    display: none;
+  }
+
+  .ask-layout.with-history .conversation-browser {
     height: 250px;
-    border-left: 0;
+    min-width: 0;
     border-top: 1px solid var(--line);
+    border-left: 0;
   }
 
   .workspace-titlebar h1 {
@@ -3486,9 +3502,11 @@ body {
   background: var(--surface);
 }
 
+/* 历史对话的背景由上面的 .conversation-browser 定成纯白，不要并进这一组——
+   这里给的是浅灰，和正文区糊在一起分不出边界。这组规则在文件后段，
+   会覆盖前面同名规则。 */
 .wiki-browser,
 .context-panel,
-.conversation-browser,
 .trace-browser {
   background: var(--surface-soft);
   border-color: var(--line);

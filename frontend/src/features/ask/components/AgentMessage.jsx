@@ -162,7 +162,9 @@ export default function AgentMessage({
                     onClick={(event) => {
                       if (pageId && onOpenSource) {
                         event.preventDefault()
-                        onOpenSource(pageId)
+                        // 把章节路径一起带上，让知识库能滚到被引用的那一段。
+                        // section_path 形如「页面标题 > 一级 > 二级」。
+                        onOpenSource(pageId, source.section_path || source.section_title || null)
                       }
                     }}
                   >

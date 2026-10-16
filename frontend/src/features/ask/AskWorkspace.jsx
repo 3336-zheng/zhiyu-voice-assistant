@@ -201,9 +201,9 @@ export default function AskWorkspace({ notify, onOpenSource }) {
     }
   }
 
-  function openKnowledgeSource(pageId) {
+  function openKnowledgeSource(pageId, section) {
     if (pageId && onOpenSource) {
-      onOpenSource(pageId)
+      onOpenSource(pageId, section || null)
       return
     }
     notify('该来源没有对应的 Wiki 页面', 'error')

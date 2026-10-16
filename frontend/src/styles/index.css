@@ -536,6 +536,15 @@ button.tag {
   background: var(--surface);
 }
 
+/* 正文标题要留出吸顶 .page-header 的高度，否则「页面目录」和引用跳转会
+   把目标标题正好压在页头底下——看起来像没跳。58px 页头 + 一点余量。 */
+.page-document .markdown h1,
+.page-document .markdown h2,
+.page-document .markdown h3,
+.page-document .markdown h4 {
+  scroll-margin-top: 74px;
+}
+
 .page-header {
   position: sticky;
   top: 0;

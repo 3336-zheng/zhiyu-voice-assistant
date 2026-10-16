@@ -75,6 +75,47 @@ function headingsFrom(content) {
   })
 }
 
+// 标题文字的比对键。全角空格、大小写、多余空白在两边（引用里的章节路径
+// 与 markdown 标题）都可能不一致，先抹平再比。
+//
+// 链接标签化这一步是必备的：入库时 clean_markdown_for_chunking 会把标题里的
+// `[文字](url)` 清成 `文字` 再拼进 section_path，而这里拿到的目录项是原文，
+// 不还原就永远只能靠下面的包含匹配兜底。
+function normalizeHeading(value) {
+  return String(value || '')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[*_`]/g, '')
+    .replace(/[\s　]+/g, '')
+    .toLowerCase()
+}
+
+// 在目录里找引用所在的那一节，返回它的锚点 id。
+//
+// sectionPath 形如「页面标题 > 6. 可信 RAG v2 > 6.1 父子分块」，末段最精确，
+// 但末段可能因为引用里做了截断或与正文写法有出入而落空，所以从末段往前
+// 逐级回退——最差也能落到某个祖先标题上，总好过停在文档开头。
+// 第一段是页面标题，它对应的是正文外面那个 <h1>，不在目录里，自然匹配不上。
+function findHeadingAnchor(outline, sectionPath) {
+  const segments = String(sectionPath || '')
+    // 引用里的文本带 markdown 转义（`1\.2`、`\_` 之类），先还原再拆。
+    .replace(/\\(.)/g, '$1')
+    .split('>')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .reverse()
+
+  for (const segment of segments) {
+    const needle = normalizeHeading(segment)
+    if (!needle) continue
+    const exact = outline.find((item) => normalizeHeading(item.title) === needle)
+    if (exact) return exact.anchor
+    // 退一步做前缀包含：引用里的长标题常被截断，截断后仍是正文标题的开头。
+    const partial = outline.find((item) => normalizeHeading(item.title).includes(needle))
+    if (partial) return partial.anchor
+  }
+  return null
+}
+
 export default function WikiWorkspace({ notify, openPage }) {
   const openPageId = openPage?.pageId || null
   const [pages, setPages] = useState([])
@@ -97,6 +138,9 @@ export default function WikiWorkspace({ notify, openPage }) {
   // 索引轮询的世代号。切换页面、再次保存、组件卸载都要让它失效，
   // 否则旧轮询回来会把 current 覆盖成另一个页面的数据。
   const indexPollSequence = useRef(0)
+  // 已经定位过的引用跳转（存 openedAt）。防止 current 被索引轮询换成新对象
+  // 时重复滚动，把已经翻到别处的用户拽回引用位置。
+  const locatedSourceRef = useRef(null)
 
   const loadPages = useCallback(async () => {
     const requestSequence = pageRequestSequence.current + 1
@@ -216,6 +260,29 @@ export default function WikiWorkspace({ notify, openPage }) {
     [pages],
   )
   const outline = useMemo(() => headingsFrom(current?.content), [current?.content])
+
+  // 从「可信问答」的引用点进来时，落到被引用的那一段，而不是停在文档开头。
+  //
+  // 条件用 current.id === openPageId 而不是 selectedId：内容没到齐时正文里
+  // 还没有标题，提前滚会滚到空处。openedAt 作为「本次跳转」的凭据——
+  // 同一个页面再点一次同一条引用（或者换一条引用）也要重新定位。
+  //
+  // 用 ref 记已处理过的 openedAt，而不是每次依赖变化都滚一遍：索引轮询会把
+  // current 换成新对象，用户这时可能已经自己往下翻了，再滚一次等于把人拽走。
+  useEffect(() => {
+    const openedAt = openPage?.openedAt
+    if (!openPage?.section || !openedAt || !current || current.id !== openPageId) return
+    if (locatedSourceRef.current === openedAt) return
+    const anchor = findHeadingAnchor(outline, openPage.section)
+    if (!anchor) return
+    locatedSourceRef.current = openedAt
+    // 标题锚点是 MarkdownView 在自己的 effect 里写上去的，父组件的 effect
+    // 排在子组件之后，此时 DOM 已就绪；再等一帧是让新页面的排版高度稳定。
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [current, openPage?.openedAt, openPage?.section, openPageId, outline])
 
   async function savePage() {
     if (!current || !draft.title.trim()) return

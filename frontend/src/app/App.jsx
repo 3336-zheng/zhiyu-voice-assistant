@@ -42,9 +42,11 @@ export default function App() {
     setMobileNav(false)
   }
 
-  function openWikiPage(pageId) {
+  function openWikiPage(pageId, section = null) {
     if (!pageId) return
-    setWikiTarget({ pageId, openedAt: Date.now() })
+    // section 是引用里的章节路径（「页面标题 > 一级 > 二级」），带上它才能
+    // 落到被引用的那一段而不是文档开头。没有就照旧只开页面。
+    setWikiTarget({ pageId, section, openedAt: Date.now() })
     setActiveView('wiki')
     setMobileNav(false)
   }

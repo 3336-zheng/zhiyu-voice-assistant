@@ -1,6 +1,6 @@
 """
-课堂笔记模块 API
-生成课堂笔记 → 预览 → 用户确认 → 通过 PageService 保存为 Wiki 页面
+语音笔记模块 API
+生成笔记 → 预览 → 用户确认 → 通过 PageService 保存为 Wiki 页面
 """
 import logging
 from pathlib import Path
@@ -29,9 +29,9 @@ class TranscriptSegment(BaseModel):
 
 
 class SummaryGenerateRequest(BaseModel):
-    """生成课堂笔记请求"""
+    """生成笔记请求"""
     content: str           # 转录文字
-    title: str = None      # 可选标题（课程名称）
+    title: str = None      # 可选标题（笔记名）
     segments: List[TranscriptSegment] = Field(default_factory=list)
 
 
@@ -66,8 +66,8 @@ def _timestamped_transcript(req: SummaryGenerateRequest) -> str:
 @router.post("/generate")
 async def generate_summary(req: SummaryGenerateRequest):
     """
-    生成课堂笔记（仅预览，不存储）
-    输出固定四段结构：① 知识点提纲 ② 重点概念/公式 ③ 课后疑问 ④ 复习卡片
+    生成笔记（仅预览，不存储）
+    输出固定四段结构：① 知识点提纲 ② 重点概念/公式 ③ 遗留疑问 ④ 复习卡片
     """
     if not req.content or not req.content.strip():
         raise HTTPException(status_code=400, detail="转录内容不能为空")
@@ -76,16 +76,16 @@ async def generate_summary(req: SummaryGenerateRequest):
         llm = get_llm_service()
 
         system_prompt = (
-            "你是一个课堂笔记整理助手。请根据以下课堂转录内容，生成结构化的课堂笔记。\n\n"
+            "你是一个笔记整理助手。请根据以下转录内容，生成结构化的笔记。\n\n"
             "输出格式要求（严格按以下四段结构输出）：\n\n"
             "## 📚 知识点提纲\n"
-            "按授课顺序列出本节课的主要知识点，使用层级列表（一、二、三...下辖 1. 2. 3...）。\n"
+            "按讲述顺序列出本次的主要内容，使用层级列表（一、二、三...下辖 1. 2. 3...）。\n"
             "每个知识点用一句话概括核心内容。\n\n"
             "## ⭐ 重点概念与公式\n"
-            "提取本节课的关键概念、定理、公式、算法步骤等，逐条列出。\n"
+            "提取关键概念、定理、公式、算法步骤等，逐条列出。\n"
             "每个概念给出简明定义或解释，公式使用 LaTeX 格式。\n\n"
-            "## ❓ 课后疑问\n"
-            "列出学生可能存在的疑问点，包括：\n"
+            "## ❓ 遗留疑问\n"
+            "列出可能存在的疑问点，包括：\n"
             "1. 转录中明确提到「不太懂」「为什么」「没听清」的地方\n"
             "2. 概念跳跃较大、逻辑链条断裂的地方\n"
             "3. 需要进一步查阅资料才能理解的内容\n\n"
@@ -105,15 +105,15 @@ async def generate_summary(req: SummaryGenerateRequest):
                 "格式必须为 [MM:SS-MM:SS]，不得修改或编造时间。"
             )
 
-        # 如果有标题，作为课程名称提示
-        title_hint = f"课程名称：{req.title}\n\n" if req.title else ""
+        # 如果有标题，作为笔记标题提示
+        title_hint = f"笔记标题：{req.title}\n\n" if req.title else ""
 
         messages = [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": (
-                    f"{title_hint}请基于以下课堂转录内容生成结构化笔记：\n\n"
+                    f"{title_hint}请基于以下转录内容生成结构化笔记：\n\n"
                     f"{_timestamped_transcript(req)}"
                 ),
             }
@@ -130,14 +130,14 @@ async def generate_summary(req: SummaryGenerateRequest):
         }
 
     except Exception as e:
-        logger.error(f"课堂笔记生成失败: {e}")
-        raise HTTPException(status_code=500, detail=f"课堂笔记生成失败: {str(e)}")
+        logger.error(f"笔记生成失败: {e}")
+        raise HTTPException(status_code=500, detail=f"笔记生成失败: {str(e)}")
 
 
 @router.post("/save")
 async def save_summary(req: SummarySaveRequest, db: Session = Depends(get_db)):
     """
-    用户确认后将课堂笔记保存为统一 Wiki 页面并建立索引
+    用户确认后将笔记保存为统一 Wiki 页面并建立索引
     """
     if not req.content or not req.content.strip():
         raise HTTPException(status_code=400, detail="纪要内容不能为空")
@@ -169,9 +169,9 @@ async def save_summary(req: SummarySaveRequest, db: Session = Depends(get_db)):
             content=req.content,
             source_type="class_audio",
             source_uri=source_uri,
-            change_summary="用户确认并保存课堂笔记",
+            change_summary="用户确认并保存语音笔记",
         )
-        logger.info(f"课堂笔记已保存为 Wiki 页面: {page['id']}")
+        logger.info(f"语音笔记已保存为 Wiki 页面: {page['id']}")
 
         return {
             "success": True,

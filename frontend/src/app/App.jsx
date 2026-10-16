@@ -29,7 +29,7 @@ const navGroups = [
     views: {
       wiki: { label: '知识库', icon: BookOpen },
       ask: { label: '可信问答', icon: MessageSquareText },
-      capture: { label: '课堂沉淀', icon: Mic2 },
+      capture: { label: '语音笔记', icon: Mic2 },
     },
   },
   {

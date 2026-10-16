@@ -241,7 +241,7 @@ export default function AskWorkspace({ notify, onOpenSource }) {
                 <div className="ask-mark"><Sparkles size={24} /></div>
                 <h2>从已有知识开始</h2>
                 <div className="suggestion-grid">
-                  {['总结最近的 RAG 笔记', '比较两篇页面中的不同观点', '找出尚未解决的课堂疑问'].map((item) => (
+                  {['总结最近的 RAG 笔记', '比较两篇页面中的不同观点', '找出尚未解决的遗留疑问'].map((item) => (
                     <button key={item} type="button" onClick={() => setQuery(item)}>{item}</button>
                   ))}
                 </div>

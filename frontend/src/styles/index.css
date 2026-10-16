@@ -202,6 +202,16 @@ a:focus-visible {
   font-size: 11px;
 }
 
+/* 这类复合输入框（图标 + 无边框输入 + 清空钮）的边框和背景由外层容器给，
+   输入框自己不能再画焦点环。全局 input:focus 的 box-shadow 会套在一个
+   比容器小几像素的输入框上，看起来就是一圈错位的浮色。
+   :focus 而不是 :focus-visible——鼠标点进来那圈环同样会出现。 */
+.browser-search input:focus {
+  border-color: transparent;
+  box-shadow: none;
+  outline: 0;
+}
+
 .browser-search > button {
   display: grid;
   flex: 0 0 24px;

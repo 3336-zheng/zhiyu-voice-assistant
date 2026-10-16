@@ -3894,3 +3894,220 @@ select:focus {
   /* 加载提示不该挡住画布点击。 */
   pointer-events: none;
 }
+
+/* ========== 文档转换页 ========== */
+
+.transform-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.transform-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 包着 file input 的 label，长得像按钮。input 用 hidden 藏起来而不是
+   display:none——某些浏览器对 display:none 的 input 不触发 click()。 */
+.transform-upload {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.transform-empty {
+  display: grid;
+  max-width: 520px;
+  margin: 60px auto;
+  place-items: center;
+  gap: 10px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.transform-empty strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.transform-empty p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.transform-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  width: min(1400px, calc(100% - 40px));
+  margin: 18px auto 0;
+}
+
+.transform-title {
+  display: grid;
+  gap: 4px;
+  min-width: 260px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.transform-title input {
+  height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.transform-steps {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.transform-steps span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 0 8px;
+  background: #f1f4f2;
+  border-radius: 4px;
+}
+
+.transform-steps span.done {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+/* 左右对比。窄屏下堆叠，见文件末尾的媒体查询。 */
+.transform-compare {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  width: min(1400px, calc(100% - 40px));
+  min-height: 0;
+  margin: 14px auto 0;
+}
+
+.transform-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.transform-pane > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.transform-pane > header strong {
+  font-size: 12px;
+}
+
+.transform-pane > header span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 原文编辑区：等宽字体便于对齐，撑满剩余高度。 */
+.transform-source {
+  flex: 1 1 auto;
+  min-height: 320px;
+  padding: 12px;
+  border: 0;
+  border-radius: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  resize: none;
+}
+
+.transform-source:focus {
+  /* 这一格本身就是编辑区，不需要额外的焦点环和内缩边框。 */
+  box-shadow: none;
+  outline: 0;
+}
+
+.transform-preview {
+  flex: 1 1 auto;
+  min-height: 320px;
+  padding: 12px 14px;
+  overflow-y: auto;
+}
+
+.transform-placeholder {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 320px;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  color: #9aa5a0;
+  font-size: 11px;
+}
+
+.transform-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(1400px, calc(100% - 40px));
+  margin: 14px auto 36px;
+}
+
+.transform-footer .text-button {
+  margin-left: auto;
+}
+
+@media (max-width: 1000px) {
+  .transform-compare {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 数字被改动的提示条。不阻断写入，只是让用户核对一下。 */
+.transform-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: min(1400px, calc(100% - 40px));
+  margin: 12px auto 0;
+  padding: 9px 12px;
+  color: #8a5a1f;
+  background: #fdf4e6;
+  border: 1px solid #e8d3ae;
+  border-radius: 6px;
+}
+
+.transform-warning strong {
+  display: block;
+  font-size: 11px;
+}
+
+.transform-warning span {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1.6;
+}

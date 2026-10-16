@@ -9,7 +9,6 @@ import {
   FileText,
   Link2,
   LoaderCircle,
-  MoreHorizontal,
   Network,
   Plus,
   RefreshCw,
@@ -38,7 +37,27 @@ function formatDate(value) {
 
 function headingsFrom(content) {
   let ordinal = 0
+  // 围栏代码块里的 `# 注释` 不是标题，必须跳过。
+  //
+  // 不跳的话目录项会比正文真实标题多，而锚点是按「第几个标题」编的号——
+  // 从第一个假标题起全部错位，后面的目录项指向不存在的 id，点了没反应。
+  // 这正是「有些标题能点、有些点不动」的原因：代码块越靠前，错位越多。
+  let fence = null
   return (content || '').split('\n').flatMap((line, index) => {
+    // 围栏标记：三个及以上反引号或波浪号开头。记录用的是哪种、多长，
+    // 只有同种且不短于它的才闭合——markdown 的规则就是这样。
+    const fenceMatch = /^\s*(`{3,}|~{3,})/.exec(line)
+    if (fenceMatch) {
+      const marker = fenceMatch[1]
+      if (fence === null) {
+        fence = marker
+      } else if (marker[0] === fence[0] && marker.length >= fence.length) {
+        fence = null
+      }
+      return []
+    }
+    if (fence !== null) return []
+
     const match = /^(#{1,4})\s+(.+)$/.exec(line)
     if (!match) return []
     // 锚点用「第几个标题」而不是行号或标题文字：
@@ -383,8 +402,8 @@ export default function WikiWorkspace({ notify, openPage }) {
         </div>
 
         <div className="browser-footer">
-          <button className="icon-button" type="button" title="上传文档" onClick={() => uploadRef.current?.click()}><Upload size={17} /></button>
-          <input ref={uploadRef} hidden type="file" accept=".md,.txt,.pdf,.docx" onChange={uploadDocument} />
+          <button className="icon-button" type="button" title="上传 Markdown 或纯文本" onClick={() => uploadRef.current?.click()}><Upload size={17} /></button>
+          <input ref={uploadRef} hidden type="file" accept=".md,.txt" onChange={uploadDocument} />
           <button className="icon-button" type="button" title="导入旧笔记" onClick={() => importLegacy('notes')}><ArchiveRestore size={17} /></button>
           <button className="icon-button" type="button" title="导出 Wiki" onClick={() => download('/api/pages/export', 'zhiyu-wiki-export.zip').catch((error) => notify(error.message, 'error'))}><Download size={17} /></button>
           <button className="icon-button" type="button" title="重建索引" onClick={() => api('/api/pages/reindex', { method: 'POST' }).then(() => notify('索引任务已入队', 'success')).catch((error) => notify(error.message, 'error'))}><RefreshCw size={17} /></button>
@@ -450,7 +469,7 @@ export default function WikiWorkspace({ notify, openPage }) {
 
       <aside className="context-panel">
         <section>
-          <h3><MoreHorizontal size={15} /> 页面目录</h3>
+          <h3>页面目录</h3>
           {outline.length === 0 ? <span className="muted">暂无标题</span> : outline.map((item) => (
             <button
               key={item.key}

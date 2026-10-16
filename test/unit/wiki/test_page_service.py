@@ -207,6 +207,41 @@ class PageServiceTestCase(unittest.TestCase):
         self.assertEqual(title_results["items"][0]["id"], title_match["id"])
         self.assertIsNone(title_results["items"][0]["match_snippet"])
 
+    def test_facets_are_not_narrowed_by_the_active_filter(self):
+        """笔记本与标签清单是全库的，不随当前筛选收窄。
+
+        这两份清单给筛选器渲染按钮。如果它们跟着筛选结果变小，选中「外部
+        研究」后「学习资料」按钮就会从界面上消失，用户被困在当前筛选里
+        出不去——只能点「全部」回到起点。
+        """
+        self.service.create_page(
+            title="外部研究笔记", content="正文一", notebook="外部研究", tags=["agent"],
+        )
+        self.service.create_page(
+            title="学习资料一", content="正文二", notebook="学习资料", tags=["rag"],
+        )
+        self.service.create_page(
+            title="学习资料二", content="正文三", notebook="学习资料", tags=["rag", "agent"],
+        )
+
+        # 不筛选：两份清单都是全量
+        unfiltered = self.service.list_pages()
+        self.assertEqual(unfiltered["total"], 3)
+        self.assertEqual(unfiltered["notebooks"], ["外部研究", "学习资料"])
+        self.assertEqual(unfiltered["tags"], ["agent", "rag"])
+
+        # 按笔记本筛选：结果收窄，但清单不变
+        by_notebook = self.service.list_pages(notebook="外部研究")
+        self.assertEqual(by_notebook["total"], 1)
+        self.assertEqual(by_notebook["notebooks"], ["外部研究", "学习资料"])
+        self.assertEqual(by_notebook["tags"], ["agent", "rag"])
+
+        # 按标签筛选：同理。标签清单里必须仍有另一个标签可选。
+        by_tag = self.service.list_pages(tag="rag")
+        self.assertEqual(by_tag["total"], 2)
+        self.assertEqual(by_tag["notebooks"], ["外部研究", "学习资料"])
+        self.assertEqual(by_tag["tags"], ["agent", "rag"])
+
     def test_index_failure_retry_and_delete_cleanup(self):
         self.indexer.fail_index = True
         created = self.service.create_page(title="索引恢复", content="正文", sync_index=True)

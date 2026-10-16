@@ -123,6 +123,10 @@ function findHeadingAnchor(outline, sectionPath) {
 export default function WikiWorkspace({ notify, openPage }) {
   const openPageId = openPage?.pageId || null
   const [pages, setPages] = useState([])
+  // 笔记本与标签的全库清单，由接口的分面字段给出。不能从 pages 派生——
+  // 那是筛选后的结果，选中一个笔记本后其余按钮会跟着消失。
+  const [notebooks, setNotebooks] = useState([])
+  const [tags, setTags] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedId, setSelectedId] = useState(null)
   const [current, setCurrent] = useState(null)
@@ -169,6 +173,11 @@ export default function WikiWorkspace({ notify, openPage }) {
       const data = await api(`/api/pages?${params}`)
       if (requestSequence !== pageRequestSequence.current) return
       setPages(data.results || [])
+      // 笔记本与标签清单来自接口的分面字段，是「全库有哪些」，不受当前
+      // 筛选影响——从筛选结果里自己提取的话，选中一个笔记本后其余按钮
+      // 会从界面上消失，用户切不回去。
+      setNotebooks(data.notebooks || [])
+      setTags(data.tags || [])
       setSelectedId((previous) => {
         // 来源跳转必须优先于列表默认项，即使目标页被当前搜索或筛选条件隐藏。
         if (openPageId) return openPageId
@@ -266,14 +275,6 @@ export default function WikiWorkspace({ notify, openPage }) {
     if (openPageId) setSelectedId(openPageId)
   }, [openPageId])
 
-  const notebooks = useMemo(
-    () => [...new Set(pages.map((page) => page.notebook).filter(Boolean))].sort(),
-    [pages],
-  )
-  const tags = useMemo(
-    () => [...new Set(pages.flatMap((page) => page.tags || []))].sort(),
-    [pages],
-  )
   const outline = useMemo(() => headingsFrom(current?.content), [current?.content])
 
   // 从「可信问答」的引用点进来时，落到被引用的那一段，而不是停在文档开头。

@@ -124,6 +124,9 @@ def list_pages(
         "page": page,
         "page_size": page_size,
         "results": result["items"],
+        # 全库的笔记本与标签清单，不受本次筛选影响——筛选器靠它渲染按钮。
+        "notebooks": result["notebooks"],
+        "tags": result["tags"],
     }
 
 

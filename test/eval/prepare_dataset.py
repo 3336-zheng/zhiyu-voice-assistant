@@ -820,9 +820,9 @@ def import_wiki(sources: Sequence[SourceDocument], *, sync_index: bool) -> dict[
                 content=source.raw_text,
                 source_type="obsidian_eval_source",
                 source_uri=f"obsidian:{source.path}",
-                notebook="评测语料",
+                notebook="学习资料",
                 tags=[source.domain, source.document_type],
-                change_summary="同步真实评测语料",
+                change_summary="同步真实学习资料",
                 sync_index=False,
             )
             imported += not result["deduplicated"]

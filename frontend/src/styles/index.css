@@ -245,13 +245,6 @@ a:focus-visible {
   font-size: 11px;
 }
 
-.topbar-badge span {
-  padding: 3px 6px;
-  color: #176b58;
-  background: var(--green-soft);
-  border-radius: 4px;
-}
-
 .mobile-menu {
   display: none;
   width: 34px;
@@ -3551,12 +3544,6 @@ body {
 
 .topbar-badge {
   color: var(--muted);
-}
-
-.topbar-badge span {
-  color: var(--green-hover);
-  background: var(--green-soft);
-  border-radius: 999px;
 }
 
 .view-container {

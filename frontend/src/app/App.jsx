@@ -115,7 +115,7 @@ export default function App() {
             {mobileNav ? <X size={20} /> : <Menu size={20} />}
           </button>
           <div className="topbar-context">{views[activeView].label}</div>
-          <div className="topbar-badge">Agent Runtime <span>online</span></div>
+          <div className="topbar-badge">构建个人知识体系</div>
         </header>
 
         <div className="view-container">

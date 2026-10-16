@@ -1,8 +1,6 @@
 """文档管理兼容 API，上传内容统一沉淀为 Wiki 页面。"""
 
 import logging
-import os
-import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -56,14 +54,23 @@ async def list_docs(db: Session = Depends(get_db)):
 
 @router.post("/upload")
 async def upload_doc(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """上传并转换文档，然后通过 PageService 幂等写入 Wiki。"""
-    supported_extensions = (".md", ".txt", ".pdf", ".docx")
+    """上传并转换文档，然后通过 PageService 幂等写入 Wiki。
+
+    只接受 Markdown 和纯文本。PDF / Word 不走这里——它们要先经过格式转换，
+    转换质量不确定、通常还要重排结构，那是另一个入口的事。混在一起会让
+    「上传后内容变了」和「上传后内容原样」两种语义共用一条路径。
+    """
+    supported_extensions = (".md", ".txt")
     original_name = file.filename or ""
     suffix = Path(original_name).suffix.lower()
     if suffix not in supported_extensions:
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的文件格式: {original_name}，支持: {', '.join(supported_extensions)}",
+            detail=(
+                f"不支持的文件格式: {original_name}。"
+                f"这里只接受 {', '.join(supported_extensions)}；"
+                "PDF / Word 请先用文档转换功能转成 Markdown 再上传。"
+            ),
         )
 
     raw = await file.read()
@@ -71,27 +78,10 @@ async def upload_doc(file: UploadFile = File(...), db: Session = Depends(get_db)
         max_mb = settings.max_file_size // (1024 * 1024)
         raise HTTPException(status_code=413, detail=f"文件大小超过限制（最大 {max_mb}MB）")
 
-    converted = suffix not in {".md", ".txt"}
-    if converted:
-        from backend.app.services.ingestion.doc_convert_service import get_converter
-
-        temporary_path = None
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
-                handle.write(raw)
-                temporary_path = handle.name
-            converter = get_converter(original_name)
-            if converter is None:
-                raise HTTPException(status_code=400, detail=f"不支持的文件格式: {original_name}")
-            content = converter(temporary_path)
-        finally:
-            if temporary_path and os.path.exists(temporary_path):
-                os.remove(temporary_path)
-    else:
-        try:
-            content = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise HTTPException(status_code=422, detail="文本文件必须使用 UTF-8 编码") from exc
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=422, detail="文本文件必须使用 UTF-8 编码") from exc
 
     if not content or not content.strip():
         raise HTTPException(status_code=422, detail="文件内容为空")
@@ -113,7 +103,6 @@ async def upload_doc(file: UploadFile = File(...), db: Session = Depends(get_db)
         "original_filename": original_name,
         "page_id": page["id"],
         "revision": page["revision"],
-        "converted": converted,
         "deduplicated": page["deduplicated"],
         "index_status": page["index_status"],
         "index_error": page["index_error"],

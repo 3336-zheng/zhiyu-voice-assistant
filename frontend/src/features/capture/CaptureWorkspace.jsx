@@ -14,6 +14,26 @@ import {
 import { api } from '../../shared/api/client'
 import MarkdownView from '../../shared/components/MarkdownView'
 
+// stage → 该亮到第几个步骤方框（0 起，对应「音频/转写/整理/确认」）。
+//
+// 必须把**进行中**的状态也映射进去。之前是用
+// ['idle','uploaded','transcribed','preview'].indexOf(stage) 判断的，
+// 那张表只有「完成态」：uploading / transcribing / summarizing / saving
+// 全都 indexOf 出 -1 → 四个方框全灭；而 preview（整理完、还没保存）
+// 落在下标 3 → 确认那步还没做就全亮了。
+// 现在进行中的步骤也点亮，用户能看到进度而不是一片灰。
+const STEP_OF_STAGE = {
+  idle: -1,
+  uploading: 0,
+  uploaded: 0,
+  transcribing: 1,
+  transcribed: 1,
+  summarizing: 2,
+  preview: 2,
+  saving: 3,
+  saved: 3,
+}
+
 export default function CaptureWorkspace({ notify, onSaved }) {
   const [title, setTitle] = useState('')
   const [audioId, setAudioId] = useState(null)
@@ -154,7 +174,9 @@ export default function CaptureWorkspace({ notify, onSaved }) {
       <header className="workspace-titlebar">
         <div><span className="eyebrow">课堂知识沉淀</span><h1>从声音到可检索的 Wiki 页面</h1></div>
         <div className="stage-indicator">
-          {['音频', '转写', '整理', '确认'].map((item, index) => <span key={item} className={stage === 'saved' || index <= ['idle', 'uploaded', 'transcribed', 'preview'].indexOf(stage) ? 'done' : ''}>{index + 1} {item}</span>)}
+          {['音频', '转写', '整理', '确认'].map((item, index) => (
+            <span key={item} className={index <= (STEP_OF_STAGE[stage] ?? -1) ? 'done' : ''}>{index + 1} {item}</span>
+          ))}
         </div>
       </header>
 

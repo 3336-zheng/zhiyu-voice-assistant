@@ -76,5 +76,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # 目录与正文标题是两套独立解析，对不上时不报错、只是点不动。
+      # 这里用真 markdown 解析器比对，跑的是内置用例（data/wiki 被 gitignore）。
+      - name: Check page outline anchors
+        run: npm run check:headings
+
       - name: Build React application
         run: npm run build

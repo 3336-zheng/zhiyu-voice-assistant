@@ -33,6 +33,39 @@ from backend.app.agent.events import AgentEventType, AgentRunCancelled
 
 logger = logging.getLogger(__name__)
 
+
+def mcp_research_usability(allow_external_research: bool) -> bool:
+    """这次能不能用外部研究——决定「联网核对」按钮出不出现。
+
+    **不按 evidence_status 设限**：本地证据充足时用户照样可能想拿外部资料
+    交叉验证，那是他的判断，不该由后端替他关掉入口。
+    """
+    return bool(allow_external_research and settings.mcp_research_available())
+
+
+def resolve_external_research(
+    user_query: str,
+    *,
+    allow_external_research: bool = False,
+) -> tuple[bool, bool]:
+    """算出外部研究的 (能否使用, 是否自动查询)。
+
+    两件事分开，别混成一个：
+    - **能否使用**决定按钮出不出现。开关或触发词任一即可。
+    - **是否自动查询**决定要不要在问答之后自动跑一次外部研究。**只看触发词**
+      ——开关是权限不是指令。勾一次就每次都查，连本地已有答案的问题也查，
+      白费时间和调用额度。
+
+    话里说了触发词等于自带权限，所以没勾开关也能查；不然还得先去勾一个开关，
+    多一步没有道理。
+    """
+    explicit = is_explicit_mcp_request(user_query)
+    return (
+        mcp_research_usability(allow_external_research or explicit),
+        mcp_research_usability(explicit),
+    )
+
+
 class AgentActionError(Exception):
     """待确认操作不存在、已失效或不属于当前会话。"""
 
@@ -105,8 +138,12 @@ class PlanExecuteAgent:
         """
         start_time = time.time()
         session_id = self._get_session_id(session_id)
-        explicit_mcp_request = is_explicit_mcp_request(user_query)
-        allow_external_research = allow_external_research or explicit_mcp_request
+        # 权限与自动触发是两件事，算法收在 resolve_external_research 里，
+        # 这里只取结果。
+        allow_external_research, auto_external_research = resolve_external_research(
+            user_query,
+            allow_external_research=allow_external_research,
+        )
 
         logger.info(f"Agent 开始处理查询: '{user_query[:50]}...'" if len(user_query) > 50 else f"Agent 开始处理查询: '{user_query}'")
         logger.info(f"会话 ID: {session_id}")
@@ -215,12 +252,8 @@ class PlanExecuteAgent:
                 )
 
             self._raise_if_cancelled(cancel_check)
-            # 勾选「本次启用 MCP」本身就是一次明示授权，不再额外要求话里带
-            # 触发词。触发词那条路保留，用于没勾开关但直接说了「用 mcp 查」的
-            # 情况——它在上面已经并进了 allow_external_research。
-            response.external_research_requested = (
-                allow_external_research and settings.mcp_research_available()
-            )
+            # 只有话里提到联网才自动查；勾了开关只代表允许按需查。
+            response.external_research_requested = auto_external_research
             self._save_conversation(user_query, response, db)
             response.execution_time_ms = int((time.time() - start_time) * 1000)
             record_timing("agent.total", response.execution_time_ms)
@@ -516,10 +549,8 @@ class PlanExecuteAgent:
             evidence_score=final_state.get("evidence_score", evidence.score),
             evidence_source_count=final_state.get("evidence_source_count", evidence.source_count),
             evidence_reason=final_state.get("evidence_reason", evidence.reason),
-            external_research_available=(
-                # 不按 evidence_status 设限：本地证据充足时用户照样可能想拿
-                # 外部资料交叉验证。开关是唯一的门禁。
-                allow_external_research and settings.mcp_research_available()
+            external_research_available=mcp_research_usability(
+                allow_external_research
             ),
             retrieval_stats=final_state.get("retrieval_stats"),
             timestamp=datetime.now(),

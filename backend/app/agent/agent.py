@@ -215,8 +215,11 @@ class PlanExecuteAgent:
                 )
 
             self._raise_if_cancelled(cancel_check)
+            # 勾选「本次启用 MCP」本身就是一次明示授权，不再额外要求话里带
+            # 触发词。触发词那条路保留，用于没勾开关但直接说了「用 mcp 查」的
+            # 情况——它在上面已经并进了 allow_external_research。
             response.external_research_requested = (
-                explicit_mcp_request and settings.mcp_research_available()
+                allow_external_research and settings.mcp_research_available()
             )
             self._save_conversation(user_query, response, db)
             response.execution_time_ms = int((time.time() - start_time) * 1000)
@@ -514,9 +517,9 @@ class PlanExecuteAgent:
             evidence_source_count=final_state.get("evidence_source_count", evidence.source_count),
             evidence_reason=final_state.get("evidence_reason", evidence.reason),
             external_research_available=(
-                allow_external_research
-                and evidence_status == "insufficient"
-                and settings.mcp_research_available()
+                # 不按 evidence_status 设限：本地证据充足时用户照样可能想拿
+                # 外部资料交叉验证。开关是唯一的门禁。
+                allow_external_research and settings.mcp_research_available()
             ),
             retrieval_stats=final_state.get("retrieval_stats"),
             timestamp=datetime.now(),

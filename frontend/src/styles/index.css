@@ -1420,6 +1420,22 @@ textarea {
   opacity: 0.68;
 }
 
+/* 证据充足时的联网核对入口。比证据不足那个黄色块轻——这里不是问题提示，
+   只是给用户一个交叉验证的选项，不该抢走答案本身的注意力。 */
+.external-verify {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.external-verify .research-button {
+  margin-top: 0;
+}
+
 .external-research {
   margin-top: 18px;
   padding: 14px 0;

@@ -126,6 +126,47 @@ python -m pytest test/
 
 日志默认写入 `data/logs/app.log` 和 `data/logs/error.log`，每个文件达到 `10 MB` 后轮转，各保留 `7` 个备份，单类日志最多约 `80 MB`。日志按文件大小控制，不按记录条数控制；密钥、Prompt、Wiki 正文、转写全文和外部网页正文不会写入日志。
 
+## MCP Server（只读）
+
+智语可以把知识库以标准 MCP 工具暴露给 Claude Code、Cursor 等外部 AI 工具，仅提供 `search_wiki`、`read_page`、`list_pages` 三个只读能力，不写库、不调用 LLM。
+
+```bash
+# .env 中启用
+MCP_SERVER_ENABLED=true
+
+# 启动（stdio，通常由 MCP 客户端拉起）
+python -m backend.app.mcp_server
+```
+
+客户端配置（路径按实际环境替换）：
+
+```json
+{
+  "mcpServers": {
+    "zhiyu": {
+      "command": "<python 路径>",
+      "args": ["-m", "backend.app.mcp_server"],
+      "cwd": "<项目根目录>"
+    }
+  }
+}
+```
+
+## 模型并发闸门
+
+API 与三个 worker 会同时调用模型网关。闸门用 Redis 按 `provider + model` 限制所有进程合计的并发数，避免触发供应商 429：
+
+| 配置 | 默认 | 说明 |
+| --- | --- | --- |
+| `MODEL_GATE_ENABLED` | `true` | 总开关 |
+| `MODEL_GATE_LLM_MAX_CONCURRENCY` | `4` | LLM 并发上限 |
+| `MODEL_GATE_EMBEDDING_MAX_CONCURRENCY` | `8` | Embedding 并发上限 |
+| `MODEL_GATE_RERANK_MAX_CONCURRENCY` | `4` | Rerank 并发上限 |
+| `MODEL_GATE_WAIT_TIMEOUT_SECONDS` | `30` | 等待许可的最长时间，超时放行 |
+| `MODEL_GATE_LEASE_SECONDS` | `300` | 许可租约，进程崩溃后自动回收 |
+
+Redis 不可用时闸门自动降级放行，问答与索引不受影响。
+
 ## 数据与隐私
 
 - Markdown 正文和 MySQL 里的业务数据是**要备份的部分**；BM25、ChromaDB 是可以随时重建的派生索引，不用备。数据库用 `mysqldump` 导出，正文目录直接打包。

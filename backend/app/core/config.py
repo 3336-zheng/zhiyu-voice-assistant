@@ -60,6 +60,19 @@ class Settings(BaseSettings):
     reranker_model: str = ""
     reranker_timeout_seconds: float = Field(default=30.0, gt=0)
 
+    # 内置只读 MCP Server（stdio）。默认关闭，避免与外部研究用的 MCP 客户端混淆。
+    mcp_server_enabled: bool = False
+    mcp_server_max_content_chars: int = Field(default=8_000, ge=500, le=100_000)
+
+    # 分布式模型并发闸门：按 provider + model 限制所有进程合计的并发调用数。
+    # 默认值与 arq_agent_max_jobs 对齐；Redis 异常时降级放行，不阻断业务。
+    model_gate_enabled: bool = True
+    model_gate_llm_max_concurrency: int = Field(default=4, ge=1, le=128)
+    model_gate_embedding_max_concurrency: int = Field(default=8, ge=1, le=256)
+    model_gate_rerank_max_concurrency: int = Field(default=4, ge=1, le=128)
+    model_gate_wait_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    model_gate_lease_seconds: int = Field(default=300, ge=10, le=3600)
+
     # 文件存储配置
     upload_dir: str = "data/uploads"
     wiki_pages_dir: str = "data/wiki/pages"

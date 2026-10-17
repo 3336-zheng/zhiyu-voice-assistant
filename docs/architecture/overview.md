@@ -29,6 +29,8 @@
 
 判断是不是「多实例」只看一件事：**有没有两个进程能处理同一个请求**。这里 API 只有一份，三个 worker 的活互不重叠，所以是单实例。
 
+所有在线模型调用（LLM / Embedding / Rerank）都经过 Redis 上的分布式并发闸门（`zhiyu:model_gate:*`）。闸门按 `provider + model` 计数，限制的是四个应用进程的合计并发，而不是单进程并发。Redis 故障时闸门降级放行。
+
 多实例的能力（事件流外置、取消信号、会话锁）都在代码里保留着，真跑多实例验证过，但按项目定位没启用。理由见 [ADR-0006](../adr/0006-distributed-runtime.md)。
 
 ## 模块结构
@@ -118,6 +120,7 @@ frontend/src/
 | `backend/app/services/memory/memory_service.py` | 会话消息、标题、正文检索、历史恢复和增量摘要游标 | 不删除原始对话 |
 | `backend/app/services/ai/embedding_service.py` | OpenAI 兼容 Embedding Provider、批处理与维度校验 | 不决定检索策略，不跨模型自动降级 |
 | `backend/app/services/ai/reranker_service.py` | Cohere/Jina 兼容 Rerank Provider、响应归一化 | 不直接读取向量库，不改变候选正文 |
+| `backend/app/core/model_gate.py` | Redis ZSET 分布式信号量，按模型限制跨进程并发 | 不决定模型选择，不重试；Redis 异常降级放行 |
 | `backend/app/services/retrieval/chroma_service.py` | 持久化向量与 Embedding Profile 集合隔离 | 不把不同语义空间写入同一集合 |
 | `backend/app/services/retrieval/hybrid_retrieval_service.py` | 召回、融合、精排与上下文装配 | 构造参数可注入，默认使用生产单例 |
 | `frontend/src/features/ask/hooks/useAgentRun.js` | SSE、续传、停止、会话与确认状态 | 不负责页面布局 |

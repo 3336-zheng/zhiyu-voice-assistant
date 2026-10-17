@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 import requests
 
 from backend.app.core.config import settings
+from backend.app.core.model_gate import acquire_model_slot
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +80,13 @@ class RerankCompatibleBackend:
             "return_documents": False,
         }
         try:
-            response = self.session.post(
-                self.api_url,
-                headers=headers,
-                json=payload,
-                timeout=self.timeout_seconds,
-            )
+            with acquire_model_slot("rerank", self.provider_name, self.model_name):
+                response = self.session.post(
+                    self.api_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout_seconds,
+                )
         except requests.RequestException as exc:
             logger.error(
                 "在线 Rerank 网络请求失败 provider=%s model=%s error=%s",

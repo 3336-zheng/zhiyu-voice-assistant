@@ -13,6 +13,7 @@ from typing import Any, List, Optional, Protocol
 from urllib.parse import urlsplit
 
 from backend.app.core.config import settings
+from backend.app.core.model_gate import acquire_model_slot
 from backend.app.core.ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,11 @@ class OpenAICompatibleEmbeddingBackend:
             if self.dimension:
                 params["dimensions"] = self.dimension
             try:
-                response = self.client.embeddings.create(**params)
+                # 每个批次一次跨进程许可；批内请求仍按 batch_size 合并发送。
+                with acquire_model_slot(
+                    "embedding", self.provider_name, self.model_name
+                ):
+                    response = self.client.embeddings.create(**params)
             except Exception as exc:
                 status = getattr(exc, "status_code", None)
                 logger.error(

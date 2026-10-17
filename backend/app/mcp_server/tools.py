@@ -31,10 +31,20 @@ _RESULT_FIELDS = (
     "section_title",
     "content",
     "snippet",
-    "score",
     "tags",
     "source_url",
 )
+# 生产检索结果的分数键随链路阶段变化（精排是 rerank_score，纯向量是相似度），
+# MCP 对外统一成一个 score 字段。
+_SCORE_KEYS = (
+    "rerank_score",
+    "hybrid_score",
+    "rrf_score",
+    "bm25_score",
+    "embedding_score",
+    "score",
+)
+_EMPTY_RESULT_NOTE = "未检索到相关内容；若模型网关不可用，语义检索会被跳过。"
 _PAGE_SUMMARY_FIELDS = (
     "id",
     "title",
@@ -77,12 +87,11 @@ class WikiMCPTools:
                     top_k=top_k,
                     db=db,
                 )
+                if not results:
+                    return {"ok": True, "results": [], "note": _EMPTY_RESULT_NOTE}
                 return {
                     "ok": True,
-                    "results": [
-                        {key: item.get(key) for key in _RESULT_FIELDS if key in item}
-                        for item in results
-                    ],
+                    "results": [_summarize_result(item) for item in results],
                 }
             finally:
                 db.close()
@@ -197,3 +206,19 @@ def _clamp_int(value: Any, *, default: int, maximum: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(1, min(parsed, maximum))
+
+
+def _summarize_result(item: Dict[str, Any]) -> Dict[str, Any]:
+    """裁剪检索结果并把分数字段统一为 score。"""
+    result = {
+        key: item.get(key)
+        for key in _RESULT_FIELDS
+        if key in item
+    }
+    score = next(
+        (item[key] for key in _SCORE_KEYS if item.get(key) is not None),
+        None,
+    )
+    if score is not None:
+        result["score"] = score
+    return result

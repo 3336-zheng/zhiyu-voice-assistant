@@ -45,7 +45,31 @@ class LLMGateTest(unittest.TestCase):
         self.assertEqual(factory.call_args.args[0], "llm")
         gate.__exit__.assert_called_once()
 
-    def test_主模型失败切备用时各持一次许可(self):
+    def test_流式生成被关闭时释放许可(self):
+        def _chunk(content=None, finish_reason=None):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content=content),
+                    finish_reason=finish_reason,
+                )]
+            )
+
+        self.service.client.chat.completions.create.return_value = [
+            _chunk("a"), _chunk("b"),
+        ]
+        gate = MagicMock()
+        gate.__enter__ = MagicMock(return_value=gate)
+        gate.__exit__ = MagicMock(return_value=False)
+        with patch(
+            "backend.app.services.ai.llm_service.acquire_model_slot",
+            return_value=gate,
+        ):
+            stream = self.service.stream_chat([{"role": "user", "content": "hi"}])
+            self.assertEqual(next(stream), "a")
+            gate.__exit__.assert_not_called()
+            stream.close()  # 模拟客户端断线 / 取消
+        gate.__exit__.assert_called_once()
+
         fallback = MagicMock()
         self.service.fallback_client = fallback
         self.service.fallback_model = "fallback-model"

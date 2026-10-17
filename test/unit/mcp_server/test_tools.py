@@ -4,7 +4,7 @@ import asyncio
 import unittest
 from unittest.mock import MagicMock
 
-from backend.app.mcp_server.tools import WikiMCPTools
+from backend.app.mcp_server import WikiMCPTools
 from backend.app.services.wiki.page_errors import PageNotFoundError
 
 
@@ -40,6 +40,24 @@ class WikiMCPToolsTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["results"], [])
         retrieval.search_hybrid.assert_not_called()
+
+    def test_search_wiki_把rerank分数映射为score(self):
+        retrieval = MagicMock()
+        retrieval.search_hybrid.return_value = [
+            {"page_id": "p1", "title": "T", "content": "c",
+             "rerank_score": 0.87, "source_url": "/api/pages/p1"},
+        ]
+        tools = self._tools(retrieval=retrieval)
+        result = _run(tools.search_wiki("q"))
+        self.assertEqual(result["results"][0]["score"], 0.87)
+
+    def test_search_wiki_空结果带说明(self):
+        retrieval = MagicMock()
+        retrieval.search_hybrid.return_value = []
+        tools = self._tools(retrieval=retrieval)
+        result = _run(tools.search_wiki("q"))
+        self.assertTrue(result["ok"])
+        self.assertIn("note", result)
 
     def test_search_wiki_top_k超限被截断(self):
         retrieval = MagicMock()

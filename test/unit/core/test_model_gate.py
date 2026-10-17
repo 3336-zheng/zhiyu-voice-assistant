@@ -29,7 +29,27 @@ class FakeRedis:
         self.zsets = {}
         self.expires = {}
         self.fail = False
+        self.eval_calls = 0
+        self.direct_zadd_calls = 0
         self._lock = threading.Lock()
+
+    def eval(self, script, numkeys, *args):
+        """模拟闸门的 Lua 脚本：清理过期 + 判容量 + 写入 + 设租约。"""
+        if self.fail:
+            raise ConnectionError("redis down")
+        self.eval_calls += 1
+        key = args[0]
+        now, cutoff, limit, member, lease = args[1:6]
+        with self._lock:
+            members = self.zsets.setdefault(key, {})
+            stale = [m for m, s in members.items() if float(s) <= float(cutoff)]
+            for stale_member in stale:
+                del members[stale_member]
+            if len(members) < int(limit):
+                members[member] = float(now)
+                self.expires[key] = int(lease)
+                return 1
+            return 0
 
     def ping(self):
         if self.fail:
@@ -54,6 +74,7 @@ class FakeRedis:
     def zadd(self, key, mapping):
         if self.fail:
             raise ConnectionError("redis down")
+        self.direct_zadd_calls += 1
         with self._lock:
             self.zsets.setdefault(key, {}).update(mapping)
         return 1
@@ -137,3 +158,12 @@ class ModelGateTest(unittest.TestCase):
         with gate:
             self.assertEqual(fake.zcard(gate.key), 1)
         self.assertEqual(fake.zcard(gate.key), 0)
+
+    def test_获取许可通过单次lua脚本完成(self):
+        """清理过期、判容量、写入必须一次往返完成，否则并发下会超限。"""
+        fake = FakeRedis()
+        gate = self._gate(fake, limit=1)
+        self.assertTrue(gate.acquire())
+        self.assertEqual(fake.eval_calls, 1)
+        self.assertEqual(fake.direct_zadd_calls, 0)
+        gate.release()

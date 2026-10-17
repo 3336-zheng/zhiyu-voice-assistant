@@ -40,6 +40,20 @@ _READ_TIMEOUT_SECONDS = 2.0
 _client: Optional[Any] = None
 _client_lock = threading.Lock()
 
+# 获取许可必须一次往返完成：清理过期成员、判断容量、写入、设租约。
+# 拆成多次调用时，多个进程可能同时读到「还有空位」然后各自写入，实际并发会
+# 超过配置上限——那正是闸门要防的场景。
+_ACQUIRE_SCRIPT = """
+redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[2])
+local count = redis.call('ZCARD', KEYS[1])
+if count < tonumber(ARGV[3]) then
+  redis.call('ZADD', KEYS[1], ARGV[1], ARGV[4])
+  redis.call('EXPIRE', KEYS[1], ARGV[5])
+  return 1
+end
+return 0
+"""
+
 # 每类闸门上一次降级告警的时间。key 为 kind，避免 LLM/Embedding 互相刷屏。
 _last_degrade_log: dict[str, float] = {}
 _degrade_log_lock = threading.Lock()
@@ -150,11 +164,18 @@ class ModelGate:
                 try:
                     client = self._client()
                     now = time.time()
-                    # 先回收持有者崩溃留下的过期成员，再判断容量。
-                    client.zremrangebyscore(self.key, 0, now - lease)
-                    if int(client.zcard(self.key)) < limit:
-                        client.zadd(self.key, {self._member: now})
-                        client.expire(self.key, lease)
+                    # 单次脚本：先回收持有者崩溃留下的过期成员，再判容量并写入。
+                    acquired = client.eval(
+                        _ACQUIRE_SCRIPT,
+                        1,
+                        self.key,
+                        now,
+                        now - lease,
+                        limit,
+                        self._member,
+                        lease,
+                    )
+                    if int(acquired) == 1:
                         self._held = True
                         return True
                 except Exception as exc:  # noqa: BLE001 — 统一降级

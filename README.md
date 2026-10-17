@@ -130,6 +130,8 @@ python -m pytest test/
 
 智语可以把知识库以标准 MCP 工具暴露给 Claude Code、Cursor 等外部 AI 工具，仅提供 `search_wiki`、`read_page`、`list_pages` 三个只读能力，不写库、不调用 LLM。
 
+`search_wiki` 复用应用内的混合检索，因此会调用配置的在线 Embedding / Rerank 端点，查询文本会发送到该端点；这两个端点未配置时检索能力不可用。`read_page` 与 `list_pages` 只读本地数据。
+
 ```bash
 # .env 中启用
 MCP_SERVER_ENABLED=true

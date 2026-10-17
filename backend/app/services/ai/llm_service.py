@@ -9,6 +9,7 @@ import time
 from typing import List, Dict, Any, Optional, Generator
 from openai import OpenAI
 from backend.app.core.config import settings
+from backend.app.core.model_gate import acquire_model_slot
 from backend.app.core.observability import get_request_id, record_model_usage, timed_stage
 from backend.app.agent.events import AgentRunCancelled
 
@@ -176,7 +177,10 @@ class LLMService:
             attempt_kwargs = {**kwargs, "model": model}
             started = time.perf_counter()
             try:
-                with timed_stage(f"llm.{provider}"):
+                # 每次尝试（主模型 / 备用模型）各取一次跨进程许可。
+                with acquire_model_slot("llm", provider, model), timed_stage(
+                    f"llm.{provider}"
+                ):
                     response = client.chat.completions.create(**attempt_kwargs)
                 duration_ms = (time.perf_counter() - started) * 1000
                 self._record_attempt(
@@ -541,14 +545,16 @@ class LLMService:
             final_chunk = None
             finish_reason = None
             try:
-                stream = client.chat.completions.create(**kwargs)
-                for chunk in stream:
-                    final_chunk = chunk
-                    if chunk.choices and getattr(chunk.choices[0], "finish_reason", None):
-                        finish_reason = chunk.choices[0].finish_reason
-                    if chunk.choices and getattr(chunk.choices[0].delta, "content", None):
-                        emitted = True
-                        yield chunk.choices[0].delta.content
+                # 许可覆盖整个流式迭代周期；with 保证取消或异常时也会释放。
+                with acquire_model_slot("llm", provider, model):
+                    stream = client.chat.completions.create(**kwargs)
+                    for chunk in stream:
+                        final_chunk = chunk
+                        if chunk.choices and getattr(chunk.choices[0], "finish_reason", None):
+                            finish_reason = chunk.choices[0].finish_reason
+                        if chunk.choices and getattr(chunk.choices[0].delta, "content", None):
+                            emitted = True
+                            yield chunk.choices[0].delta.content
                 self._record_attempt(
                     model=model,
                     provider=provider,
